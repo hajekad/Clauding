@@ -61,7 +61,7 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
     for i in 0..n {
         if state.world.vehicles[i].occupied { continue; }
         if !state.world.vehicles[i].ai_active { continue; }
-        ai_drive(&mut state.world.vehicles[i], &state.world.buildings, &state.world.rocks, dt);
+        ai_drive(i, &mut state.world, &state.road_positions, dt);
     }
 }
 
@@ -125,18 +125,22 @@ fn drive_vehicle(state: &mut GameState, vi: usize, dt: f32) {
     state.player.rot_y = v.rot_y;
 }
 
-fn ai_drive(v: &mut Vehicle, buildings: &[Building], rocks: &[Rock], dt: f32) {
+fn ai_drive(vi: usize, world: &mut WorldData, road_positions: &[f32], dt: f32) {
+    let v = &world.vehicles[vi];
     // Simple: drive toward AI target on road, pick new target when close
     let dx = v.ai_target_x - v.x;
     let dz = v.ai_target_z - v.z;
     let dist = (dx * dx + dz * dz).sqrt();
 
     if dist < 5.0 {
-        // Pick a new target along the road
-        pick_ai_target(v);
+        pick_ai_target(&mut world.vehicles[vi], road_positions);
     }
 
+    let v = &mut world.vehicles[vi];
+
     // Turn toward target
+    let dx = v.ai_target_x - v.x;
+    let dz = v.ai_target_z - v.z;
     let desired = (-dx).atan2(-dz);
     let mut diff = desired - v.rot_y;
     while diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
@@ -148,44 +152,41 @@ fn ai_drive(v: &mut Vehicle, buildings: &[Building], rocks: &[Rock], dt: f32) {
     let new_x = v.x - v.rot_y.sin() * speed * dt;
     let new_z = v.z - v.rot_y.cos() * speed * dt;
 
-    let collides = buildings.iter().any(|b| {
+    let collides = world.buildings.iter().any(|b| {
         new_x + 1.5 > b.x - b.w * 0.5 && new_x - 1.5 < b.x + b.w * 0.5
         && new_z + 1.5 > b.z - b.d * 0.5 && new_z - 1.5 < b.z + b.d * 0.5
-    }) || rocks.iter().any(|r| {
+    }) || world.rocks.iter().any(|r| {
         let rdx = new_x - r.x;
         let rdz = new_z - r.z;
         rdx * rdx + rdz * rdz < (r.size + 1.5) * (r.size + 1.5)
     });
 
     if !collides {
-        v.x = new_x;
-        v.z = new_z;
+        world.vehicles[vi].x = new_x;
+        world.vehicles[vi].z = new_z;
     } else {
-        pick_ai_target(v);
+        pick_ai_target(&mut world.vehicles[vi], road_positions);
     }
 
-    v.x = v.x.clamp(-WORLD_HALF, WORLD_HALF);
-    v.z = v.z.clamp(-WORLD_HALF, WORLD_HALF);
+    world.vehicles[vi].x = world.vehicles[vi].x.clamp(-WORLD_HALF, WORLD_HALF);
+    world.vehicles[vi].z = world.vehicles[vi].z.clamp(-WORLD_HALF, WORLD_HALF);
 }
 
-fn pick_ai_target(v: &mut Vehicle) {
-    // Simple: pick a point along the nearest road
+fn pick_ai_target(v: &mut Vehicle, road_positions: &[f32]) {
     // Find closest road axis and drive along it
     let mut best_road = 0.0f32;
     let mut best_dist = f32::MAX;
     let mut is_x_road = true; // road runs along X axis (at Z = road_pos)
 
-    for &r in &ROAD_POSITIONS {
+    for &r in road_positions {
         let dz = (v.z - r).abs();
         if dz < best_dist { best_dist = dz; best_road = r; is_x_road = true; }
         let dx = (v.x - r).abs();
         if dx < best_dist { best_dist = dx; best_road = r; is_x_road = false; }
     }
 
-    // Drive to a random-ish point along that road
-    // Use position-based pseudo-random
-    let hash = ((v.x * 13.7 + v.z * 31.1) * 1000.0) as i32;
-    let t = (hash % 160) as f32 - 80.0;
+    // Drive to a deterministic random point along that road
+    let t = v.rng.range(-80.0, 80.0);
     if is_x_road {
         v.ai_target_x = t;
         v.ai_target_z = best_road;

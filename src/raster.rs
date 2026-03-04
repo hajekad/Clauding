@@ -84,17 +84,3 @@ fn edge_2d(a: [f32; 3], b: [f32; 3], p: [f32; 2]) -> f32 {
     (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
 }
 
-pub fn rgb(r: u8, g: u8, b: u8) -> u32 {
-    0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-}
-
-pub fn shade_color(color: u32, intensity: f32) -> u32 {
-    let r = ((color >> 16) & 0xFF) as f32;
-    let g = ((color >> 8) & 0xFF) as f32;
-    let b = (color & 0xFF) as f32;
-    let i = intensity.clamp(0.1, 1.0);
-    let r = (r * i) as u32;
-    let g = (g * i) as u32;
-    let b = (b * i) as u32;
-    0xFF000000 | (r << 16) | (g << 8) | b
-}

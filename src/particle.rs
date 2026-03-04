@@ -5,6 +5,7 @@ use crate::state::*;
 use crate::gpu::*;
 use crate::raster::*;
 use crate::math::*;
+use crate::rng::Rng;
 
 const MAX_PARTICLES: usize = 4096;
 const GRAVITY: f32 = -9.8;
@@ -22,6 +23,7 @@ pub struct ParticleSystem {
     pub count: usize,
     // GPU buffers (None if no GPU)
     gpu_bufs: Option<GpuParticleBufs>,
+    pub emission_rng: Rng,
 }
 
 struct GpuParticleBufs {
@@ -38,7 +40,7 @@ fn bytemuck_f32_to_u8_mut(data: &mut [f32]) -> &mut [u8] {
 }
 
 impl ParticleSystem {
-    pub fn new(gpu: &mut Option<GpuContext>) -> Self {
+    pub fn new(gpu: &mut Option<GpuContext>, seed: u64) -> Self {
         let buf_size = MAX_PARTICLES * 4;
         let gpu_bufs = gpu.as_mut().map(|ctx| {
             GpuParticleBufs {
@@ -63,6 +65,7 @@ impl ParticleSystem {
             color: vec![0; MAX_PARTICLES],
             count: 0,
             gpu_bufs,
+            emission_rng: Rng::new(seed),
         }
     }
 
@@ -141,10 +144,9 @@ impl ParticleSystem {
     }
 }
 
-// Emit particles from game entities
-pub fn sys_emit_particles(ps: &mut ParticleSystem, game: &GameState, dt: f32) {
-    // Simple hash for pseudo-random
-    let t = game.time_of_day * 1000.0;
+// Emit particles from game entities using frame_counter for determinism
+pub fn sys_emit_particles(ps: &mut ParticleSystem, game: &GameState, _dt: f32) {
+    let frame = game.frame_counter;
 
     // Vehicle exhaust
     for v in &game.world.vehicles {
@@ -152,11 +154,11 @@ pub fn sys_emit_particles(ps: &mut ParticleSystem, game: &GameState, dt: f32) {
         let (sin_r, cos_r) = v.rot_y.sin_cos();
         let ex = v.x + sin_r * 1.8; // behind vehicle
         let ez = v.z + cos_r * 1.8;
-        let h = ((t + v.x * 13.7) * 100.0) as i32;
-        if h % 3 == 0 {
+        // Emit every 3rd frame per vehicle
+        if frame % 3 == 0 {
             let spread = 0.3;
-            let vx = sin_r * 1.0 + ((h % 7) as f32 - 3.0) * 0.1;
-            let vz = cos_r * 1.0 + ((h % 5) as f32 - 2.0) * 0.1;
+            let vx = sin_r * 1.0 + ps.emission_rng.range(-0.3, 0.3);
+            let vz = cos_r * 1.0 + ps.emission_rng.range(-0.2, 0.2);
             ps.emit(ex, 0.3, ez, vx * spread, 0.5, vz * spread, 0.8, 0xFF666666);
         }
     }
@@ -164,10 +166,9 @@ pub fn sys_emit_particles(ps: &mut ParticleSystem, game: &GameState, dt: f32) {
     // Sprint dust
     let p = &game.player;
     if p.sprinting && p.in_vehicle.is_none() {
-        let h = (t * 77.0) as i32;
-        if h % 2 == 0 {
-            let dx = ((h % 11) as f32 - 5.0) * 0.15;
-            let dz = ((h % 7) as f32 - 3.0) * 0.15;
+        if frame % 2 == 0 {
+            let dx = ps.emission_rng.range(-0.75, 0.75);
+            let dz = ps.emission_rng.range(-0.45, 0.45);
             ps.emit(p.x, 0.05, p.z, dx, 0.3, dz, 0.5, 0xFF998866);
         }
     }

@@ -458,8 +458,6 @@ struct ComputePipeline {
     pipeline: VkPipeline,
     layout: VkPipelineLayout,
     desc_set_layout: VkDescriptorSetLayout,
-    binding_count: u32,
-    push_size: u32,
 }
 
 // --- Main GPU context ---
@@ -469,7 +467,6 @@ pub struct GpuContext {
     instance: VkInstance,
     device: VkDevice,
     queue: VkQueue,
-    queue_family: u32,
     cmd_pool: VkCommandPool,
     cmd_buf: VkCommandBuffer,
     fence: VkFence,
@@ -716,7 +713,6 @@ impl GpuContext {
             instance,
             device,
             queue,
-            queue_family: chosen_queue_family,
             cmd_pool,
             cmd_buf,
             fence,
@@ -812,8 +808,6 @@ impl GpuContext {
             pipeline,
             layout: pipe_layout,
             desc_set_layout: desc_layout,
-            binding_count,
-            push_size,
         }));
 
         Ok(())

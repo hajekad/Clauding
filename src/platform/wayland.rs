@@ -293,7 +293,6 @@ struct WlState {
     wl_buffer_iface: *const WlInterface,
     wl_seat_iface: *const WlInterface,
     wl_keyboard_iface: *const WlInterface,
-    wl_callback_iface: *const WlInterface,
 }
 
 // --- Callback implementations ---
@@ -522,7 +521,6 @@ impl WaylandWindow {
                 wl_buffer_iface: load_iface(lib, c"wl_buffer_interface"),
                 wl_seat_iface: load_iface(lib, c"wl_seat_interface"),
                 wl_keyboard_iface: load_iface(lib, c"wl_keyboard_interface"),
-                wl_callback_iface: load_iface(lib, c"wl_callback_interface"),
             });
 
             let data_ptr = &mut *state as *mut WlState as *mut c_void;

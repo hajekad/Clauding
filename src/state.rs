@@ -1,5 +1,7 @@
 // GameState: global mutable game state, entity stores, constants
 
+use crate::rng::Rng;
+
 pub const DEFAULT_WIDTH: usize = 1920;
 pub const DEFAULT_HEIGHT: usize = 1080;
 pub const MAX_FPS: f32 = 500.0;
@@ -29,27 +31,14 @@ pub const NPC_SPEED: f32 = 2.5;
 pub const ITEM_PICKUP_DIST: f32 = 1.5;
 pub const ITEM_RESPAWN_TIME: f32 = 30.0;
 
-// Road center positions (5 horizontal at these Z values, 5 vertical at these X values)
-pub const ROAD_POSITIONS: [f32; 5] = [-80.0, -40.0, 0.0, 40.0, 80.0];
-
 pub struct Building {
     pub x: f32, pub z: f32,
-    pub w: f32, pub d: f32, pub h: f32,
-    pub color: u32,
-}
-
-pub struct Tree {
-    pub x: f32, pub z: f32,
-    pub trunk_h: f32, pub canopy_r: f32,
+    pub w: f32, pub d: f32,
 }
 
 pub struct Rock {
     pub x: f32, pub z: f32,
     pub size: f32,
-}
-
-pub struct StreetLight {
-    pub x: f32, pub z: f32,
 }
 
 pub struct Vehicle {
@@ -61,6 +50,7 @@ pub struct Vehicle {
     pub ai_active: bool,      // AI drives when not occupied and on road
     pub ai_target_x: f32,
     pub ai_target_z: f32,
+    pub rng: Rng,
 }
 
 pub const VEHICLE_COLORS: [u32; 6] = [
@@ -74,6 +64,7 @@ pub struct Npc {
     pub target_x: f32, pub target_z: f32,
     pub shirt_color: u32,
     pub pants_color: u32,
+    pub rng: Rng,
 }
 
 pub const NPC_SHIRT_COLORS: [u32; 6] = [
@@ -101,7 +92,6 @@ pub struct Player {
     pub stamina: f32,
     pub money: f32,
     pub score: u32,
-    pub level: u32,
     pub walk_phase: f32,
     pub sprinting: bool,
     pub in_vehicle: Option<usize>, // index into vehicles vec
@@ -123,9 +113,7 @@ pub struct WorldTri {
 pub struct WorldData {
     pub static_tris: Vec<WorldTri>,
     pub buildings: Vec<Building>,
-    pub trees: Vec<Tree>,
     pub rocks: Vec<Rock>,
-    pub lights: Vec<StreetLight>,
     pub vehicles: Vec<Vehicle>,
     pub npcs: Vec<Npc>,
     pub items: Vec<Item>,
@@ -138,25 +126,31 @@ pub struct GameState {
     pub width: usize,
     pub height: usize,
     pub time_of_day: f32, // 0.0 - 24.0 hours
+    pub world_seed: u64,
+    pub road_positions: Vec<f32>,
+    pub frame_counter: u64,
     pub player: Player,
     pub camera: Camera,
     pub world: WorldData,
 }
 
 impl GameState {
-    pub fn new(w: usize, h: usize) -> Self {
+    pub fn new(w: usize, h: usize, seed: u64) -> Self {
         GameState {
             keys: [false; 256],
             prev_key_e: false,
             should_quit: false,
             time_of_day: 10.0, // start at 10 AM
+            world_seed: seed,
+            road_positions: Vec::new(), // filled by generate_world
+            frame_counter: 0,
             width: w,
             height: h,
             player: Player {
                 x: 0.0, y: 0.0, z: 10.0,
                 rot_y: 0.0,
                 health: 100.0, stamina: 100.0, money: 50.0,
-                score: 0, level: 1,
+                score: 0,
                 walk_phase: 0.0, sprinting: false, in_vehicle: None,
             },
             camera: Camera {
@@ -166,9 +160,7 @@ impl GameState {
             world: WorldData {
                 static_tris: Vec::new(),
                 buildings: Vec::new(),
-                trees: Vec::new(),
                 rocks: Vec::new(),
-                lights: Vec::new(),
                 vehicles: Vec::new(),
                 npcs: Vec::new(),
                 items: Vec::new(),

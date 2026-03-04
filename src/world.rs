@@ -2,19 +2,7 @@
 // All geometry output as WorldTri in world space, generated once at startup
 
 use crate::state::*;
-
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self { Rng(seed) }
-    fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (self.0 >> 33) as u32
-    }
-    fn f32(&mut self) -> f32 { self.next() as f32 / u32::MAX as f32 }
-    fn range(&mut self, min: f32, max: f32) -> f32 { min + self.f32() * (max - min) }
-    fn pick<T: Copy>(&mut self, arr: &[T]) -> T { arr[self.next() as usize % arr.len()] }
-}
+use crate::rng::Rng;
 
 const BUILDING_COLORS: [u32; 10] = [
     0xFF887766, 0xFF776688, 0xFF668877, 0xFF998877, 0xFF778899,
@@ -30,8 +18,10 @@ const ROAD_LINE_COLOR: u32 = 0xFFCCCC33;
 const LAMP_POLE_COLOR: u32 = 0xFF666666;
 const LAMP_GLOW_COLOR: u32 = 0xFFFFEE88;
 
-fn on_road(x: f32, z: f32) -> bool {
-    for &r in &ROAD_POSITIONS {
+const NUM_ROADS: usize = 5;
+
+fn on_road(x: f32, z: f32, road_positions: &[f32]) -> bool {
+    for &r in road_positions {
         if (x - r).abs() < ROAD_WIDTH * 0.5 + 1.0 { return true; }
         if (z - r).abs() < ROAD_WIDTH * 0.5 + 1.0 { return true; }
     }
@@ -82,9 +72,20 @@ fn normalize_tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
     if l < 1e-10 { [0.0, 1.0, 0.0] } else { [n[0]/l, n[1]/l, n[2]/l] }
 }
 
-pub fn generate_world(world: &mut WorldData) {
-    let mut rng = Rng::new(42);
+pub fn generate_world(game: &mut GameState) {
+    let mut rng = Rng::new(game.world_seed);
     let mut tris = Vec::with_capacity(8000);
+
+    // Generate road positions from seed (5 roads, evenly spaced + jitter)
+    let spacing = WORLD_SIZE / (NUM_ROADS as f32 + 1.0);
+    let mut road_positions = Vec::with_capacity(NUM_ROADS);
+    for i in 0..NUM_ROADS {
+        let base = -WORLD_HALF + spacing * (i as f32 + 1.0);
+        let jitter = rng.range(-spacing * 0.15, spacing * 0.15);
+        road_positions.push(base + jitter);
+    }
+    game.road_positions = road_positions;
+    let roads = &game.road_positions;
 
     // Ground plane (split into tiles for better z-buffer precision)
     let tile = 50.0;
@@ -103,7 +104,7 @@ pub fn generate_world(world: &mut WorldData) {
     // Roads
     let rh = ROAD_WIDTH * 0.5;
     let line_w = 0.15;
-    for &r in &ROAD_POSITIONS {
+    for &r in roads {
         // Horizontal road (along X)
         tris.push(WorldTri { v: [[-WORLD_HALF,0.01,r-rh],[WORLD_HALF,0.01,r-rh],[WORLD_HALF,0.01,r+rh]], normal: [0.0,1.0,0.0], color: ROAD_COLOR });
         tris.push(WorldTri { v: [[-WORLD_HALF,0.01,r-rh],[WORLD_HALF,0.01,r+rh],[-WORLD_HALF,0.01,r+rh]], normal: [0.0,1.0,0.0], color: ROAD_COLOR });
@@ -125,7 +126,7 @@ pub fn generate_world(world: &mut WorldData) {
         loop {
             x = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
             z = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-            if !on_road(x, z) { break; }
+            if !on_road(x, z, roads) { break; }
         }
         let w = rng.range(3.0, 8.0);
         let d = rng.range(3.0, 8.0);
@@ -152,7 +153,7 @@ pub fn generate_world(world: &mut WorldData) {
                 tris.push(WorldTri { v: [[wx+win_w, wy, bz], [wx, wy+win_h, bz], [wx+win_w, wy+win_h, bz]], normal: [0.0,0.0,-1.0], color: win_color });
             }
         }
-        world.buildings.push(Building { x, z, w, d, h, color });
+        game.world.buildings.push(Building { x, z, w, d });
     }
 
     // Trees
@@ -162,7 +163,7 @@ pub fn generate_world(world: &mut WorldData) {
         loop {
             x = rng.range(-WORLD_HALF + 2.0, WORLD_HALF - 2.0);
             z = rng.range(-WORLD_HALF + 2.0, WORLD_HALF - 2.0);
-            if !on_road(x, z) { break; }
+            if !on_road(x, z, roads) { break; }
         }
         let trunk_h = rng.range(1.5, 3.5);
         let canopy_r = rng.range(1.0, 2.5);
@@ -171,7 +172,6 @@ pub fn generate_world(world: &mut WorldData) {
         // Canopy
         let canopy_color = rng.pick(&CANOPY_COLORS);
         octahedron_tris(&mut tris, x, trunk_h + canopy_r * 0.6, z, canopy_r, canopy_color);
-        world.trees.push(Tree { x, z, trunk_h, canopy_r });
     }
 
     // Rocks
@@ -181,79 +181,81 @@ pub fn generate_world(world: &mut WorldData) {
         let size = rng.range(0.5, 1.5);
         // Slightly irregular octahedron
         octahedron_tris(&mut tris, x, size * 0.4, z, size, ROCK_COLOR);
-        world.rocks.push(Rock { x, z, size });
+        game.world.rocks.push(Rock { x, z, size });
     }
 
     // Street lights
+    let num_roads = roads.len();
     for _ in 0..NUM_STREET_LIGHTS {
-        let road_idx = rng.next() as usize % ROAD_POSITIONS.len();
+        let road_idx = rng.next() as usize % num_roads;
         let is_horiz = rng.next() % 2 == 0;
         let along = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
         let offset = ROAD_WIDTH * 0.5 + 0.5;
         let side = if rng.next() % 2 == 0 { offset } else { -offset };
         let (x, z) = if is_horiz {
-            (along, ROAD_POSITIONS[road_idx] + side)
+            (along, roads[road_idx] + side)
         } else {
-            (ROAD_POSITIONS[road_idx] + side, along)
+            (roads[road_idx] + side, along)
         };
         // Pole
         box_tris(&mut tris, x, 2.5, z, 0.15, 5.0, 0.15, LAMP_POLE_COLOR);
         // Lamp
         octahedron_tris(&mut tris, x, 5.2, z, 0.3, LAMP_GLOW_COLOR);
-        world.lights.push(StreetLight { x, z });
     }
 
     // Vehicles (spawned on roads)
-    for _ in 0..NUM_VEHICLES {
-        let road_idx = rng.next() as usize % ROAD_POSITIONS.len();
+    for i in 0..NUM_VEHICLES {
+        let road_idx = rng.next() as usize % num_roads;
         let is_horiz = rng.next() % 2 == 0;
         let along = rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0);
         let offset = rng.range(-ROAD_WIDTH * 0.3, ROAD_WIDTH * 0.3);
         let (x, z, rot) = if is_horiz {
-            (along, ROAD_POSITIONS[road_idx] + offset, std::f32::consts::FRAC_PI_2)
+            (along, roads[road_idx] + offset, std::f32::consts::FRAC_PI_2)
         } else {
-            (ROAD_POSITIONS[road_idx] + offset, along, 0.0)
+            (roads[road_idx] + offset, along, 0.0)
         };
         let color = rng.pick(&VEHICLE_COLORS);
         let ai_active = rng.next() % 3 == 0; // 1/3 of cars drive around
+        let vehicle_rng = rng.fork(i as u64);
         let mut v = Vehicle {
             x, z, rot_y: rot, speed: 0.0, color, occupied: false,
-            ai_active, ai_target_x: x, ai_target_z: z,
+            ai_active, ai_target_x: x, ai_target_z: z, rng: vehicle_rng,
         };
         if ai_active {
             // Give them an initial target
             let t = rng.range(-80.0, 80.0);
             if is_horiz {
                 v.ai_target_x = t;
-                v.ai_target_z = ROAD_POSITIONS[road_idx];
+                v.ai_target_z = roads[road_idx];
             } else {
-                v.ai_target_x = ROAD_POSITIONS[road_idx];
+                v.ai_target_x = roads[road_idx];
                 v.ai_target_z = t;
             }
         }
-        world.vehicles.push(v);
+        game.world.vehicles.push(v);
     }
 
     // NPCs (pedestrians near roads)
-    for _ in 0..NUM_NPCS {
-        let road_idx = rng.next() as usize % ROAD_POSITIONS.len();
+    for i in 0..NUM_NPCS {
+        let road_idx = rng.next() as usize % num_roads;
         let is_horiz = rng.next() % 2 == 0;
         let along = rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0);
         let sidewalk = ROAD_WIDTH * 0.5 + 1.5;
         let side = if rng.next() % 2 == 0 { sidewalk } else { -sidewalk };
         let (x, z) = if is_horiz {
-            (along, ROAD_POSITIONS[road_idx] + side)
+            (along, roads[road_idx] + side)
         } else {
-            (ROAD_POSITIONS[road_idx] + side, along)
+            (roads[road_idx] + side, along)
         };
         let shirt_color = rng.pick(&NPC_SHIRT_COLORS);
         let pants_color = rng.pick(&NPC_PANTS_COLORS);
         let rot_y = rng.range(0.0, std::f32::consts::TAU);
-        world.npcs.push(Npc {
+        let npc_rng = rng.fork(NUM_VEHICLES as u64 + i as u64);
+        game.world.npcs.push(Npc {
             x, z, rot_y, walk_phase: rng.range(0.0, 6.0),
             target_x: x + rng.range(-10.0, 10.0),
             target_z: z + rng.range(-10.0, 10.0),
-            shirt_color, pants_color,
+            shirt_color, pants_color, rng: npc_rng,
         });
     }
 
@@ -265,18 +267,18 @@ pub fn generate_world(world: &mut WorldData) {
         loop {
             x = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
             z = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-            if !on_road(x, z) { break; }
+            if !on_road(x, z, roads) { break; }
         }
         let kind = item_kinds[rng.next() as usize % 3];
-        world.items.push(Item {
+        game.world.items.push(Item {
             x, z, kind, active: true, respawn_timer: 0.0,
             spin_phase: rng.range(0.0, 6.0),
         });
     }
 
     eprintln!("World: {} tris, {} vehicles, {} npcs, {} items",
-        tris.len(), world.vehicles.len(), world.npcs.len(), world.items.len());
-    world.static_tris = tris;
+        tris.len(), game.world.vehicles.len(), game.world.npcs.len(), game.world.items.len());
+    game.world.static_tris = tris;
 }
 
 pub fn check_building_collision(world: &WorldData, x: f32, z: f32, radius: f32) -> bool {

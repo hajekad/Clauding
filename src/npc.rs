@@ -2,7 +2,7 @@
 
 use crate::state::*;
 
-pub fn sys_npc(world: &mut WorldData, dt: f32) {
+pub fn sys_npc(world: &mut WorldData, road_positions: &[f32], dt: f32) {
     let n = world.npcs.len();
     for i in 0..n {
         let npc = &world.npcs[i];
@@ -12,7 +12,7 @@ pub fn sys_npc(world: &mut WorldData, dt: f32) {
 
         // Pick new target when close
         if dist < 2.0 {
-            pick_npc_target(&mut world.npcs[i]);
+            pick_npc_target(&mut world.npcs[i], road_positions);
             continue;
         }
 
@@ -44,7 +44,7 @@ pub fn sys_npc(world: &mut WorldData, dt: f32) {
             world.npcs[i].z = new_z;
             world.npcs[i].walk_phase += dt * NPC_SPEED * 2.5;
         } else {
-            pick_npc_target(&mut world.npcs[i]);
+            pick_npc_target(&mut world.npcs[i], road_positions);
         }
 
         world.npcs[i].x = world.npcs[i].x.clamp(-WORLD_HALF, WORLD_HALF);
@@ -52,15 +52,12 @@ pub fn sys_npc(world: &mut WorldData, dt: f32) {
     }
 }
 
-fn pick_npc_target(npc: &mut Npc) {
-    // Wander near current position, biased toward roads
-    let hash = ((npc.x * 17.3 + npc.z * 43.7 + npc.walk_phase * 7.1) * 1000.0) as i32;
-
+fn pick_npc_target(npc: &mut Npc, road_positions: &[f32]) {
     // Find nearest road and walk along it
     let mut best_road = 0.0f32;
     let mut best_dist = f32::MAX;
     let mut is_x_road = true;
-    for &r in &ROAD_POSITIONS {
+    for &r in road_positions {
         let dz = (npc.z - r).abs();
         if dz < best_dist { best_dist = dz; best_road = r; is_x_road = true; }
         let dx = (npc.x - r).abs();
@@ -69,9 +66,9 @@ fn pick_npc_target(npc: &mut Npc) {
 
     // Walk along sidewalk (offset from road center)
     let sidewalk_offset = ROAD_WIDTH * 0.5 + 1.5;
-    let side = if hash % 2 == 0 { sidewalk_offset } else { -sidewalk_offset };
-    let along = npc.x + ((hash % 40) as f32 - 20.0);
-    let along_z = npc.z + (((hash / 40) % 40) as f32 - 20.0);
+    let side = if npc.rng.next() % 2 == 0 { sidewalk_offset } else { -sidewalk_offset };
+    let along = npc.x + npc.rng.range(-20.0, 20.0);
+    let along_z = npc.z + npc.rng.range(-20.0, 20.0);
 
     if is_x_road {
         npc.target_x = along.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);

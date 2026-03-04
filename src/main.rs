@@ -12,6 +12,7 @@ mod npc;
 mod camera;
 mod hud;
 mod particle;
+mod rng;
 
 use std::time::Instant;
 
@@ -23,6 +24,8 @@ fn bytemuck_cast_mut(data: &mut [f32]) -> &mut [u8] {
 }
 
 const KEY_ESC: usize = 1;
+const FIXED_DT: f32 = 1.0 / 60.0;
+const MAX_ACCUMULATOR: f32 = 0.25; // cap to prevent death spiral
 
 fn main() {
     // Init GPU compute
@@ -48,21 +51,23 @@ fn main() {
     let h = window.height();
     eprintln!("Window: {}x{}", w, h);
 
-    let mut game = state::GameState::new(w, h);
-    world::generate_world(&mut game.world);
+    let world_seed: u64 = 42;
+    let mut game = state::GameState::new(w, h, world_seed);
+    world::generate_world(&mut game);
 
     let mut fb = raster::Framebuffer::new(w, h);
-    let mut particles = particle::ParticleSystem::new(&mut gpu);
+    let mut particles = particle::ParticleSystem::new(&mut gpu, world_seed.wrapping_add(0xBEEF));
 
     let mut last_frame = Instant::now();
+    let mut accumulator: f32 = 0.0;
 
     loop {
         window.poll_events(&mut game.keys, &mut game.should_quit);
         if game.should_quit || game.keys[KEY_ESC] { break; }
 
         let now = Instant::now();
-        let dt = now.duration_since(last_frame).as_secs_f32();
-        if dt < state::FRAME_TIME_MIN { continue; }
+        let frame_dt = now.duration_since(last_frame).as_secs_f32();
+        if frame_dt < state::FRAME_TIME_MIN { continue; }
         last_frame = now;
 
         let nw = window.width();
@@ -73,22 +78,33 @@ fn main() {
             game.height = nh;
         }
 
-        // Advance time of day
-        game.time_of_day += dt * 24.0 / state::DAY_LENGTH;
-        if game.time_of_day >= 24.0 { game.time_of_day -= 24.0; }
+        // Fixed timestep accumulator
+        accumulator += frame_dt.min(MAX_ACCUMULATOR);
 
-        player::sys_player(&mut game, dt);
-        vehicle::sys_vehicle(&mut game, dt);
-        npc::sys_npc(&mut game.world, dt);
-        let pickups = npc::sys_items(&mut game.world, &mut game.player, dt);
-        for p in &pickups {
-            particle::emit_pickup_sparkle(&mut particles, p.x, p.z, p.color);
+        while accumulator >= FIXED_DT {
+            accumulator -= FIXED_DT;
+
+            // Advance time of day
+            game.time_of_day += FIXED_DT * 24.0 / state::DAY_LENGTH;
+            if game.time_of_day >= 24.0 { game.time_of_day -= 24.0; }
+
+            // Game-logic systems at fixed dt
+            player::sys_player(&mut game, FIXED_DT);
+            vehicle::sys_vehicle(&mut game, FIXED_DT);
+            let road_positions = game.road_positions.clone();
+            npc::sys_npc(&mut game.world, &road_positions, FIXED_DT);
+            let pickups = npc::sys_items(&mut game.world, &mut game.player, FIXED_DT);
+            for p in &pickups {
+                particle::emit_pickup_sparkle(&mut particles, p.x, p.z, p.color);
+            }
+
+            game.frame_counter += 1;
         }
-        camera::sys_camera(&mut game.camera, &game.player, dt);
 
-        // Particle emitters + GPU update
-        particle::sys_emit_particles(&mut particles, &game, dt);
-        particles.update(&mut gpu, dt);
+        // Visual systems at variable rate
+        camera::sys_camera(&mut game.camera, &game.player, frame_dt);
+        particle::sys_emit_particles(&mut particles, &game, frame_dt);
+        particles.update(&mut gpu, frame_dt);
 
         fb.clear(render::sky_color(game.time_of_day));
         render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day);

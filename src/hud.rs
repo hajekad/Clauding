@@ -227,7 +227,7 @@ fn draw_minimap(fb: &mut Framebuffer, game: &GameState) {
     draw_rect(fb, mx, my, size, size, MINIMAP_BG);
 
     // Roads
-    for &r in &ROAD_POSITIONS {
+    for &r in &game.road_positions {
         let map_r = world_to_minimap(r, size);
         let road_w = ((ROAD_WIDTH / WORLD_SIZE) * size as f32) as usize;
         let rw = road_w.max(1);
