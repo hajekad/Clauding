@@ -106,17 +106,17 @@ pub fn generate_world(game: &mut GameState) {
     let line_w = 0.15;
     for &r in roads {
         // Horizontal road (along X)
-        tris.push(WorldTri { v: [[-WORLD_HALF,0.01,r-rh],[WORLD_HALF,0.01,r-rh],[WORLD_HALF,0.01,r+rh]], normal: [0.0,1.0,0.0], color: ROAD_COLOR });
-        tris.push(WorldTri { v: [[-WORLD_HALF,0.01,r-rh],[WORLD_HALF,0.01,r+rh],[-WORLD_HALF,0.01,r+rh]], normal: [0.0,1.0,0.0], color: ROAD_COLOR });
+        tris.push(WorldTri { v: [[-WORLD_HALF,0.05,r-rh],[WORLD_HALF,0.05,r-rh],[WORLD_HALF,0.05,r+rh]], normal: [0.0,1.0,0.0], color: ROAD_COLOR });
+        tris.push(WorldTri { v: [[-WORLD_HALF,0.05,r-rh],[WORLD_HALF,0.05,r+rh],[-WORLD_HALF,0.05,r+rh]], normal: [0.0,1.0,0.0], color: ROAD_COLOR });
         // Center line
-        tris.push(WorldTri { v: [[-WORLD_HALF,0.02,r-line_w],[WORLD_HALF,0.02,r-line_w],[WORLD_HALF,0.02,r+line_w]], normal: [0.0,1.0,0.0], color: ROAD_LINE_COLOR });
-        tris.push(WorldTri { v: [[-WORLD_HALF,0.02,r-line_w],[WORLD_HALF,0.02,r+line_w],[-WORLD_HALF,0.02,r+line_w]], normal: [0.0,1.0,0.0], color: ROAD_LINE_COLOR });
+        tris.push(WorldTri { v: [[-WORLD_HALF,0.08,r-line_w],[WORLD_HALF,0.08,r-line_w],[WORLD_HALF,0.08,r+line_w]], normal: [0.0,1.0,0.0], color: ROAD_LINE_COLOR });
+        tris.push(WorldTri { v: [[-WORLD_HALF,0.08,r-line_w],[WORLD_HALF,0.08,r+line_w],[-WORLD_HALF,0.08,r+line_w]], normal: [0.0,1.0,0.0], color: ROAD_LINE_COLOR });
         // Vertical road (along Z)
-        tris.push(WorldTri { v: [[r-rh,0.01,-WORLD_HALF],[r+rh,0.01,-WORLD_HALF],[r+rh,0.01,WORLD_HALF]], normal: [0.0,1.0,0.0], color: ROAD_COLOR });
-        tris.push(WorldTri { v: [[r-rh,0.01,-WORLD_HALF],[r+rh,0.01,WORLD_HALF],[r-rh,0.01,WORLD_HALF]], normal: [0.0,1.0,0.0], color: ROAD_COLOR });
+        tris.push(WorldTri { v: [[r-rh,0.05,-WORLD_HALF],[r+rh,0.05,-WORLD_HALF],[r+rh,0.05,WORLD_HALF]], normal: [0.0,1.0,0.0], color: ROAD_COLOR });
+        tris.push(WorldTri { v: [[r-rh,0.05,-WORLD_HALF],[r+rh,0.05,WORLD_HALF],[r-rh,0.05,WORLD_HALF]], normal: [0.0,1.0,0.0], color: ROAD_COLOR });
         // Center line
-        tris.push(WorldTri { v: [[r-line_w,0.02,-WORLD_HALF],[r+line_w,0.02,-WORLD_HALF],[r+line_w,0.02,WORLD_HALF]], normal: [0.0,1.0,0.0], color: ROAD_LINE_COLOR });
-        tris.push(WorldTri { v: [[r-line_w,0.02,-WORLD_HALF],[r+line_w,0.02,WORLD_HALF],[r-line_w,0.02,WORLD_HALF]], normal: [0.0,1.0,0.0], color: ROAD_LINE_COLOR });
+        tris.push(WorldTri { v: [[r-line_w,0.08,-WORLD_HALF],[r+line_w,0.08,-WORLD_HALF],[r+line_w,0.08,WORLD_HALF]], normal: [0.0,1.0,0.0], color: ROAD_LINE_COLOR });
+        tris.push(WorldTri { v: [[r-line_w,0.08,-WORLD_HALF],[r+line_w,0.08,WORLD_HALF],[r-line_w,0.08,WORLD_HALF]], normal: [0.0,1.0,0.0], color: ROAD_LINE_COLOR });
     }
 
     // Buildings

@@ -58,6 +58,7 @@ fn main() {
     let mut fb = raster::Framebuffer::new(w, h);
     let mut particles = particle::ParticleSystem::new(&mut gpu, world_seed.wrapping_add(0xBEEF));
 
+    let mut render_scratch: Vec<state::WorldTri> = Vec::with_capacity(4096);
     let mut last_frame = Instant::now();
     let mut accumulator: f32 = 0.0;
 
@@ -107,7 +108,7 @@ fn main() {
         particles.update(&mut gpu, frame_dt);
 
         fb.clear(render::sky_color(game.time_of_day));
-        render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day);
+        render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut render_scratch);
         particle::sys_render_particles(&mut fb, &particles, &game.camera);
         hud::sys_hud(&mut fb, &game);
 

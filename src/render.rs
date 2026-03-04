@@ -1,5 +1,5 @@
 // sys_render: transform world + player geometry to screen, rasterize
-// General-purpose triangle renderer with backface culling, distance culling, lighting
+// Near-plane clipping, backface/distance culling, day/night lighting
 
 use crate::math::*;
 use crate::raster::*;
@@ -13,41 +13,35 @@ const VEHICLE_BODY_COLOR_DARKEN: f32 = 0.7;
 const WINDSHIELD_COLOR: u32 = 0xFF88AACC;
 const TIRE_COLOR: u32 = 0xFF222222;
 
+const NEAR_W: f32 = 0.1;
+
 // Sky/fog/light colors for time of day
 struct TimeColors {
     sky: u32,
     fog_r: f32, fog_g: f32, fog_b: f32,
     light_dir: Vec3,
-    ambient: f32,   // minimum light level
+    ambient: f32,
     sun_strength: f32,
 }
 
 fn time_colors(hour: f32) -> TimeColors {
-    // Key times: 6=sunrise, 12=noon, 18=sunset, 0=midnight
     let (sky, amb, sun) = if hour < 5.0 {
-        // Night
         (lerp_color(0xFF0A0A20, 0xFF0A0A20, 0.0), 0.15, 0.0)
     } else if hour < 6.5 {
-        // Dawn
         let t = (hour - 5.0) / 1.5;
         (lerp_color(0xFF0A0A20, 0xFFDD8844, t), 0.15 + t * 0.3, t * 0.4)
     } else if hour < 8.0 {
-        // Sunrise to morning
         let t = (hour - 6.5) / 1.5;
         (lerp_color(0xFFDD8844, 0xFF87CEEB, t), 0.45 + t * 0.2, 0.4 + t * 0.25)
     } else if hour < 16.0 {
-        // Day
         (0xFF87CEEB, 0.65, 0.65)
     } else if hour < 18.0 {
-        // Afternoon to sunset
         let t = (hour - 16.0) / 2.0;
         (lerp_color(0xFF87CEEB, 0xFFDD6633, t), 0.65 - t * 0.2, 0.65 - t * 0.25)
     } else if hour < 19.5 {
-        // Sunset to dusk
         let t = (hour - 18.0) / 1.5;
         (lerp_color(0xFFDD6633, 0xFF1A1A40, t), 0.45 - t * 0.3, 0.4 - t * 0.4)
     } else {
-        // Night
         (0xFF0A0A20, 0.15, 0.0)
     };
 
@@ -55,7 +49,6 @@ fn time_colors(hour: f32) -> TimeColors {
     let fg = ((sky >> 8) & 0xFF) as f32;
     let fb = (sky & 0xFF) as f32;
 
-    // Sun direction rotates with time
     let sun_angle = (hour - 6.0) / 12.0 * std::f32::consts::PI;
     let light_dir = if sun > 0.0 {
         let sy = sun_angle.sin().max(0.1);
@@ -63,7 +56,7 @@ fn time_colors(hour: f32) -> TimeColors {
         let len = (sx * sx + sy * sy + 0.25).sqrt();
         [sx / len, sy / len, 0.5 / len]
     } else {
-        [0.0, 1.0, 0.0] // doesn't matter at night
+        [0.0, 1.0, 0.0]
     };
 
     TimeColors { sky, fog_r: fr, fog_g: fg, fog_b: fb, light_dir, ambient: amb, sun_strength: sun }
@@ -81,7 +74,10 @@ pub fn sky_color(hour: f32) -> u32 {
     time_colors(hour).sky
 }
 
-pub fn sys_render(fb: &mut Framebuffer, world: &WorldData, player: &Player, cam: &Camera, hour: f32) {
+pub fn sys_render(
+    fb: &mut Framebuffer, world: &WorldData, player: &Player, cam: &Camera,
+    hour: f32, scratch: &mut Vec<WorldTri>,
+) {
     let tc = time_colors(hour);
     let aspect = fb.w as f32 / fb.h as f32;
     let eye = v3(cam.x, cam.y, cam.z);
@@ -89,34 +85,32 @@ pub fn sys_render(fb: &mut Framebuffer, world: &WorldData, player: &Player, cam:
     let view = m4_look_at(eye, target, v3(0.0, 1.0, 0.0));
     let proj = m4_perspective(60.0_f32.to_radians(), aspect, 0.1, 200.0);
     let vp = m4_mul(&proj, &view);
+    let fw = fb.w as f32;
+    let fh = fb.h as f32;
 
-    render_tris(fb, &vp, &world.static_tris, eye, &tc);
+    // Static world
+    render_tris(fb, &vp, &world.static_tris, eye, &tc, fw, fh);
 
+    // Dynamic entities: generate into scratch buffer, render once
+    scratch.clear();
     for v in &world.vehicles {
-        let vehicle_tris = gen_vehicle_mesh(v);
-        render_tris(fb, &vp, &vehicle_tris, eye, &tc);
+        gen_vehicle_mesh(v, scratch);
     }
-
     for npc in &world.npcs {
-        let npc_tris = gen_npc_mesh(npc);
-        render_tris(fb, &vp, &npc_tris, eye, &tc);
+        gen_npc_mesh(npc, scratch);
     }
-
     for item in &world.items {
         if !item.active { continue; }
-        let item_tris = gen_item_mesh(item);
-        render_tris(fb, &vp, &item_tris, eye, &tc);
+        gen_item_mesh(item, scratch);
     }
-
     if player.in_vehicle.is_none() {
-        let player_tris = gen_player_mesh(player);
-        render_tris(fb, &vp, &player_tris, eye, &tc);
+        gen_player_mesh(player, scratch);
     }
+    render_tris(fb, &vp, scratch, eye, &tc, fw, fh);
 }
 
-fn render_tris(fb: &mut Framebuffer, vp: &Mat4, tris: &[WorldTri], cam_pos: Vec3, tc: &TimeColors) {
-    let w = fb.w as f32;
-    let h = fb.h as f32;
+fn render_tris(fb: &mut Framebuffer, vp: &Mat4, tris: &[WorldTri], cam_pos: Vec3, tc: &TimeColors, fw: f32, fh: f32) {
+    let fog_dist_sq = FOG_DIST * FOG_DIST;
 
     for tri in tris {
         let center = [
@@ -129,33 +123,88 @@ fn render_tris(fb: &mut Framebuffer, vp: &Mat4, tris: &[WorldTri], cam_pos: Vec3
         let dy = cam_pos[1] - center[1];
         let dz = cam_pos[2] - center[2];
         let dist_sq = dx*dx + dy*dy + dz*dz;
-        if dist_sq > FOG_DIST * FOG_DIST { continue; }
+        if dist_sq > fog_dist_sq { continue; }
 
-        let view_dir = [dx, dy, dz];
-        let vd_len = dist_sq.sqrt();
-        if vd_len < 0.001 { continue; }
-        let vd = [view_dir[0]/vd_len, view_dir[1]/vd_len, view_dir[2]/vd_len];
+        let dist = dist_sq.sqrt();
+        if dist < 0.001 { continue; }
+        let inv_dist = 1.0 / dist;
+        let vd = [dx * inv_dist, dy * inv_dist, dz * inv_dist];
         if v3_dot(tri.normal, vd) < -0.1 { continue; }
 
+        // Compute final color before clipping (flat shading)
+        let sun_lit = v3_dot(tri.normal, tc.light_dir).max(0.0) * tc.sun_strength;
+        let intensity = sun_lit + tc.ambient;
+        let fog = (dist / FOG_DIST).min(1.0);
+        let color = shade_and_fog(tri.color, intensity, fog, tc);
+
+        // Transform to clip space
         let c0 = m4_transform_no_div(vp, tri.v[0]);
         let c1 = m4_transform_no_div(vp, tri.v[1]);
         let c2 = m4_transform_no_div(vp, tri.v[2]);
 
-        if c0[3] <= 0.01 || c1[3] <= 0.01 || c2[3] <= 0.01 { continue; }
+        // Fast path: all vertices in front of near plane
+        if c0[3] >= NEAR_W && c1[3] >= NEAR_W && c2[3] >= NEAR_W {
+            let s0 = clip_to_screen(c0, fw, fh);
+            let s1 = clip_to_screen(c1, fw, fh);
+            let s2 = clip_to_screen(c2, fw, fh);
 
-        let s0 = clip_to_screen(c0, w, h);
-        let s1 = clip_to_screen(c1, w, h);
-        let s2 = clip_to_screen(c2, w, h);
+            // Quick off-screen reject
+            if s0[0].max(s1[0]).max(s2[0]) < 0.0 { continue; }
+            if s0[0].min(s1[0]).min(s2[0]) >= fw { continue; }
+            if s0[1].max(s1[1]).max(s2[1]) < 0.0 { continue; }
+            if s0[1].min(s1[1]).min(s2[1]) >= fh { continue; }
 
-        let sun_lit = v3_dot(tri.normal, tc.light_dir).max(0.0) * tc.sun_strength;
-        let intensity = sun_lit + tc.ambient;
-        let fog = (dist_sq.sqrt() / FOG_DIST).min(1.0);
-        let color = shade_and_fog(tri.color, intensity, fog, tc);
+            draw_triangle(fb, &ScreenTri { v: [s0, s1, s2], color });
+            continue;
+        }
 
-        draw_triangle(fb, &ScreenTri { v: [s0, s1, s2], color });
+        // All behind near plane → skip
+        if c0[3] < NEAR_W && c1[3] < NEAR_W && c2[3] < NEAR_W { continue; }
+
+        // Near-plane clip (Sutherland-Hodgman against w=NEAR_W)
+        let (clipped, nv) = clip_near(&[c0, c1, c2]);
+        if nv < 3 { continue; }
+
+        // Fan-triangulate clipped polygon
+        let s0 = clip_to_screen(clipped[0], fw, fh);
+        for i in 1..nv - 1 {
+            let s1 = clip_to_screen(clipped[i], fw, fh);
+            let s2 = clip_to_screen(clipped[i + 1], fw, fh);
+            draw_triangle(fb, &ScreenTri { v: [s0, s1, s2], color });
+        }
     }
 }
 
+/// Clip triangle against w=NEAR_W plane. Returns up to 4 vertices.
+fn clip_near(verts: &[[f32; 4]; 3]) -> ([[f32; 4]; 4], usize) {
+    let mut out = [[0.0f32; 4]; 4];
+    let mut n = 0;
+
+    for i in 0..3 {
+        let cur = verts[i];
+        let nxt = verts[(i + 1) % 3];
+        let cur_in = cur[3] >= NEAR_W;
+        let nxt_in = nxt[3] >= NEAR_W;
+
+        if cur_in {
+            out[n] = cur;
+            n += 1;
+        }
+        if cur_in != nxt_in {
+            let t = (NEAR_W - cur[3]) / (nxt[3] - cur[3]);
+            out[n] = [
+                cur[0] + t * (nxt[0] - cur[0]),
+                cur[1] + t * (nxt[1] - cur[1]),
+                cur[2] + t * (nxt[2] - cur[2]),
+                NEAR_W,
+            ];
+            n += 1;
+        }
+    }
+    (out, n)
+}
+
+#[inline(always)]
 fn clip_to_screen(c: [f32; 4], w: f32, h: f32) -> [f32; 3] {
     let inv_w = 1.0 / c[3];
     [
@@ -170,35 +219,29 @@ fn shade_and_fog(color: u32, intensity: f32, fog: f32, tc: &TimeColors) -> u32 {
     let g = ((color >> 8) & 0xFF) as f32;
     let b = (color & 0xFF) as f32;
     let i = intensity.clamp(0.1, 1.3);
-    let mix = fog * fog; // quadratic fog falloff
+    let mix = fog * fog;
     let ro = ((r * i * (1.0 - mix) + tc.fog_r * mix) as u32).min(255);
     let go = ((g * i * (1.0 - mix) + tc.fog_g * mix) as u32).min(255);
     let bo = ((b * i * (1.0 - mix) + tc.fog_b * mix) as u32).min(255);
     0xFF000000 | (ro << 16) | (go << 8) | bo
 }
 
-// Player humanoid mesh: torso, head, arms, legs with walking animation
-fn gen_player_mesh(player: &Player) -> Vec<WorldTri> {
-    let mut tris = Vec::with_capacity(72);
+// --- Mesh generators (push into shared scratch buffer) ---
+
+fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
+    let base = tris.len();
     let phase = player.walk_phase;
     let swing = phase.sin() * 0.4;
 
-    // Torso
-    push_box(&mut tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, SHIRT_COLOR);
-    // Head
-    push_box(&mut tris, 0.0, 1.75, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR);
-    // Left leg
-    push_box(&mut tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
-    // Right leg
-    push_box(&mut tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
-    // Left arm
-    push_box(&mut tris, -0.45, 1.05, swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
-    // Right arm
-    push_box(&mut tris, 0.45, 1.05, -swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+    push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, SHIRT_COLOR);
+    push_box(tris, 0.0, 1.75, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR);
+    push_box(tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
+    push_box(tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
+    push_box(tris, -0.45, 1.05, swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+    push_box(tris, 0.45, 1.05, -swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
 
-    // Rotate by player.rot_y and translate
     let (sin_r, cos_r) = player.rot_y.sin_cos();
-    for tri in &mut tris {
+    for tri in &mut tris[base..] {
         for v in &mut tri.v {
             let rx = v[0] * cos_r - v[2] * sin_r;
             let rz = v[0] * sin_r + v[2] * cos_r;
@@ -211,37 +254,27 @@ fn gen_player_mesh(player: &Player) -> Vec<WorldTri> {
         tri.normal[0] = nx;
         tri.normal[2] = nz;
     }
-
-    tris
 }
 
-// Vehicle mesh: sedan-like shape with body, roof, windshield, tires
-fn gen_vehicle_mesh(v: &Vehicle) -> Vec<WorldTri> {
-    let mut tris = Vec::with_capacity(48);
+fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>) {
+    let base = tris.len();
     let color = v.color;
 
-    // Lower body (wider, shorter)
-    push_box(&mut tris, 0.0, 0.45, 0.0, 1.8, 0.6, 3.6, color);
-    // Upper cabin (narrower, on top)
-    push_box(&mut tris, 0.0, 0.95, -0.2, 1.5, 0.5, 1.8, darken(color, VEHICLE_BODY_COLOR_DARKEN));
-    // Windshield (front of cabin)
-    push_box(&mut tris, 0.0, 0.95, 0.75, 1.4, 0.4, 0.05, WINDSHIELD_COLOR);
-    // Rear window
-    push_box(&mut tris, 0.0, 0.95, -1.15, 1.4, 0.4, 0.05, WINDSHIELD_COLOR);
-    // Tires (4 small dark boxes)
-    push_box(&mut tris, -0.85, 0.2, 1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
-    push_box(&mut tris, 0.85, 0.2, 1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
-    push_box(&mut tris, -0.85, 0.2, -1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
-    push_box(&mut tris, 0.85, 0.2, -1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
+    push_box(tris, 0.0, 0.45, 0.0, 1.8, 0.6, 3.6, color);
+    push_box(tris, 0.0, 0.95, -0.2, 1.5, 0.5, 1.8, darken(color, VEHICLE_BODY_COLOR_DARKEN));
+    push_box(tris, 0.0, 0.95, 0.75, 1.4, 0.4, 0.05, WINDSHIELD_COLOR);
+    push_box(tris, 0.0, 0.95, -1.15, 1.4, 0.4, 0.05, WINDSHIELD_COLOR);
+    push_box(tris, -0.85, 0.2, 1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
+    push_box(tris, 0.85, 0.2, 1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
+    push_box(tris, -0.85, 0.2, -1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
+    push_box(tris, 0.85, 0.2, -1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
 
-    // Rotate and translate to world position
     let (sin_r, cos_r) = v.rot_y.sin_cos();
-    for tri in &mut tris {
+    for tri in &mut tris[base..] {
         for vert in &mut tri.v {
             let rx = vert[0] * cos_r - vert[2] * sin_r;
             let rz = vert[0] * sin_r + vert[2] * cos_r;
             vert[0] = rx + v.x;
-            vert[1] += 0.0; // vehicles sit on ground
             vert[2] = rz + v.z;
         }
         let nx = tri.normal[0] * cos_r - tri.normal[2] * sin_r;
@@ -249,24 +282,21 @@ fn gen_vehicle_mesh(v: &Vehicle) -> Vec<WorldTri> {
         tri.normal[0] = nx;
         tri.normal[2] = nz;
     }
-
-    tris
 }
 
-// NPC humanoid mesh (same shape as player, different colors)
-fn gen_npc_mesh(npc: &Npc) -> Vec<WorldTri> {
-    let mut tris = Vec::with_capacity(72);
+fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
+    let base = tris.len();
     let swing = npc.walk_phase.sin() * 0.4;
 
-    push_box(&mut tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, npc.shirt_color);
-    push_box(&mut tris, 0.0, 1.75, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR);
-    push_box(&mut tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, npc.pants_color);
-    push_box(&mut tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, npc.pants_color);
-    push_box(&mut tris, -0.45, 1.05, swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
-    push_box(&mut tris, 0.45, 1.05, -swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+    push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, npc.shirt_color);
+    push_box(tris, 0.0, 1.75, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR);
+    push_box(tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, npc.pants_color);
+    push_box(tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, npc.pants_color);
+    push_box(tris, -0.45, 1.05, swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+    push_box(tris, 0.45, 1.05, -swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
 
     let (sin_r, cos_r) = npc.rot_y.sin_cos();
-    for tri in &mut tris {
+    for tri in &mut tris[base..] {
         for v in &mut tri.v {
             let rx = v[0] * cos_r - v[2] * sin_r;
             let rz = v[0] * sin_r + v[2] * cos_r;
@@ -278,20 +308,16 @@ fn gen_npc_mesh(npc: &Npc) -> Vec<WorldTri> {
         tri.normal[0] = nx;
         tri.normal[2] = nz;
     }
-    tris
 }
 
-// Item mesh: spinning colored shape floating above ground
-fn gen_item_mesh(item: &Item) -> Vec<WorldTri> {
-    let mut tris = Vec::with_capacity(16);
+fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
     let color = match item.kind {
-        ItemKind::Health => 0xFFFF3333,  // red
-        ItemKind::Money => 0xFFFFDD33,   // gold
-        ItemKind::Stamina => 0xFF33FF33, // green
+        ItemKind::Health => 0xFFFF3333,
+        ItemKind::Money => 0xFFFFDD33,
+        ItemKind::Stamina => 0xFF33FF33,
     };
-    let y = 0.8 + (item.spin_phase * 2.0).sin() * 0.2; // bob up and down
+    let y = 0.8 + (item.spin_phase * 2.0).sin() * 0.2;
 
-    // Small spinning octahedron
     let r = 0.35;
     let (sin_s, cos_s) = item.spin_phase.sin_cos();
     let top = [item.x, y + r, item.z];
@@ -310,7 +336,6 @@ fn gen_item_mesh(item: &Item) -> Vec<WorldTri> {
         let n_bot = tri_normal(bot, b, a);
         tris.push(WorldTri { v: [bot, b, a], normal: n_bot, color });
     }
-    tris
 }
 
 fn tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {

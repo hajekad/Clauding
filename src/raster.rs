@@ -1,4 +1,4 @@
-// Software rasterizer: framebuffer, z-buffer, triangle fill via edge functions
+// Software rasterizer: framebuffer, z-buffer, incremental edge-function triangle fill
 
 pub struct Framebuffer {
     pub pixels: Vec<u32>,
@@ -29,6 +29,7 @@ impl Framebuffer {
         self.zbuf.fill(1.0);
     }
 
+    #[inline(always)]
     pub fn put_pixel(&mut self, x: usize, y: usize, z: f32, color: u32) {
         let idx = y * self.w + x;
         if z < self.zbuf[idx] {
@@ -44,43 +45,80 @@ pub struct ScreenTri {
     pub color: u32,
 }
 
+/// Rasterize a triangle using incremental edge functions.
+/// Inner loop does 3 additions per pixel step instead of 6 multiplies.
 pub fn draw_triangle(fb: &mut Framebuffer, tri: &ScreenTri) {
-    let [v0, v1, v2] = tri.v;
-    let w = fb.w as f32;
-    let h = fb.h as f32;
+    let [v0, mut v1, mut v2] = tri.v;
 
+    // Bounding box clamped to screen
     let min_x = v0[0].min(v1[0]).min(v2[0]).max(0.0) as usize;
-    let max_x = (v0[0].max(v1[0]).max(v2[0]).min(w - 1.0)) as usize;
+    let max_x = (v0[0].max(v1[0]).max(v2[0]).min((fb.w - 1) as f32)) as usize;
     let min_y = v0[1].min(v1[1]).min(v2[1]).max(0.0) as usize;
-    let max_y = (v0[1].max(v1[1]).max(v2[1]).min(h - 1.0)) as usize;
+    let max_y = (v0[1].max(v1[1]).max(v2[1]).min((fb.h - 1) as f32)) as usize;
+    if min_x > max_x || min_y > max_y { return; }
 
-    let area = edge(v0, v1, v2);
-    if area.abs() < 0.001 { return; }
+    // Signed 2x area
+    let mut area = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
+    if area.abs() < 0.5 { return; }
+
+    // Normalize to CCW (positive area) by swapping v1/v2
+    if area < 0.0 {
+        std::mem::swap(&mut v1, &mut v2);
+        area = -area;
+    }
     let inv_area = 1.0 / area;
 
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let p = [x as f32 + 0.5, y as f32 + 0.5];
-            let w0 = edge_2d(v1, v2, p);
-            let w1 = edge_2d(v2, v0, p);
-            let w2 = edge_2d(v0, v1, p);
+    // Edge function increments per x/y step
+    // E0 = edge(v1→v2), E1 = edge(v2→v0)
+    // E2 = area - E0 - E1 (not tracked, checked via e0+e1 <= area)
+    let dx0 = v1[1] - v2[1];
+    let dy0 = v2[0] - v1[0];
+    let dx1 = v2[1] - v0[1];
+    let dy1 = v0[0] - v2[0];
 
-            if (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0) {
-                let b0 = w0 * inv_area;
-                let b1 = w1 * inv_area;
-                let b2 = w2 * inv_area;
-                let z = b0 * v0[2] + b1 * v1[2] + b2 * v2[2];
-                fb.put_pixel(x, y, z, tri.color);
+    // Initial edge values at pixel center (min_x+0.5, min_y+0.5)
+    let px = min_x as f32 + 0.5;
+    let py = min_y as f32 + 0.5;
+    let mut row_e0 = (v2[0] - v1[0]) * (py - v1[1]) - (v2[1] - v1[1]) * (px - v1[0]);
+    let mut row_e1 = (v0[0] - v2[0]) * (py - v2[1]) - (v0[1] - v2[1]) * (px - v2[0]);
+
+    // Incremental z: z = (e0*(v0z-v2z) + e1*(v1z-v2z))/area + v2z
+    let dz0 = v0[2] - v2[2];
+    let dz1 = v1[2] - v2[2];
+    let z_step_x = (dx0 * dz0 + dx1 * dz1) * inv_area;
+    let z_step_y = (dy0 * dz0 + dy1 * dz1) * inv_area;
+    let mut row_z = (row_e0 * dz0 + row_e1 * dz1) * inv_area + v2[2];
+
+    let w = fb.w;
+    let color = tri.color;
+    let pixels = fb.pixels.as_mut_ptr();
+    let zbuf = fb.zbuf.as_mut_ptr();
+
+    for y in min_y..=max_y {
+        let mut e0 = row_e0;
+        let mut e1 = row_e1;
+        let mut z = row_z;
+        let row_off = y * w;
+
+        for x in min_x..=max_x {
+            if e0 >= 0.0 && e1 >= 0.0 && e0 + e1 <= area {
+                // Safety: x in [0, fb.w-1], y in [0, fb.h-1], so idx in [0, fb.w*fb.h-1]
+                let idx = row_off + x;
+                unsafe {
+                    let zp = &mut *zbuf.add(idx);
+                    if z < *zp {
+                        *zp = z;
+                        *pixels.add(idx) = color;
+                    }
+                }
             }
+            e0 += dx0;
+            e1 += dx1;
+            z += z_step_x;
         }
+
+        row_e0 += dy0;
+        row_e1 += dy1;
+        row_z += z_step_y;
     }
 }
-
-fn edge(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
-    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-}
-
-fn edge_2d(a: [f32; 3], b: [f32; 3], p: [f32; 2]) -> f32 {
-    (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
-}
-
