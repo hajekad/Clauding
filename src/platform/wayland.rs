@@ -27,6 +27,7 @@ const MAP_SHARED: c_int = 1;
 const MFD_CLOEXEC: c_int = 1;
 const POLLIN: i16 = 1;
 const WL_SHM_FORMAT_XRGB8888: u32 = 1;
+const WL_SEAT_CAPABILITY_POINTER: u32 = 1;
 const WL_SEAT_CAPABILITY_KEYBOARD: u32 = 2;
 
 #[repr(C)]
@@ -172,6 +173,30 @@ static XDG_TOPLEVEL_INTERFACE: WlInterface = WlInterface {
     events: XDG_TOPLEVEL_EVENTS.as_ptr(),
 };
 
+// --- zwp_relative_pointer_manager_v1 / zwp_relative_pointer_v1 interfaces ---
+
+static ZWP_REL_PTR_MGR_REQUESTS: [WlMessage; 2] = [
+    WlMessage { name: c"destroy".as_ptr(), signature: c"".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
+    WlMessage { name: c"get_relative_pointer".as_ptr(), signature: c"no".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
+];
+static ZWP_REL_PTR_MGR_INTERFACE: WlInterface = WlInterface {
+    name: c"zwp_relative_pointer_manager_v1".as_ptr(), version: 1,
+    method_count: 2, methods: ZWP_REL_PTR_MGR_REQUESTS.as_ptr(),
+    event_count: 0, events: ptr::null(),
+};
+
+static ZWP_REL_PTR_REQUESTS: [WlMessage; 1] = [
+    WlMessage { name: c"destroy".as_ptr(), signature: c"".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
+];
+static ZWP_REL_PTR_EVENTS: [WlMessage; 1] = [
+    WlMessage { name: c"relative_motion".as_ptr(), signature: c"uuffff".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
+];
+static ZWP_REL_PTR_INTERFACE: WlInterface = WlInterface {
+    name: c"zwp_relative_pointer_v1".as_ptr(), version: 1,
+    method_count: 1, methods: ZWP_REL_PTR_REQUESTS.as_ptr(),
+    event_count: 1, events: ZWP_REL_PTR_EVENTS.as_ptr(),
+};
+
 // --- Listener structs ---
 
 #[repr(C)]
@@ -219,6 +244,24 @@ struct BufferListener {
     release: unsafe extern "C" fn(*mut c_void, *mut c_void),
 }
 
+#[repr(C)]
+struct PointerListener {
+    enter: unsafe extern "C" fn(*mut c_void, *mut c_void, u32, *mut c_void, i32, i32),
+    leave: unsafe extern "C" fn(*mut c_void, *mut c_void, u32, *mut c_void),
+    motion: unsafe extern "C" fn(*mut c_void, *mut c_void, u32, i32, i32),
+    button: unsafe extern "C" fn(*mut c_void, *mut c_void, u32, u32, u32, u32),
+    axis: unsafe extern "C" fn(*mut c_void, *mut c_void, u32, u32, i32),
+    frame: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    axis_source: unsafe extern "C" fn(*mut c_void, *mut c_void, u32),
+    axis_stop: unsafe extern "C" fn(*mut c_void, *mut c_void, u32, u32),
+    axis_discrete: unsafe extern "C" fn(*mut c_void, *mut c_void, u32, i32),
+}
+
+#[repr(C)]
+struct RelativePointerListener {
+    relative_motion: unsafe extern "C" fn(*mut c_void, *mut c_void, u32, u32, i32, i32, i32, i32),
+}
+
 // --- Static listeners (function pointers are Sync) ---
 
 static REGISTRY_LISTENER: RegistryListener = RegistryListener {
@@ -259,6 +302,22 @@ static BUFFER_LISTENER: BufferListener = BufferListener {
     release: cb_buffer_release,
 };
 
+static POINTER_LISTENER: PointerListener = PointerListener {
+    enter: cb_pointer_enter,
+    leave: cb_pointer_leave,
+    motion: cb_pointer_motion,
+    button: cb_pointer_button,
+    axis: cb_pointer_axis,
+    frame: cb_pointer_frame,
+    axis_source: cb_pointer_axis_source,
+    axis_stop: cb_pointer_axis_stop,
+    axis_discrete: cb_pointer_axis_discrete,
+};
+
+static REL_POINTER_LISTENER: RelativePointerListener = RelativePointerListener {
+    relative_motion: cb_relative_motion,
+};
+
 // --- Wayland state (passed as data pointer to callbacks) ---
 
 struct WlState {
@@ -269,6 +328,15 @@ struct WlState {
     xdg_wm_base: *mut c_void,
     seat: *mut c_void,
     keyboard: *mut c_void,
+    pointer: *mut c_void,
+    rel_pointer_mgr: *mut c_void,
+    rel_pointer: *mut c_void,
+    mouse_dx: f32,
+    mouse_dy: f32,
+    pointer_entered: bool,
+    prev_mouse_x: i32,
+    prev_mouse_y: i32,
+    has_rel_pointer: bool,
     surface: *mut c_void,
     xdg_surface: *mut c_void,
     xdg_toplevel: *mut c_void,
@@ -293,6 +361,7 @@ struct WlState {
     wl_buffer_iface: *const WlInterface,
     wl_seat_iface: *const WlInterface,
     wl_keyboard_iface: *const WlInterface,
+    wl_pointer_iface: *const WlInterface,
 }
 
 // --- Callback implementations ---
@@ -314,6 +383,9 @@ unsafe extern "C" fn cb_registry_global(data: *mut c_void, registry: *mut c_void
         s.xdg_wm_base = (s.fns.proxy_marshal_flags)(registry, 0, &XDG_WM_BASE_INTERFACE, ver, 0,
             name, c"xdg_wm_base".as_ptr(), ver, ptr::null::<c_void>());
         (s.fns.proxy_add_listener)(s.xdg_wm_base, &XDG_WM_BASE_LISTENER as *const _ as *const c_void, data);
+    } else if iface == c"zwp_relative_pointer_manager_v1" {
+        s.rel_pointer_mgr = (s.fns.proxy_marshal_flags)(registry, 0, &ZWP_REL_PTR_MGR_INTERFACE, 1, 0,
+            name, c"zwp_relative_pointer_manager_v1".as_ptr(), 1u32, ptr::null::<c_void>());
     } else if iface == c"wl_seat" {
         let ver = version.min(5);
         s.seat = (s.fns.proxy_marshal_flags)(registry, 0, s.wl_seat_iface, ver, 0,
@@ -354,6 +426,12 @@ unsafe extern "C" fn cb_xdg_toplevel_wm_capabilities(_data: *mut c_void, _toplev
 
 unsafe extern "C" fn cb_seat_capabilities(data: *mut c_void, _seat: *mut c_void, caps: u32) {
     let s = &mut *(data as *mut WlState);
+    if caps & WL_SEAT_CAPABILITY_POINTER != 0 && s.pointer.is_null() {
+        // wl_seat.get_pointer (opcode 0)
+        s.pointer = (s.fns.proxy_marshal_flags)(s.seat, 0, s.wl_pointer_iface,
+            (s.fns.proxy_get_version)(s.seat), 0, ptr::null::<c_void>());
+        (s.fns.proxy_add_listener)(s.pointer, &POINTER_LISTENER as *const _ as *const c_void, data);
+    }
     if caps & WL_SEAT_CAPABILITY_KEYBOARD != 0 && s.keyboard.is_null() {
         // wl_seat.get_keyboard (opcode 1)
         s.keyboard = (s.fns.proxy_marshal_flags)(s.seat, 1, s.wl_keyboard_iface,
@@ -380,6 +458,47 @@ unsafe extern "C" fn cb_keyboard_key(data: *mut c_void, _kb: *mut c_void, _seria
 
 unsafe extern "C" fn cb_keyboard_modifiers(_data: *mut c_void, _kb: *mut c_void, _serial: u32, _dep: u32, _lat: u32, _lock: u32, _group: u32) {}
 unsafe extern "C" fn cb_keyboard_repeat_info(_data: *mut c_void, _kb: *mut c_void, _rate: i32, _delay: i32) {}
+
+// --- Pointer callbacks ---
+
+unsafe extern "C" fn cb_pointer_enter(data: *mut c_void, pointer: *mut c_void, serial: u32, _surface: *mut c_void, sx: i32, sy: i32) {
+    let s = &mut *(data as *mut WlState);
+    s.pointer_entered = true;
+    s.prev_mouse_x = sx;
+    s.prev_mouse_y = sy;
+    // Hide cursor: wl_pointer.set_cursor (opcode 0): "u?oii"
+    (s.fns.proxy_marshal_flags)(pointer, 0, ptr::null(), (s.fns.proxy_get_version)(pointer), 0,
+        serial, ptr::null::<c_void>(), 0i32, 0i32);
+}
+
+unsafe extern "C" fn cb_pointer_leave(data: *mut c_void, _pointer: *mut c_void, _serial: u32, _surface: *mut c_void) {
+    let s = &mut *(data as *mut WlState);
+    s.pointer_entered = false;
+}
+
+unsafe extern "C" fn cb_pointer_motion(data: *mut c_void, _pointer: *mut c_void, _time: u32, sx: i32, sy: i32) {
+    let s = &mut *(data as *mut WlState);
+    // Fallback: compute delta from absolute coords (only if no relative pointer)
+    if !s.has_rel_pointer && s.pointer_entered {
+        s.mouse_dx += (sx - s.prev_mouse_x) as f32 / 256.0;
+        s.mouse_dy += (sy - s.prev_mouse_y) as f32 / 256.0;
+    }
+    s.prev_mouse_x = sx;
+    s.prev_mouse_y = sy;
+}
+
+unsafe extern "C" fn cb_pointer_button(_data: *mut c_void, _pointer: *mut c_void, _serial: u32, _time: u32, _button: u32, _state: u32) {}
+unsafe extern "C" fn cb_pointer_axis(_data: *mut c_void, _pointer: *mut c_void, _time: u32, _axis: u32, _value: i32) {}
+unsafe extern "C" fn cb_pointer_frame(_data: *mut c_void, _pointer: *mut c_void) {}
+unsafe extern "C" fn cb_pointer_axis_source(_data: *mut c_void, _pointer: *mut c_void, _axis_source: u32) {}
+unsafe extern "C" fn cb_pointer_axis_stop(_data: *mut c_void, _pointer: *mut c_void, _time: u32, _axis: u32) {}
+unsafe extern "C" fn cb_pointer_axis_discrete(_data: *mut c_void, _pointer: *mut c_void, _axis: u32, _discrete: i32) {}
+
+unsafe extern "C" fn cb_relative_motion(data: *mut c_void, _rel_pointer: *mut c_void, _utime_hi: u32, _utime_lo: u32, dx: i32, dy: i32, _dx_unaccel: i32, _dy_unaccel: i32) {
+    let s = &mut *(data as *mut WlState);
+    s.mouse_dx += dx as f32 / 256.0;
+    s.mouse_dy += dy as f32 / 256.0;
+}
 
 unsafe extern "C" fn cb_buffer_release(data: *mut c_void, buffer: *mut c_void) {
     let s = &mut *(data as *mut WlState);
@@ -498,6 +617,15 @@ impl WaylandWindow {
                 xdg_wm_base: ptr::null_mut(),
                 seat: ptr::null_mut(),
                 keyboard: ptr::null_mut(),
+                pointer: ptr::null_mut(),
+                rel_pointer_mgr: ptr::null_mut(),
+                rel_pointer: ptr::null_mut(),
+                mouse_dx: 0.0,
+                mouse_dy: 0.0,
+                pointer_entered: false,
+                prev_mouse_x: 0,
+                prev_mouse_y: 0,
+                has_rel_pointer: false,
                 surface: ptr::null_mut(),
                 xdg_surface: ptr::null_mut(),
                 xdg_toplevel: ptr::null_mut(),
@@ -521,6 +649,7 @@ impl WaylandWindow {
                 wl_buffer_iface: load_iface(lib, c"wl_buffer_interface"),
                 wl_seat_iface: load_iface(lib, c"wl_seat_interface"),
                 wl_keyboard_iface: load_iface(lib, c"wl_keyboard_interface"),
+                wl_pointer_iface: load_iface(lib, c"wl_pointer_interface"),
             });
 
             let data_ptr = &mut *state as *mut WlState as *mut c_void;
@@ -569,6 +698,21 @@ impl WaylandWindow {
             (state.fns.proxy_marshal_flags)(state.surface, 6, ptr::null(),
                 (state.fns.proxy_get_version)(state.surface), 0);
 
+            // Create relative pointer if available (after globals are bound)
+            if !state.pointer.is_null() && !state.rel_pointer_mgr.is_null() {
+                // zwp_relative_pointer_manager_v1.get_relative_pointer (opcode 1): "no"
+                state.rel_pointer = (state.fns.proxy_marshal_flags)(
+                    state.rel_pointer_mgr, 1, &ZWP_REL_PTR_INTERFACE,
+                    (state.fns.proxy_get_version)(state.rel_pointer_mgr), 0,
+                    ptr::null::<c_void>(), state.pointer);
+                (state.fns.proxy_add_listener)(state.rel_pointer,
+                    &REL_POINTER_LISTENER as *const _ as *const c_void, data_ptr);
+                state.has_rel_pointer = true;
+                eprintln!("Relative pointer: enabled");
+            } else if !state.pointer.is_null() {
+                eprintln!("Relative pointer: fallback (no zwp_relative_pointer_manager_v1)");
+            }
+
             // Wait for initial configure
             while !state.configured {
                 (state.fns.display_roundtrip)(display);
@@ -587,7 +731,7 @@ impl WaylandWindow {
     pub fn width(&self) -> usize { self.state.width }
     pub fn height(&self) -> usize { self.state.height }
 
-    pub fn poll_events(&mut self, keys: &mut [bool; 256], should_quit: &mut bool) {
+    pub fn poll_events(&mut self, keys: &mut [bool; 256], should_quit: &mut bool, mouse_dx: &mut f32, mouse_dy: &mut f32) {
         unsafe {
             let s = &mut *self.state;
             let fd = (s.fns.display_get_fd)(s.display);
@@ -619,6 +763,10 @@ impl WaylandWindow {
 
             *keys = s.keys;
             *should_quit = s.should_close;
+            *mouse_dx = s.mouse_dx;
+            *mouse_dy = s.mouse_dy;
+            s.mouse_dx = 0.0;
+            s.mouse_dy = 0.0;
         }
     }
 

@@ -13,6 +13,8 @@ mod camera;
 mod hud;
 mod particle;
 mod rng;
+mod input;
+mod menu;
 
 use std::time::Instant;
 
@@ -23,7 +25,6 @@ fn bytemuck_cast_mut(data: &mut [f32]) -> &mut [u8] {
     unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, data.len() * 4) }
 }
 
-const KEY_ESC: usize = 1;
 const FIXED_DT: f32 = 1.0 / 60.0;
 const MAX_ACCUMULATOR: f32 = 0.25; // cap to prevent death spiral
 
@@ -63,8 +64,23 @@ fn main() {
     let mut accumulator: f32 = 0.0;
 
     loop {
-        window.poll_events(&mut game.keys, &mut game.should_quit);
-        if game.should_quit || game.keys[KEY_ESC] { break; }
+        // Save previous keys before polling
+        game.prev_keys = game.keys;
+
+        window.poll_events(&mut game.keys, &mut game.should_quit, &mut game.mouse_dx, &mut game.mouse_dy);
+        if game.should_quit { break; }
+
+        // Menu input (always processed, even when game is paused)
+        let quit = menu::sys_menu_input(
+            &mut game.menu,
+            &mut game.keybinds,
+            &mut game.mouse_sensitivity,
+            &mut game.invert_mouse_x,
+            &mut game.invert_mouse_y,
+            &game.keys,
+            &game.prev_keys,
+        );
+        if quit { break; }
 
         let now = Instant::now();
         let frame_dt = now.duration_since(last_frame).as_secs_f32();
@@ -79,38 +95,60 @@ fn main() {
             game.height = nh;
         }
 
-        // Fixed timestep accumulator
-        accumulator += frame_dt.min(MAX_ACCUMULATOR);
+        // Only run game logic when menu is closed
+        if game.menu.state != menu::MenuState::None {
+            // Discard mouse delta while menu is open
+            game.mouse_dx = 0.0;
+            game.mouse_dy = 0.0;
+        }
+        if game.menu.state == menu::MenuState::None {
+            // Fixed timestep accumulator
+            accumulator += frame_dt.min(MAX_ACCUMULATOR);
 
-        while accumulator >= FIXED_DT {
-            accumulator -= FIXED_DT;
+            while accumulator >= FIXED_DT {
+                accumulator -= FIXED_DT;
 
-            // Advance time of day
-            game.time_of_day += FIXED_DT * 24.0 / state::DAY_LENGTH;
-            if game.time_of_day >= 24.0 { game.time_of_day -= 24.0; }
+                // Advance time of day
+                game.time_of_day += FIXED_DT * 24.0 / state::DAY_LENGTH;
+                if game.time_of_day >= 24.0 { game.time_of_day -= 24.0; }
 
-            // Game-logic systems at fixed dt
-            player::sys_player(&mut game, FIXED_DT);
-            vehicle::sys_vehicle(&mut game, FIXED_DT);
-            let road_positions = game.road_positions.clone();
-            npc::sys_npc(&mut game.world, &road_positions, FIXED_DT);
-            let pickups = npc::sys_items(&mut game.world, &mut game.player, FIXED_DT);
-            for p in &pickups {
-                particle::emit_pickup_sparkle(&mut particles, p.x, p.z, p.color);
+                // Game-logic systems at fixed dt
+                player::sys_player(&mut game, FIXED_DT);
+                vehicle::sys_vehicle(&mut game, FIXED_DT);
+                let road_positions = game.road_positions.clone();
+                npc::sys_npc(&mut game.world, &road_positions, FIXED_DT);
+                let pickups = npc::sys_items(&mut game.world, &mut game.player, FIXED_DT);
+                for p in &pickups {
+                    particle::emit_pickup_sparkle(&mut particles, p.x, p.z, p.color);
+                }
+
+                game.frame_counter += 1;
             }
 
-            game.frame_counter += 1;
+            // Visual systems at variable rate
+            camera::sys_camera(
+                &mut game.camera, &game.player,
+                game.mouse_dx, game.mouse_dy,
+                game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
+                frame_dt,
+            );
+            game.mouse_dx = 0.0;
+            game.mouse_dy = 0.0;
+            particle::sys_emit_particles(&mut particles, &game, frame_dt);
+            particles.update(&mut gpu, frame_dt);
         }
 
-        // Visual systems at variable rate
-        camera::sys_camera(&mut game.camera, &game.player, frame_dt);
-        particle::sys_emit_particles(&mut particles, &game, frame_dt);
-        particles.update(&mut gpu, frame_dt);
-
+        // Always render (frozen scene when paused)
         fb.clear(render::sky_color(game.time_of_day));
         render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut render_scratch);
         particle::sys_render_particles(&mut fb, &particles, &game.camera);
         hud::sys_hud(&mut fb, &game);
+
+        // Menu overlay on top
+        menu::sys_menu_render(
+            &mut fb, &game.menu, &game.keybinds,
+            game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
+        );
 
         window.present(&fb.pixels);
     }

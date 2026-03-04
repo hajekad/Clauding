@@ -1,6 +1,8 @@
 // GameState: global mutable game state, entity stores, constants
 
 use crate::rng::Rng;
+use crate::input::KeyBinds;
+use crate::menu::MenuData;
 
 pub const DEFAULT_WIDTH: usize = 1920;
 pub const DEFAULT_HEIGHT: usize = 1080;
@@ -100,6 +102,8 @@ pub struct Player {
 pub struct Camera {
     pub x: f32, pub y: f32, pub z: f32,
     pub tx: f32, pub ty: f32, pub tz: f32,
+    pub yaw: f32,   // orbit yaw around player (radians)
+    pub pitch: f32,  // orbit pitch above player (radians)
 }
 
 // WorldTri: a single triangle in world space with flat color
@@ -121,7 +125,7 @@ pub struct WorldData {
 
 pub struct GameState {
     pub keys: [bool; 256],
-    pub prev_key_e: bool,
+    pub prev_keys: [bool; 256],
     pub should_quit: bool,
     pub width: usize,
     pub height: usize,
@@ -132,13 +136,20 @@ pub struct GameState {
     pub player: Player,
     pub camera: Camera,
     pub world: WorldData,
+    pub mouse_dx: f32,
+    pub mouse_dy: f32,
+    pub keybinds: KeyBinds,
+    pub menu: MenuData,
+    pub mouse_sensitivity: f32,
+    pub invert_mouse_x: bool,
+    pub invert_mouse_y: bool,
 }
 
 impl GameState {
     pub fn new(w: usize, h: usize, seed: u64) -> Self {
         GameState {
             keys: [false; 256],
-            prev_key_e: false,
+            prev_keys: [false; 256],
             should_quit: false,
             time_of_day: 10.0, // start at 10 AM
             world_seed: seed,
@@ -156,6 +167,8 @@ impl GameState {
             camera: Camera {
                 x: 0.0, y: 8.0, z: 18.0,
                 tx: 0.0, ty: 1.0, tz: 10.0,
+                yaw: 0.0,
+                pitch: 0.35, // ~20 degrees above horizontal
             },
             world: WorldData {
                 static_tris: Vec::new(),
@@ -165,6 +178,13 @@ impl GameState {
                 npcs: Vec::new(),
                 items: Vec::new(),
             },
+            mouse_dx: 0.0,
+            mouse_dy: 0.0,
+            keybinds: KeyBinds::default_binds(),
+            menu: MenuData::new(),
+            mouse_sensitivity: 1.0,
+            invert_mouse_x: false,
+            invert_mouse_y: false,
         }
     }
 }

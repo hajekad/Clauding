@@ -1,0 +1,384 @@
+// Menu state machine, rendering, input handling
+
+use crate::raster::Framebuffer;
+use crate::input::{KeyBinds, ALL_ACTIONS, key_name};
+use crate::hud::{draw_text, draw_text_bytes, draw_rect};
+
+// Raw scancodes for menu navigation (never rebindable)
+const KEY_ESC: usize = 1;
+const KEY_UP: usize = 103;
+const KEY_DOWN: usize = 108;
+const KEY_LEFT: usize = 105;
+const KEY_RIGHT: usize = 106;
+const KEY_ENTER: usize = 28;
+
+const SENSITIVITY_MIN: f32 = 0.1;
+const SENSITIVITY_MAX: f32 = 3.0;
+const SENSITIVITY_STEP: f32 = 0.1;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum MenuState {
+    None,
+    Main,
+    Settings,
+    Keybinds,
+}
+
+pub struct MenuData {
+    pub state: MenuState,
+    pub cursor: usize,
+    pub rebinding: Option<usize>, // action index awaiting key press
+}
+
+impl MenuData {
+    pub fn new() -> Self {
+        MenuData { state: MenuState::None, cursor: 0, rebinding: None }
+    }
+}
+
+fn edge(keys: &[bool; 256], prev: &[bool; 256], sc: usize) -> bool {
+    keys[sc] && !prev[sc]
+}
+
+/// Returns true if the game should quit
+pub fn sys_menu_input(
+    menu: &mut MenuData,
+    keybinds: &mut KeyBinds,
+    mouse_sensitivity: &mut f32,
+    invert_x: &mut bool,
+    invert_y: &mut bool,
+    keys: &[bool; 256],
+    prev_keys: &[bool; 256],
+) -> bool {
+    match menu.state {
+        MenuState::None => {
+            if edge(keys, prev_keys, KEY_ESC) {
+                menu.state = MenuState::Main;
+                menu.cursor = 0;
+            }
+        }
+        MenuState::Main => {
+            if edge(keys, prev_keys, KEY_ESC) {
+                menu.state = MenuState::None;
+                return false;
+            }
+            if edge(keys, prev_keys, KEY_UP) && menu.cursor > 0 {
+                menu.cursor -= 1;
+            }
+            if edge(keys, prev_keys, KEY_DOWN) && menu.cursor < 2 {
+                menu.cursor += 1;
+            }
+            if edge(keys, prev_keys, KEY_ENTER) {
+                match menu.cursor {
+                    0 => menu.state = MenuState::None,
+                    1 => { menu.state = MenuState::Settings; menu.cursor = 0; }
+                    2 => return true,
+                    _ => {}
+                }
+            }
+        }
+        MenuState::Settings => {
+            // Settings: Keybinds(0), Sensitivity(1), Invert X(2), Invert Y(3), Back(4)
+            const LAST: usize = 4;
+            if edge(keys, prev_keys, KEY_ESC) {
+                menu.state = MenuState::Main;
+                menu.cursor = 1;
+                return false;
+            }
+            if edge(keys, prev_keys, KEY_UP) && menu.cursor > 0 {
+                menu.cursor -= 1;
+            }
+            if edge(keys, prev_keys, KEY_DOWN) && menu.cursor < LAST {
+                menu.cursor += 1;
+            }
+            // Sensitivity slider
+            if menu.cursor == 1 {
+                if edge(keys, prev_keys, KEY_LEFT) {
+                    *mouse_sensitivity = (*mouse_sensitivity - SENSITIVITY_STEP).max(SENSITIVITY_MIN);
+                }
+                if edge(keys, prev_keys, KEY_RIGHT) {
+                    *mouse_sensitivity = (*mouse_sensitivity + SENSITIVITY_STEP).min(SENSITIVITY_MAX);
+                }
+            }
+            if edge(keys, prev_keys, KEY_ENTER) {
+                match menu.cursor {
+                    0 => { menu.state = MenuState::Keybinds; menu.cursor = 0; }
+                    1 => {} // Sensitivity — Left/Right only
+                    2 => { *invert_x = !*invert_x; }
+                    3 => { *invert_y = !*invert_y; }
+                    LAST => { menu.state = MenuState::Main; menu.cursor = 1; }
+                    _ => {}
+                }
+            }
+        }
+        MenuState::Keybinds => {
+            if let Some(action_idx) = menu.rebinding {
+                if edge(keys, prev_keys, KEY_ESC) {
+                    menu.rebinding = None;
+                    return false;
+                }
+                for sc in 0..256 {
+                    if sc == KEY_ESC { continue; }
+                    if keys[sc] && !prev_keys[sc] {
+                        keybinds.set_key(ALL_ACTIONS[action_idx], sc);
+                        menu.rebinding = None;
+                        break;
+                    }
+                }
+            } else {
+                let max_item = ALL_ACTIONS.len() + 1;
+                if edge(keys, prev_keys, KEY_ESC) {
+                    menu.state = MenuState::Settings;
+                    menu.cursor = 0;
+                    return false;
+                }
+                if edge(keys, prev_keys, KEY_UP) && menu.cursor > 0 {
+                    menu.cursor -= 1;
+                }
+                if edge(keys, prev_keys, KEY_DOWN) && menu.cursor < max_item {
+                    menu.cursor += 1;
+                }
+                if edge(keys, prev_keys, KEY_ENTER) {
+                    if menu.cursor < ALL_ACTIONS.len() {
+                        menu.rebinding = Some(menu.cursor);
+                    } else if menu.cursor == ALL_ACTIONS.len() {
+                        *keybinds = KeyBinds::default_binds();
+                    } else {
+                        menu.state = MenuState::Settings;
+                        menu.cursor = 0;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+pub fn sys_menu_render(
+    fb: &mut Framebuffer, menu: &MenuData, keybinds: &KeyBinds,
+    sensitivity: f32, invert_x: bool, invert_y: bool,
+) {
+    if menu.state == MenuState::None { return; }
+
+    for px in fb.pixels.iter_mut() {
+        *px = dim_pixel(*px);
+    }
+
+    let cx = fb.w / 2;
+    let cy = fb.h / 2;
+    let scale = 3;
+    let line_h = scale * 5 + scale * 3;
+    let text_color = 0xFFCCCCCC;
+    let hi_color = 0xFFFFFFFF;
+    let title_color = 0xFFFFAA33;
+
+    match menu.state {
+        MenuState::Main => {
+            let items = ["RESUME", "SETTINGS", "QUIT"];
+            let box_w = 260;
+            let box_h = line_h * (items.len() + 1) + scale * 4;
+            let bx = cx - box_w / 2;
+            let by = cy - box_h / 2;
+            draw_menu_box(fb, bx, by, box_w, box_h);
+
+            draw_text(fb, cx - text_pw("PAUSED", scale) / 2, by + scale * 3, "PAUSED", scale, title_color);
+
+            for (i, item) in items.iter().enumerate() {
+                let y = by + line_h + scale * 3 + i * line_h;
+                let c = if i == menu.cursor { hi_color } else { text_color };
+                let buf = prefix_str(i == menu.cursor, item);
+                draw_text_bytes(fb, cx - text_pw_buf(&buf, scale) / 2, y, &buf, scale, c);
+            }
+        }
+        MenuState::Settings => {
+            let num_items = 5; // Keybinds, Sensitivity, Invert X, Invert Y, Back
+            let box_w = 460;
+            let box_h = line_h * (num_items + 1) + scale * 4;
+            let bx = cx - box_w / 2;
+            let by = cy - box_h / 2;
+            draw_menu_box(fb, bx, by, box_w, box_h);
+
+            draw_text(fb, cx - text_pw("SETTINGS", scale) / 2, by + scale * 3, "SETTINGS", scale, title_color);
+
+            let mut row = 0;
+
+            // Keybinds
+            {
+                let y = by + line_h + scale * 3 + row * line_h;
+                let c = if menu.cursor == row { hi_color } else { text_color };
+                let buf = prefix_str(menu.cursor == row, "KEYBINDS");
+                draw_text_bytes(fb, cx - text_pw_buf(&buf, scale) / 2, y, &buf, scale, c);
+                row += 1;
+            }
+            // Sensitivity
+            {
+                let y = by + line_h + scale * 3 + row * line_h;
+                let c = if menu.cursor == row { hi_color } else { text_color };
+                let buf = format_sensitivity(menu.cursor == row, sensitivity);
+                draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, c);
+                if menu.cursor == row {
+                    let slider_x = bx + scale * 4 + 24 * (3 * scale + scale);
+                    let slider_w = 120;
+                    let slider_y = y + scale;
+                    draw_rect(fb, slider_x, slider_y, slider_w, scale * 3, 0xFF444444);
+                    let fill = ((sensitivity - SENSITIVITY_MIN) / (SENSITIVITY_MAX - SENSITIVITY_MIN)).clamp(0.0, 1.0);
+                    let fw = (fill * slider_w as f32) as usize;
+                    if fw > 0 {
+                        draw_rect(fb, slider_x, slider_y, fw, scale * 3, 0xFFFFAA33);
+                    }
+                }
+                row += 1;
+            }
+            // Invert X
+            {
+                let y = by + line_h + scale * 3 + row * line_h;
+                let c = if menu.cursor == row { hi_color } else { text_color };
+                let buf = format_toggle(menu.cursor == row, "INVERT X", invert_x);
+                draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, c);
+                row += 1;
+            }
+            // Invert Y
+            {
+                let y = by + line_h + scale * 3 + row * line_h;
+                let c = if menu.cursor == row { hi_color } else { text_color };
+                let buf = format_toggle(menu.cursor == row, "INVERT Y", invert_y);
+                draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, c);
+                row += 1;
+            }
+            // Back
+            {
+                let y = by + line_h + scale * 3 + row * line_h;
+                let c = if menu.cursor == row { hi_color } else { text_color };
+                let buf = prefix_str(menu.cursor == row, "BACK");
+                draw_text_bytes(fb, cx - text_pw_buf(&buf, scale) / 2, y, &buf, scale, c);
+            }
+        }
+        MenuState::Keybinds => {
+            let num_actions = ALL_ACTIONS.len();
+            let total = num_actions + 2;
+            let box_w = 500;
+            let box_h = line_h * (total + 1) + scale * 4;
+            let bx = cx - box_w / 2;
+            let by = cy - box_h / 2;
+            draw_menu_box(fb, bx, by, box_w, box_h);
+
+            draw_text(fb, cx - text_pw("KEYBINDS", scale) / 2, by + scale * 3, "KEYBINDS", scale, title_color);
+
+            for i in 0..num_actions {
+                let y = by + line_h + scale * 3 + i * line_h;
+                let action = ALL_ACTIONS[i];
+                let c = if i == menu.cursor { hi_color } else { text_color };
+                let sel = i == menu.cursor;
+
+                if menu.rebinding == Some(i) {
+                    let buf = concat3(if sel { "> " } else { "  " }, action.name(), "  PRESS KEY...");
+                    draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, 0xFFFF6633);
+                } else {
+                    let kn = key_name(keybinds.key_for(action));
+                    let buf = format_keybind_line(if sel { "> " } else { "  " }, action.name(), kn);
+                    draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, c);
+                }
+            }
+
+            // Reset Defaults
+            {
+                let i = num_actions;
+                let y = by + line_h + scale * 3 + i * line_h;
+                let c = if menu.cursor == i { hi_color } else { text_color };
+                let buf = prefix_str(menu.cursor == i, "RESET DEFAULTS");
+                draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, c);
+            }
+            // Back
+            {
+                let i = num_actions + 1;
+                let y = by + line_h + scale * 3 + i * line_h;
+                let c = if menu.cursor == i { hi_color } else { text_color };
+                let buf = prefix_str(menu.cursor == i, "BACK");
+                draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, c);
+            }
+        }
+        MenuState::None => {}
+    }
+}
+
+fn draw_menu_box(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize) {
+    draw_rect(fb, x.wrapping_sub(2), y.wrapping_sub(2), w + 4, h + 4, 0xFF888888);
+    draw_rect(fb, x, y, w, h, 0xEE111111);
+}
+
+fn dim_pixel(c: u32) -> u32 {
+    let r = ((c >> 16) & 0xFF) / 3;
+    let g = ((c >> 8) & 0xFF) / 3;
+    let b = (c & 0xFF) / 3;
+    0xFF000000 | (r << 16) | (g << 8) | b
+}
+
+fn text_pw(s: &str, scale: usize) -> usize {
+    let n = s.len();
+    if n == 0 { return 0; }
+    n * (3 * scale + scale) - scale
+}
+
+fn text_pw_buf(buf: &[u8; 64], scale: usize) -> usize {
+    let mut len = 64;
+    while len > 0 && buf[len - 1] == b' ' { len -= 1; }
+    if len == 0 { return 0; }
+    len * (3 * scale + scale) - scale
+}
+
+fn prefix_str(selected: bool, s: &str) -> [u8; 64] {
+    let prefix = if selected { "> " } else { "  " };
+    let mut buf = [b' '; 64];
+    let mut i = 0;
+    for &c in prefix.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    for &c in s.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    buf
+}
+
+fn concat3(a: &str, b: &str, c: &str) -> [u8; 64] {
+    let mut buf = [b' '; 64];
+    let mut i = 0;
+    for &ch in a.as_bytes() { if i < 64 { buf[i] = ch; i += 1; } }
+    for &ch in b.as_bytes() { if i < 64 { buf[i] = ch; i += 1; } }
+    for &ch in c.as_bytes() { if i < 64 { buf[i] = ch; i += 1; } }
+    buf
+}
+
+fn format_keybind_line(prefix: &str, action_name: &str, key: &str) -> [u8; 64] {
+    let mut buf = [b' '; 64];
+    let mut i = 0;
+    for &c in prefix.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    for &c in action_name.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    while i < 20 { if i < 64 { buf[i] = b' '; } i += 1; }
+    if i < 64 { buf[i] = b'['; i += 1; }
+    for &c in key.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    if i < 64 { buf[i] = b']'; }
+    buf
+}
+
+fn format_sensitivity(selected: bool, val: f32) -> [u8; 64] {
+    let prefix = if selected { "> " } else { "  " };
+    let mut buf = [b' '; 64];
+    let mut i = 0;
+    for &c in prefix.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    for &c in b"SENSITIVITY" { if i < 64 { buf[i] = c; i += 1; } }
+    while i < 18 { if i < 64 { buf[i] = b' '; } i += 1; }
+    let whole = val as u32;
+    let frac = ((val - whole as f32) * 10.0 + 0.5) as u32;
+    if i < 64 { buf[i] = b'0' + whole as u8; i += 1; }
+    if i < 64 { buf[i] = b'.'; i += 1; }
+    if i < 64 { buf[i] = b'0' + frac as u8; }
+    buf
+}
+
+fn format_toggle(selected: bool, label: &str, value: bool) -> [u8; 64] {
+    let prefix = if selected { "> " } else { "  " };
+    let mut buf = [b' '; 64];
+    let mut i = 0;
+    for &c in prefix.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    for &c in label.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    while i < 18 { if i < 64 { buf[i] = b' '; } i += 1; }
+    let val_str = if value { b"ON" as &[u8] } else { b"OFF" };
+    for &c in val_str { if i < 64 { buf[i] = c; i += 1; } }
+    buf
+}

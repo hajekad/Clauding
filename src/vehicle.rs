@@ -1,23 +1,15 @@
 // sys_vehicle: AI road-following for parked/roaming cars, player driving controls
-// Player enters/exits with E key, drives with WASD
+// Player enters/exits with Interact key, drives with movement keys
 
 use crate::state::*;
 use crate::world::check_building_collision;
-
-const KEY_W: usize = 17;
-const KEY_A: usize = 30;
-const KEY_S: usize = 31;
-const KEY_D: usize = 32;
-const KEY_E: usize = 18;
-const KEY_UP: usize = 103;
-const KEY_DOWN: usize = 108;
-const KEY_LEFT: usize = 105;
-const KEY_RIGHT: usize = 106;
+use crate::input::Action;
 
 pub fn sys_vehicle(state: &mut GameState, dt: f32) {
-    // Handle enter/exit toggle (E key, with edge detection)
-    let e_pressed = state.keys[KEY_E];
-    if e_pressed && !state.prev_key_e {
+    // Handle enter/exit toggle (Interact key, with edge detection)
+    let interact_now = state.keybinds.is_pressed(Action::Interact, &state.keys);
+    let interact_prev = state.keybinds.is_pressed(Action::Interact, &state.prev_keys);
+    if interact_now && !interact_prev {
         if let Some(vi) = state.player.in_vehicle {
             // Exit vehicle
             let v = &state.world.vehicles[vi];
@@ -49,7 +41,6 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
             }
         }
     }
-    state.prev_key_e = e_pressed;
 
     // Update driven vehicle
     if let Some(vi) = state.player.in_vehicle {
@@ -66,10 +57,10 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
 }
 
 fn drive_vehicle(state: &mut GameState, vi: usize, dt: f32) {
-    let fwd = state.keys[KEY_W] || state.keys[KEY_UP];
-    let back = state.keys[KEY_S] || state.keys[KEY_DOWN];
-    let left = state.keys[KEY_A] || state.keys[KEY_LEFT];
-    let right = state.keys[KEY_D] || state.keys[KEY_RIGHT];
+    let fwd = state.keybinds.is_pressed(Action::MoveForward, &state.keys);
+    let back = state.keybinds.is_pressed(Action::MoveBack, &state.keys);
+    let left = state.keybinds.is_pressed(Action::MoveLeft, &state.keys);
+    let right = state.keybinds.is_pressed(Action::MoveRight, &state.keys);
 
     let v = &mut state.world.vehicles[vi];
 

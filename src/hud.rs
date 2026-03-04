@@ -30,8 +30,8 @@ const MONEY_COLOR: u32 = 0xFFFFDD33;
 const SCORE_COLOR: u32 = 0xFFFFFFFF;
 const PROMPT_COLOR: u32 = 0xCCFFFFFF;
 
-// 3x5 pixel font for digits 0-9 and $
-const DIGIT_FONT: [[u8; 5]; 12] = [
+// 3x5 pixel font for digits 0-9, symbols, and A-Z
+const FONT: [[u8; 5]; 42] = [
     [0b111, 0b101, 0b101, 0b101, 0b111], // 0
     [0b010, 0b110, 0b010, 0b010, 0b111], // 1
     [0b111, 0b001, 0b111, 0b100, 0b111], // 2
@@ -44,6 +44,38 @@ const DIGIT_FONT: [[u8; 5]; 12] = [
     [0b111, 0b101, 0b111, 0b001, 0b111], // 9
     [0b010, 0b111, 0b110, 0b111, 0b010], // $ (index 10)
     [0b000, 0b000, 0b000, 0b000, 0b010], // . (index 11)
+    // A-Z (indices 12-37)
+    [0b010, 0b101, 0b111, 0b101, 0b101], // A 12
+    [0b110, 0b101, 0b110, 0b101, 0b110], // B 13
+    [0b111, 0b100, 0b100, 0b100, 0b111], // C 14
+    [0b110, 0b101, 0b101, 0b101, 0b110], // D 15
+    [0b111, 0b100, 0b111, 0b100, 0b111], // E 16
+    [0b111, 0b100, 0b111, 0b100, 0b100], // F 17
+    [0b111, 0b100, 0b101, 0b101, 0b111], // G 18
+    [0b101, 0b101, 0b111, 0b101, 0b101], // H 19
+    [0b111, 0b010, 0b010, 0b010, 0b111], // I 20
+    [0b001, 0b001, 0b001, 0b101, 0b111], // J 21
+    [0b101, 0b110, 0b100, 0b110, 0b101], // K 22
+    [0b100, 0b100, 0b100, 0b100, 0b111], // L 23
+    [0b101, 0b111, 0b111, 0b101, 0b101], // M 24
+    [0b101, 0b111, 0b111, 0b111, 0b101], // N 25
+    [0b111, 0b101, 0b101, 0b101, 0b111], // O 26
+    [0b111, 0b101, 0b111, 0b100, 0b100], // P 27
+    [0b111, 0b101, 0b101, 0b111, 0b011], // Q 28
+    [0b111, 0b101, 0b110, 0b101, 0b101], // R 29
+    [0b111, 0b100, 0b111, 0b001, 0b111], // S 30
+    [0b111, 0b010, 0b010, 0b010, 0b010], // T 31
+    [0b101, 0b101, 0b101, 0b101, 0b111], // U 32
+    [0b101, 0b101, 0b101, 0b101, 0b010], // V 33
+    [0b101, 0b101, 0b111, 0b111, 0b101], // W 34
+    [0b101, 0b101, 0b010, 0b101, 0b101], // X 35
+    [0b101, 0b101, 0b010, 0b010, 0b010], // Y 36
+    [0b111, 0b001, 0b010, 0b100, 0b111], // Z 37
+    // Symbols
+    [0b000, 0b000, 0b000, 0b000, 0b000], // space 38
+    [0b000, 0b000, 0b111, 0b000, 0b000], // - (dash) 39
+    [0b000, 0b010, 0b000, 0b010, 0b000], // : (colon) 40
+    [0b010, 0b001, 0b010, 0b100, 0b010], // > (arrow) 41
 ];
 
 const TIME_COLOR: u32 = 0xFFFFFFFF;
@@ -58,7 +90,7 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
 
     // Money ($ + number)
     let money_y = STAMINA_Y + BAR_H + BAR_GAP + 2;
-    draw_char(fb, BAR_X, money_y, 10, 2, MONEY_COLOR); // $
+    draw_char_idx(fb, BAR_X, money_y, 10, 2, MONEY_COLOR); // $
     draw_number(fb, BAR_X + 10, money_y, p.money as u32, 2, MONEY_COLOR);
 
     // Score
@@ -113,7 +145,7 @@ fn draw_bar(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize, fill: 
     }
 }
 
-fn draw_rect(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize, color: u32) {
+pub fn draw_rect(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize, color: u32) {
     let alpha = (color >> 24) & 0xFF;
     for dy in 0..h {
         let py = y + dy;
@@ -141,9 +173,55 @@ fn alpha_blend(dst: u32, src: u32, alpha: u32) -> u32 {
     0xFF000000 | (r << 16) | (g << 8) | b
 }
 
-fn draw_char(fb: &mut Framebuffer, x: usize, y: usize, idx: usize, scale: usize, color: u32) {
-    if idx >= DIGIT_FONT.len() { return; }
-    draw_glyph(fb, x, y, &DIGIT_FONT[idx], scale, color);
+fn draw_char_idx(fb: &mut Framebuffer, x: usize, y: usize, idx: usize, scale: usize, color: u32) {
+    if idx >= FONT.len() { return; }
+    draw_glyph(fb, x, y, &FONT[idx], scale, color);
+}
+
+fn ascii_to_font_idx(c: u8) -> Option<usize> {
+    match c {
+        b'0'..=b'9' => Some((c - b'0') as usize),
+        b'$' => Some(10),
+        b'.' => Some(11),
+        b'A'..=b'Z' => Some(12 + (c - b'A') as usize),
+        b'a'..=b'z' => Some(12 + (c - b'a') as usize),
+        b' ' => Some(38),
+        b'-' => Some(39),
+        b':' => Some(40),
+        b'>' => Some(41),
+        b'[' => Some(14), // reuse C glyph shape for [
+        b']' => Some(15), // reuse D glyph shape for ]
+        b'?' => Some(28),  // reuse Q shape
+        _ => Some(38), // space for unknown
+    }
+}
+
+/// Draw a string using the pixel font. Handles ASCII A-Z, 0-9, and common symbols.
+pub fn draw_text(fb: &mut Framebuffer, x: usize, y: usize, text: &str, scale: usize, color: u32) {
+    let char_w = 3 * scale + scale;
+    let mut cx = x;
+    for &byte in text.as_bytes() {
+        // Trim trailing spaces from fixed buffers
+        if let Some(idx) = ascii_to_font_idx(byte) {
+            draw_char_idx(fb, cx, y, idx, scale, color);
+        }
+        cx += char_w;
+    }
+}
+
+/// Draw a string from a fixed byte buffer, stopping at trailing spaces
+pub fn draw_text_bytes(fb: &mut Framebuffer, x: usize, y: usize, text: &[u8; 64], scale: usize, color: u32) {
+    // Find actual length (trim trailing spaces)
+    let mut len = 64;
+    while len > 0 && text[len - 1] == b' ' { len -= 1; }
+    let char_w = 3 * scale + scale;
+    let mut cx = x;
+    for i in 0..len {
+        if let Some(idx) = ascii_to_font_idx(text[i]) {
+            draw_char_idx(fb, cx, y, idx, scale, color);
+        }
+        cx += char_w;
+    }
 }
 
 fn draw_glyph(fb: &mut Framebuffer, x: usize, y: usize, glyph: &[u8; 5], scale: usize, color: u32) {
@@ -166,7 +244,7 @@ fn draw_glyph(fb: &mut Framebuffer, x: usize, y: usize, glyph: &[u8; 5], scale: 
 
 fn draw_number(fb: &mut Framebuffer, x: usize, y: usize, mut val: u32, scale: usize, color: u32) {
     if val == 0 {
-        draw_char(fb, x, y, 0, scale, color);
+        draw_char_idx(fb, x, y, 0, scale, color);
         return;
     }
     // Extract digits
@@ -181,7 +259,7 @@ fn draw_number(fb: &mut Framebuffer, x: usize, y: usize, mut val: u32, scale: us
     let char_w = 3 * scale + scale; // 3 pixel wide + 1 gap
     for i in 0..n {
         let d = digits[n - 1 - i] as usize;
-        draw_char(fb, x + i * char_w, y, d, scale, color);
+        draw_char_idx(fb, x + i * char_w, y, d, scale, color);
     }
 }
 
@@ -199,7 +277,7 @@ fn draw_number_padded(fb: &mut Framebuffer, x: usize, y: usize, val: u32, min_di
     while n < min_digits { digits[n] = 0; n += 1; }
     for i in 0..n {
         let d = digits[n - 1 - i] as usize;
-        draw_char(fb, x + i * char_w, y, d, scale, color);
+        draw_char_idx(fb, x + i * char_w, y, d, scale, color);
     }
 }
 
