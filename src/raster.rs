@@ -47,14 +47,19 @@ pub struct ScreenTri {
 
 /// Rasterize a triangle using incremental edge functions.
 /// Inner loop does 3 additions per pixel step instead of 6 multiplies.
+/// Uses a small fill bias to close sub-pixel gaps between adjacent triangles.
 pub fn draw_triangle(fb: &mut Framebuffer, tri: &ScreenTri) {
     let [v0, mut v1, mut v2] = tri.v;
 
-    // Bounding box clamped to screen
-    let min_x = v0[0].min(v1[0]).min(v2[0]).max(0.0) as usize;
-    let max_x = (v0[0].max(v1[0]).max(v2[0]).min((fb.w - 1) as f32)) as usize;
-    let min_y = v0[1].min(v1[1]).min(v2[1]).max(0.0) as usize;
-    let max_y = (v0[1].max(v1[1]).max(v2[1]).min((fb.h - 1) as f32)) as usize;
+    // Sub-pixel bias: allows tiny overdraw at shared edges so no gap pixels appear.
+    // Z-buffer resolves which triangle wins, so overdraw is visually invisible.
+    const FILL_BIAS: f32 = 0.125;
+
+    // Bounding box clamped to screen (expand by 1px to account for bias)
+    let min_x = (v0[0].min(v1[0]).min(v2[0]) - 1.0).max(0.0) as usize;
+    let max_x = ((v0[0].max(v1[0]).max(v2[0]) + 1.0).min((fb.w - 1) as f32)) as usize;
+    let min_y = (v0[1].min(v1[1]).min(v2[1]) - 1.0).max(0.0) as usize;
+    let max_y = ((v0[1].max(v1[1]).max(v2[1]) + 1.0).min((fb.h - 1) as f32)) as usize;
     if min_x > max_x || min_y > max_y { return; }
 
     // Signed 2x area
@@ -89,6 +94,7 @@ pub fn draw_triangle(fb: &mut Framebuffer, tri: &ScreenTri) {
     let z_step_y = (dy0 * dz0 + dy1 * dz1) * inv_area;
     let mut row_z = (row_e0 * dz0 + row_e1 * dz1) * inv_area + v2[2];
 
+    let biased_area = area + FILL_BIAS;
     let w = fb.w;
     let color = tri.color;
     let pixels = fb.pixels.as_mut_ptr();
@@ -101,7 +107,7 @@ pub fn draw_triangle(fb: &mut Framebuffer, tri: &ScreenTri) {
         let row_off = y * w;
 
         for x in min_x..=max_x {
-            if e0 >= 0.0 && e1 >= 0.0 && e0 + e1 <= area {
+            if e0 >= -FILL_BIAS && e1 >= -FILL_BIAS && e0 + e1 <= biased_area {
                 // Safety: x in [0, fb.w-1], y in [0, fb.h-1], so idx in [0, fb.w*fb.h-1]
                 let idx = row_off + x;
                 unsafe {

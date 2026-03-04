@@ -129,7 +129,7 @@ fn render_tris(fb: &mut Framebuffer, vp: &Mat4, tris: &[WorldTri], cam_pos: Vec3
         if dist < 0.001 { continue; }
         let inv_dist = 1.0 / dist;
         let vd = [dx * inv_dist, dy * inv_dist, dz * inv_dist];
-        if v3_dot(tri.normal, vd) < -0.1 { continue; }
+        if v3_dot(tri.normal, vd) < -0.5 { continue; }
 
         // Compute final color before clipping (flat shading)
         let sun_lit = v3_dot(tri.normal, tc.light_dir).max(0.0) * tc.sun_strength;
