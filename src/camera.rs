@@ -13,7 +13,7 @@ const PITCH_MAX: f32 = 1.2;   // ~69 degrees (steep overhead)
 const MOUSE_SPEED: f32 = 0.003;
 
 pub fn sys_camera(
-    cam: &mut Camera, player: &Player,
+    cam: &mut Camera, player: &Player, terrain: &Terrain,
     mouse_dx: f32, mouse_dy: f32,
     sensitivity: f32, invert_x: bool, invert_y: bool,
     _dt: f32,
@@ -47,6 +47,12 @@ pub fn sys_camera(
     cam.x += (target_x - cam.x) * lerp;
     cam.y += (target_y - cam.y) * lerp;
     cam.z += (target_z - cam.z) * lerp;
+
+    // Don't let camera go below terrain
+    let terrain_y = terrain.height_at(cam.x, cam.z) + 1.0;
+    if cam.y < terrain_y {
+        cam.y = terrain_y;
+    }
 
     // Look at player chest
     cam.tx = player.x;

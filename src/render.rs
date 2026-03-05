@@ -110,8 +110,8 @@ pub fn sys_render(
         gen_vehicle_mesh(v, scratch, show_interior);
     }
     for npc in &world.npcs {
-        if npc.state == NpcState::Sleeping { continue; } // hidden inside building
-        if npc.in_vehicle { continue; } // synced to car, don't render separately
+        if npc.state == NpcState::Sleeping { continue; }
+        if npc.in_vehicle { continue; }
         gen_npc_mesh(npc, scratch);
     }
     for item in &world.items {
@@ -272,14 +272,14 @@ fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
     let (sin_r, cos_r) = player.rot_y.sin_cos();
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
-            let rx = v[0] * cos_r - v[2] * sin_r;
-            let rz = v[0] * sin_r + v[2] * cos_r;
+            let rx = v[0] * cos_r + v[2] * sin_r;
+            let rz = -v[0] * sin_r + v[2] * cos_r;
             v[0] = rx + player.x;
             v[1] += player.y;
             v[2] = rz + player.z;
         }
-        let nx = tri.normal[0] * cos_r - tri.normal[2] * sin_r;
-        let nz = tri.normal[0] * sin_r + tri.normal[2] * cos_r;
+        let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
+        let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
         tri.normal[0] = nx;
         tri.normal[2] = nz;
     }
@@ -318,27 +318,54 @@ fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bool) 
     let (sin_r, cos_r) = v.rot_y.sin_cos();
     for tri in &mut tris[base..] {
         for vert in &mut tri.v {
-            let rx = vert[0] * cos_r - vert[2] * sin_r;
-            let rz = vert[0] * sin_r + vert[2] * cos_r;
+            let rx = vert[0] * cos_r + vert[2] * sin_r;
+            let rz = -vert[0] * sin_r + vert[2] * cos_r;
             vert[0] = rx + v.x;
             vert[1] += v.y;
             vert[2] = rz + v.z;
         }
-        let nx = tri.normal[0] * cos_r - tri.normal[2] * sin_r;
-        let nz = tri.normal[0] * sin_r + tri.normal[2] * cos_r;
+        let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
+        let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
         tri.normal[0] = nx;
         tri.normal[2] = nz;
+    }
+}
+
+fn job_shirt_color(npc: &Npc) -> u32 {
+    match npc.job {
+        NpcJob::PolicePatrol => 0xFF2233AA,
+        NpcJob::Firefighter => 0xFFCC3322,
+        NpcJob::Paramedic => 0xFFDDDDDD,
+        NpcJob::ConstructionWorker => 0xFFDDAA22,
+        NpcJob::StreetVendor => 0xFF885533,
+        _ => npc.shirt_color,
     }
 }
 
 fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
     let swing = npc.walk_phase.sin() * 0.4;
+    let shirt = job_shirt_color(npc);
 
     // Body
-    push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, npc.shirt_color);
+    push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, shirt);
     // Head
     push_box(tris, 0.0, 1.75, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR);
+
+    // Job accessories (hats/helmets)
+    match npc.job {
+        NpcJob::PolicePatrol => push_box(tris, 0.0, 1.98, 0.0, 0.38, 0.1, 0.38, 0xFF2222CC),
+        NpcJob::Firefighter => push_box(tris, 0.0, 2.0, 0.0, 0.4, 0.15, 0.4, 0xFFCC2222),
+        NpcJob::Paramedic => push_box(tris, 0.0, 1.98, 0.0, 0.36, 0.08, 0.36, 0xFFFFFFFF),
+        NpcJob::ConstructionWorker => push_box(tris, 0.0, 2.0, 0.0, 0.38, 0.12, 0.38, 0xFFDDAA22),
+        NpcJob::MailCarrier => push_box(tris, 0.0, 1.98, 0.0, 0.36, 0.08, 0.36, 0xFF3344CC),
+        _ => {}
+    }
+
+    // Speech bubble when interacting with another NPC
+    if npc.interacting_with.is_some() {
+        push_box(tris, 0.0, 2.2, -0.2, 0.3, 0.15, 0.05, 0xFFFFFFFF);
+    }
     // Legs
     push_box(tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, npc.pants_color);
     push_box(tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, npc.pants_color);
@@ -364,14 +391,14 @@ fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
     let (sin_r, cos_r) = npc.rot_y.sin_cos();
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
-            let rx = v[0] * cos_r - v[2] * sin_r;
-            let rz = v[0] * sin_r + v[2] * cos_r;
+            let rx = v[0] * cos_r + v[2] * sin_r;
+            let rz = -v[0] * sin_r + v[2] * cos_r;
             v[0] = rx + npc.x;
             v[1] += npc.y;
             v[2] = rz + npc.z;
         }
-        let nx = tri.normal[0] * cos_r - tri.normal[2] * sin_r;
-        let nz = tri.normal[0] * sin_r + tri.normal[2] * cos_r;
+        let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
+        let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
         tri.normal[0] = nx;
         tri.normal[2] = nz;
     }

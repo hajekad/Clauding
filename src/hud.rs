@@ -36,6 +36,8 @@ const MINIMAP_BIN: u32 = 0xFF33AA33;
 const MONEY_COLOR: u32 = 0xFFFFDD33;
 const CARRYING_COLOR: u32 = 0xFFFFAA44;
 const PROMPT_COLOR: u32 = 0xCCFFFFFF;
+const JOB_COLOR: u32 = 0xFF44DDFF;
+const MINIMAP_INTERACTIBLE: u32 = 0xFF44CCCC;
 
 // 3x5 pixel font for digits 0-9, symbols, and A-Z
 const FONT: [[u8; 5]; 42] = [
@@ -101,12 +103,65 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
     draw_number(fb, BAR_X + 10, money_y, p.money as u32, 2, MONEY_COLOR);
 
     // Carrying status
+    let mut status_y = money_y + 18;
     if p.carrying_item {
-        let carry_y = money_y + 18;
-        draw_text(fb, BAR_X, carry_y, "CARRYING", 1, CARRYING_COLOR);
+        draw_text(fb, BAR_X, status_y, "CARRYING", 1, CARRYING_COLOR);
+        status_y += 12;
     } else if p.carrying_bin.is_some() {
-        let carry_y = money_y + 18;
-        draw_text(fb, BAR_X, carry_y, "CARRYING BIN", 1, CARRYING_COLOR);
+        draw_text(fb, BAR_X, status_y, "CARRYING BIN", 1, CARRYING_COLOR);
+        status_y += 12;
+    }
+
+    // Active job display
+    if p.active_job.job_type != PlayerJobType::None {
+        let job_name = match p.active_job.job_type {
+            PlayerJobType::None => "",
+            PlayerJobType::GarbageCollector => "GARBAGE COLLECTOR",
+            PlayerJobType::TaxiDriver => "TAXI DRIVER",
+            PlayerJobType::DeliveryCourier => "DELIVERY COURIER",
+            PlayerJobType::MailCarrier => "MAIL CARRIER",
+            PlayerJobType::Paramedic => "PARAMEDIC",
+            PlayerJobType::Firefighter => "FIREFIGHTER",
+            PlayerJobType::PolicePatrol => "POLICE PATROL",
+            PlayerJobType::StreetVendor => "STREET VENDOR",
+            PlayerJobType::Mechanic => "MECHANIC",
+            PlayerJobType::ConstructionWorker => "CONSTRUCTION",
+            PlayerJobType::Fisherman => "FISHERMAN",
+            PlayerJobType::Farmer => "FARMER",
+            PlayerJobType::Lumberjack => "LUMBERJACK",
+            PlayerJobType::Scavenger => "SCAVENGER",
+        };
+        draw_text(fb, BAR_X, status_y, "JOB:", 1, JOB_COLOR);
+        draw_text(fb, BAR_X + 20, status_y, job_name, 1, JOB_COLOR);
+        status_y += 12;
+        // Progress
+        let progress_w = 100;
+        let done = p.active_job.items_done;
+        let needed = p.active_job.items_needed.max(1);
+        let fill = (done as f32 / needed as f32).min(1.0);
+        draw_bar(fb, BAR_X, status_y, progress_w, 8, fill, JOB_COLOR);
+        // Items counter
+        draw_number(fb, BAR_X + progress_w + 6, status_y, done, 1, JOB_COLOR);
+        draw_text(fb, BAR_X + progress_w + 6 + 16, status_y, "-", 1, JOB_COLOR);
+        draw_number(fb, BAR_X + progress_w + 6 + 24, status_y, needed, 1, JOB_COLOR);
+        status_y += 14;
+        // Time remaining
+        if p.active_job.time_remaining > 0.0 {
+            let mins = (p.active_job.time_remaining / 60.0) as u32;
+            let secs = (p.active_job.time_remaining % 60.0) as u32;
+            draw_number(fb, BAR_X, status_y, mins, 1, JOB_COLOR);
+            draw_text(fb, BAR_X + 8, status_y, ":", 1, JOB_COLOR);
+            draw_number_padded(fb, BAR_X + 14, status_y, secs, 2, 1, JOB_COLOR);
+        }
+        let _ = status_y;
+    }
+
+    // Bank balance (if nonzero)
+    if p.bank_balance > 0.0 {
+        let bank_y = money_y + 12;
+        draw_text(fb, BAR_X + 80, bank_y - 12, "BANK", 1, 0xFF88BBFF);
+        draw_char_idx(fb, BAR_X + 112, bank_y - 12, 10, 1, 0xFF88BBFF);
+        draw_number(fb, BAR_X + 118, bank_y - 12, p.bank_balance as u32, 1, 0xFF88BBFF);
     }
 
     // Time of day (top-right, HH:MM format)
@@ -171,6 +226,15 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
                 let dz = p.z - v.z;
                 dx * dx + dz * dz < VEHICLE_ENTER_DIST * VEHICLE_ENTER_DIST
             });
+            // Check interactibles
+            let interact_dist_sq = INTERACT_DIST * INTERACT_DIST;
+            let near_interactible = game.world.interactibles.iter().find(|i| {
+                if i.cooldown > 0.0 { return false; }
+                let dx = p.x - i.x;
+                let dz = p.z - i.z;
+                dx * dx + dz * dz < interact_dist_sq
+            });
+
             if near_item {
                 draw_rect(fb, cx - 50, cy - 4, 100, 14, 0x88000000);
                 draw_text(fb, cx - 46, cy, "E PICK UP", 1, PROMPT_COLOR);
@@ -180,8 +244,50 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
             } else if near_vehicle {
                 draw_rect(fb, cx - 50, cy - 4, 100, 14, 0x88000000);
                 draw_text(fb, cx - 46, cy, "E ENTER", 1, PROMPT_COLOR);
+            } else if let Some(inter) = near_interactible {
+                let text = match inter.kind {
+                    InteractibleKind::VendingMachine => "E BUY DRINK $2",
+                    InteractibleKind::ParkBench => "E SIT",
+                    InteractibleKind::Dumpster => "E SEARCH",
+                    InteractibleKind::Atm => "E USE ATM",
+                    InteractibleKind::PhoneBooth => "E GET JOB",
+                    InteractibleKind::FireHydrant => "E ACTIVATE",
+                    InteractibleKind::NewspaperStand => "E BUY PAPER $1",
+                    InteractibleKind::Mailbox => "E DELIVER",
+                    InteractibleKind::Payphone => "E CALL",
+                };
+                let tw = text.len() * 4 + 8;
+                draw_rect(fb, cx - tw / 2, cy - 4, tw, 14, 0x88000000);
+                draw_text(fb, cx - tw / 2 + 4, cy, text, 1, PROMPT_COLOR);
             }
         }
+    }
+
+    // Job selection menu overlay
+    if game.player.job_menu_open {
+        let menu_x = fb.w / 2 - 120;
+        let menu_y = fb.h / 2 - 100;
+        draw_rect(fb, menu_x, menu_y, 240, 220, 0xCC111122);
+        draw_rect(fb, menu_x, menu_y, 240, 2, 0xFF44DDFF);
+        draw_text(fb, menu_x + 8, menu_y + 8, "SELECT JOB", 2, JOB_COLOR);
+
+        let jobs = [
+            "GARBAGE COLLECTOR", "TAXI DRIVER", "DELIVERY COURIER",
+            "MAIL CARRIER", "PARAMEDIC", "FIREFIGHTER", "POLICE PATROL",
+            "STREET VENDOR", "MECHANIC", "CONSTRUCTION", "FISHERMAN",
+            "FARMER", "LUMBERJACK", "SCAVENGER",
+        ];
+        let cursor = game.player.job_menu_cursor;
+        for (i, name) in jobs.iter().enumerate() {
+            let iy = menu_y + 30 + i * 13;
+            if iy + 10 > menu_y + 220 { break; }
+            let color = if i == cursor { 0xFFFFAA33 } else { 0xFFCCCCCC };
+            if i == cursor {
+                draw_rect(fb, menu_x + 2, iy - 1, 236, 12, 0xFF333355);
+            }
+            draw_text(fb, menu_x + 8, iy, name, 1, color);
+        }
+        draw_text(fb, menu_x + 8, menu_y + 205, "UP-DOWN  ENTER  ESC", 1, 0xFF888888);
     }
 }
 
@@ -426,7 +532,16 @@ fn draw_minimap(fb: &mut Framebuffer, game: &GameState) {
         }
     }
 
-    // NPCs (color-coded by state)
+    // Interactibles
+    for inter in &game.world.interactibles {
+        let ix = world_to_minimap(inter.x, size);
+        let iz = world_to_minimap(inter.z, size);
+        if ix < size && iz < size {
+            draw_dot(fb, mx + ix, my + iz, 1, MINIMAP_INTERACTIBLE);
+        }
+    }
+
+    // NPCs (color-coded by job for working NPCs)
     for npc in &game.world.npcs {
         let nx = world_to_minimap(npc.x, size);
         let nz = world_to_minimap(npc.z, size);
@@ -435,7 +550,16 @@ fn draw_minimap(fb: &mut Framebuffer, game: &GameState) {
                 NpcState::Sleeping => MINIMAP_NPC_SLEEPING,
                 NpcState::HomeTask => MINIMAP_NPC_HOME,
                 NpcState::Driving => MINIMAP_NPC_DRIVING,
-                NpcState::Working | NpcState::GoingToWork => MINIMAP_NPC_WORKING,
+                NpcState::Working | NpcState::GoingToWork | NpcState::Interacting => {
+                    match npc.job {
+                        NpcJob::PolicePatrol => 0xFF4444FF,
+                        NpcJob::Paramedic => 0xFFFF4444,
+                        NpcJob::TaxiDriver => 0xFFFFFF44,
+                        NpcJob::Firefighter => 0xFFFF6622,
+                        NpcJob::StreetVendor => 0xFFFFAA44,
+                        _ => MINIMAP_NPC_WORKING,
+                    }
+                }
                 NpcState::GoingHome => MINIMAP_NPC_HOME,
             };
             draw_dot(fb, mx + nx, my + nz, 1, color);

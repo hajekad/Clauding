@@ -23,6 +23,29 @@ const LAMP_GLOW_COLOR: u32 = 0xFFFFEE88;
 
 const ROAD_SEG_STEP: f32 = 2.0; // subdivision step for terrain-following road strips
 
+// Dockyard colors
+const DOCK_GROUND: u32 = 0xFF555544;
+const WATER_COLOR: u32 = 0xFF224466;
+const WAREHOUSE_COLORS: [u32; 4] = [0xFF666655, 0xFF555566, 0xFF665544, 0xFF556655];
+const CRANE_COLOR: u32 = 0xFFCC8833;
+const CONTAINER_COLORS: [u32; 5] = [0xFFCC3333, 0xFF3333CC, 0xFF33CC33, 0xFFCCCC33, 0xFFCC8833];
+const PIER_COLOR: u32 = 0xFF665533;
+const SCRAP_COLOR: u32 = 0xFF776655;
+const CHIMNEY_COLOR: u32 = 0xFF555555;
+
+// Interactible colors
+const VENDING_COLOR: u32 = 0xFFCC2222;
+const VENDING_PANEL: u32 = 0xFF888888;
+const BENCH_COLOR: u32 = 0xFF886644;
+const DUMPSTER_COLOR: u32 = 0xFF334488;
+const ATM_COLOR: u32 = 0xFF777788;
+const ATM_SCREEN: u32 = 0xFF44AACC;
+const PHONE_BOOTH_COLOR: u32 = 0xFF667788;
+const HYDRANT_COLOR: u32 = 0xFFCC3333;
+const NEWSSTAND_COLOR: u32 = 0xFFCCCC33;
+const MAILBOX_COLOR: u32 = 0xFF3344CC;
+const PAYPHONE_COLOR: u32 = 0xFF888888;
+
 /// Distance from point (px, pz) to line segment (x0,z0)-(x1,z1)
 pub fn point_to_segment_dist(px: f32, pz: f32, x0: f32, z0: f32, x1: f32, z1: f32) -> f32 {
     let dx = x1 - x0;
@@ -354,7 +377,15 @@ fn generate_heightmap(terrain: &mut Terrain, seed: u64, net: &RoadNetwork) {
                 1.0
             };
 
-            terrain.heights[iz * stride + ix] = h * road_flatten * downtown_flatten;
+            // Flatten dockyard zone (south edge, approaching water)
+            let dock_flatten = if z > DOCK_Z_START {
+                let t = ((z - DOCK_Z_START) / 15.0).clamp(0.0, 1.0);
+                1.0 - t * 0.9 // flatten to near-zero
+            } else {
+                1.0
+            };
+
+            terrain.heights[iz * stride + ix] = h * road_flatten * downtown_flatten * dock_flatten;
         }
     }
 }
@@ -393,7 +424,14 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
 
             let avg_h = (h00 + h10 + h01 + h11) * 0.25;
             let t = ((avg_h - h_min) / h_range).clamp(0.0, 1.0);
-            let color = lerp_color(GROUND_LOW, GROUND_HIGH, t);
+            let _mid_x = x0 + cell * 0.5;
+            let mid_z = z0 + cell * 0.5;
+            let color = if mid_z > DOCK_Z_START {
+                let dock_t = ((mid_z - DOCK_Z_START) / 20.0).clamp(0.0, 1.0);
+                lerp_color(lerp_color(GROUND_LOW, GROUND_HIGH, t), DOCK_GROUND, dock_t)
+            } else {
+                lerp_color(GROUND_LOW, GROUND_HIGH, t)
+            };
 
             let n1 = normalize_tri_normal(v00, v10, v11);
             tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
@@ -456,6 +494,277 @@ fn generate_road_strip(
 
         tris.push(WorldTri { v: [v_l0, v_r0, v_r1], normal: [0.0, 1.0, 0.0], color });
         tris.push(WorldTri { v: [v_l0, v_r1, v_l1], normal: [0.0, 1.0, 0.0], color });
+    }
+}
+
+/// Generate the industrial dockyard biome at z > DOCK_Z_START
+fn generate_dockyard(
+    tris: &mut Vec<WorldTri>, terrain: &Terrain, rng: &mut Rng,
+    buildings: &mut Vec<Building>, interactibles: &mut Vec<Interactible>,
+) {
+    let dock_z = DOCK_Z_START + 10.0;
+
+    // Water plane
+    let step = 10.0;
+    let x_min = -WORLD_HALF + 10.0;
+    let x_max = WORLD_HALF - 10.0;
+    let z_min = DOCK_Z_START + 15.0;
+    let z_max = WORLD_HALF - 5.0;
+    let nx = ((x_max - x_min) / step) as usize;
+    let nz = ((z_max - z_min) / step).max(1.0) as usize;
+    for iz in 0..nz {
+        for ix in 0..nx {
+            let wx0 = x_min + ix as f32 * step;
+            let wz0 = z_min + iz as f32 * step;
+            let wx1 = wx0 + step;
+            let wz1 = wz0 + step;
+            let y = WATER_Y;
+            tris.push(WorldTri { v: [[wx0, y, wz0], [wx1, y, wz0], [wx1, y, wz1]], normal: [0.0, 1.0, 0.0], color: WATER_COLOR });
+            tris.push(WorldTri { v: [[wx0, y, wz0], [wx1, y, wz1], [wx0, y, wz1]], normal: [0.0, 1.0, 0.0], color: WATER_COLOR });
+        }
+    }
+
+    // 6 Warehouses
+    for i in 0..6 {
+        let wx = -50.0 + i as f32 * 18.0 + rng.range(-2.0, 2.0);
+        let wz = dock_z + rng.range(0.0, 8.0);
+        let ww = rng.range(8.0, 14.0);
+        let wd = rng.range(6.0, 10.0);
+        let wh = rng.range(4.0, 7.0);
+        let gy = terrain.height_at(wx, wz);
+        let color = WAREHOUSE_COLORS[i % WAREHOUSE_COLORS.len()];
+        box_tris(tris, wx, gy + wh * 0.5, wz, ww, wh, wd, color);
+        // Garage door
+        box_tris(tris, wx, gy + 2.0, wz - wd * 0.5 - 0.01, ww * 0.4, 4.0, 0.05, 0xFF333322);
+        buildings.push(Building { x: wx, z: wz, w: ww, d: wd, h: wh, ground_y: gy });
+    }
+
+    // 3 Cranes
+    for i in 0..3 {
+        let cx = -30.0 + i as f32 * 30.0;
+        let cz = dock_z + 22.0;
+        let gy = terrain.height_at(cx, cz);
+        let crane_h = 25.0;
+        box_tris(tris, cx, gy + crane_h * 0.5, cz, 0.8, crane_h, 0.8, CRANE_COLOR);
+        box_tris(tris, cx + 5.0, gy + crane_h - 0.5, cz, 12.0, 0.5, 0.6, CRANE_COLOR);
+        box_tris(tris, cx - 3.0, gy + crane_h - 1.0, cz, 2.0, 2.0, 1.5, CHIMNEY_COLOR);
+    }
+
+    // 15 Cargo containers
+    for _ in 0..15 {
+        let cx = rng.range(-40.0, 40.0);
+        let cz = dock_z + rng.range(5.0, 25.0);
+        let gy = terrain.height_at(cx, cz);
+        let color = CONTAINER_COLORS[rng.next() as usize % CONTAINER_COLORS.len()];
+        let stack = 1 + rng.next() as usize % 3;
+        for s in 0..stack {
+            box_tris(tris, cx, gy + 1.3 + s as f32 * 2.5, cz, 6.0, 2.5, 2.5, color);
+        }
+    }
+
+    // 3 Fishing piers
+    for i in 0..3 {
+        let px = -30.0 + i as f32 * 30.0;
+        let pz_start = dock_z + 25.0;
+        let pier_len = 12.0;
+        let gy = terrain.height_at(px, pz_start);
+        // Pier deck
+        box_tris(tris, px, gy + 0.5, pz_start + pier_len * 0.5, 2.0, 0.2, pier_len, PIER_COLOR);
+        // Pier supports
+        for s in 0..3 {
+            let sz = pz_start + s as f32 * 4.0 + 2.0;
+            box_tris(tris, px - 0.8, gy * 0.5, sz, 0.2, gy.abs() + 1.0, 0.2, PIER_COLOR);
+            box_tris(tris, px + 0.8, gy * 0.5, sz, 0.2, gy.abs() + 1.0, 0.2, PIER_COLOR);
+        }
+    }
+
+    // Scrap yard (east side)
+    for _ in 0..20 {
+        let sx = rng.range(25.0, 55.0);
+        let sz = dock_z + rng.range(0.0, 12.0);
+        let gy = terrain.height_at(sx, sz);
+        let size = rng.range(0.3, 1.5);
+        box_tris(tris, sx, gy + size * 0.5, sz, size, size, size, SCRAP_COLOR);
+    }
+
+    // 2 Smokestacks
+    for i in 0..2 {
+        let sx = -60.0 + i as f32 * 40.0;
+        let sz = dock_z + 5.0;
+        let gy = terrain.height_at(sx, sz);
+        box_tris(tris, sx, gy + 10.0, sz, 1.5, 20.0, 1.5, CHIMNEY_COLOR);
+        box_tris(tris, sx, gy + 20.5, sz, 2.0, 1.0, 2.0, 0xFF444444);
+    }
+
+    // Dockyard dumpsters
+    for i in 0..4 {
+        let dx = -40.0 + i as f32 * 25.0;
+        let dz = dock_z + 2.0;
+        let dy = terrain.height_at(dx, dz);
+        interactibles.push(Interactible {
+            x: dx, y: dy, z: dz,
+            kind: InteractibleKind::Dumpster,
+            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+        });
+    }
+}
+
+/// Place interactible objects near roads and buildings
+fn generate_interactibles(
+    tris: &mut Vec<WorldTri>, terrain: &Terrain, rng: &mut Rng,
+    net: &RoadNetwork, buildings: &[Building],
+    interactibles: &mut Vec<Interactible>,
+) {
+    let car_segs: Vec<&RoadSegment> = net.segments.iter()
+        .filter(|s| s.tier == RoadTier::CarRoad).collect();
+
+    // Helper: pick a sidewalk position along a car road segment
+    let sidewalk_pos = |rng: &mut Rng, seg: &RoadSegment, side: f32| -> (f32, f32) {
+        let t = rng.range(0.2, 0.8);
+        let sx = seg.x0 + (seg.x1 - seg.x0) * t;
+        let sz = seg.z0 + (seg.z1 - seg.z0) * t;
+        let dx = seg.x1 - seg.x0;
+        let dz = seg.z1 - seg.z0;
+        let len = (dx * dx + dz * dz).sqrt().max(0.01);
+        let px = -dz / len;
+        let pz = dx / len;
+        let offset = CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH * 0.5;
+        (sx + px * offset * side, sz + pz * offset * side)
+    };
+
+    // Phone Booths (4) at ring-1 area
+    for i in 0..4 {
+        if i >= net.nodes.len() { break; }
+        let node = &net.nodes[i.min(net.nodes.len() - 1)];
+        let x = node[0] + rng.range(3.0, 5.0);
+        let z = node[1] + rng.range(3.0, 5.0);
+        let y = terrain.height_at(x, z);
+        box_tris(tris, x, y + 1.1, z, 0.8, 2.2, 0.8, PHONE_BOOTH_COLOR);
+        box_tris(tris, x, y + 2.3, z, 0.9, 0.15, 0.9, PHONE_BOOTH_COLOR); // roof
+        interactibles.push(Interactible {
+            x, y, z, kind: InteractibleKind::PhoneBooth,
+            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+        });
+    }
+
+    // Vending Machines (6) near buildings
+    for i in 0..6 {
+        let bi = (i * 7) % buildings.len();
+        let b = &buildings[bi];
+        let side = if i % 2 == 0 { 1.0 } else { -1.0 };
+        let x = b.x + side * (b.w * 0.5 + 1.2);
+        let z = b.z;
+        let y = terrain.height_at(x, z);
+        box_tris(tris, x, y + 0.75, z, 0.7, 1.5, 0.6, VENDING_COLOR);
+        box_tris(tris, x, y + 0.9, z - 0.31, 0.6, 0.8, 0.02, VENDING_PANEL); // front panel
+        interactibles.push(Interactible {
+            x, y, z, kind: InteractibleKind::VendingMachine,
+            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+        });
+    }
+
+    // Park Benches (8) along roads
+    for i in 0..8 {
+        if car_segs.is_empty() { break; }
+        let seg = car_segs[rng.next() as usize % car_segs.len()];
+        let side = if i % 2 == 0 { 1.0 } else { -1.0 };
+        let (x, z) = sidewalk_pos(rng, seg, side);
+        let y = terrain.height_at(x, z);
+        box_tris(tris, x, y + 0.25, z, 1.5, 0.1, 0.5, BENCH_COLOR); // seat
+        box_tris(tris, x, y + 0.5, z + 0.2, 1.5, 0.4, 0.08, BENCH_COLOR); // back
+        interactibles.push(Interactible {
+            x, y, z, kind: InteractibleKind::ParkBench,
+            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+        });
+    }
+
+    // Dumpsters (6) behind buildings
+    for i in 0..6 {
+        let bi = (i * 5 + 3) % buildings.len();
+        let b = &buildings[bi];
+        let x = b.x;
+        let z = b.z - b.d * 0.5 - 1.5;
+        let y = terrain.height_at(x, z);
+        box_tris(tris, x, y + 0.5, z, 1.2, 1.0, 0.8, DUMPSTER_COLOR);
+        box_tris(tris, x, y + 1.05, z, 1.3, 0.1, 0.85, 0xFF445599); // lid
+        interactibles.push(Interactible {
+            x, y, z, kind: InteractibleKind::Dumpster,
+            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+        });
+    }
+
+    // ATMs (3) downtown
+    for i in 0..3 {
+        let bi = i % buildings.len().min(10);
+        let b = &buildings[bi];
+        let x = b.x + b.w * 0.5 + 0.4;
+        let z = b.z;
+        let y = terrain.height_at(x, z);
+        box_tris(tris, x, y + 0.7, z, 0.6, 1.4, 0.3, ATM_COLOR);
+        box_tris(tris, x - 0.15, y + 1.0, z - 0.16, 0.25, 0.3, 0.01, ATM_SCREEN);
+        interactibles.push(Interactible {
+            x, y, z, kind: InteractibleKind::Atm,
+            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+        });
+    }
+
+    // Newspaper Stands (4)
+    for i in 0..4 {
+        let ni = (i + 1) % net.nodes.len().max(1);
+        let node = &net.nodes[ni];
+        let x = node[0] - rng.range(3.0, 5.0);
+        let z = node[1] - rng.range(3.0, 5.0);
+        let y = terrain.height_at(x, z);
+        box_tris(tris, x, y + 0.5, z, 0.6, 1.0, 0.4, NEWSSTAND_COLOR);
+        interactibles.push(Interactible {
+            x, y, z, kind: InteractibleKind::NewspaperStand,
+            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+        });
+    }
+
+    // Mailboxes (8) along car roads
+    for i in 0..8 {
+        if car_segs.is_empty() { break; }
+        let seg = car_segs[rng.next() as usize % car_segs.len()];
+        let side = if i % 2 == 0 { 1.0 } else { -1.0 };
+        let (x, z) = sidewalk_pos(rng, seg, side);
+        let y = terrain.height_at(x, z);
+        box_tris(tris, x, y + 0.5, z, 0.4, 1.0, 0.3, MAILBOX_COLOR);
+        box_tris(tris, x, y + 1.05, z, 0.45, 0.1, 0.35, 0xFF4455DD); // top
+        interactibles.push(Interactible {
+            x, y, z, kind: InteractibleKind::Mailbox,
+            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+        });
+    }
+
+    // Fire Hydrants (6) along car roads
+    for i in 0..6 {
+        if car_segs.is_empty() { break; }
+        let seg = car_segs[rng.next() as usize % car_segs.len()];
+        let side = if i % 2 == 0 { 1.0 } else { -1.0 };
+        let (x, z) = sidewalk_pos(rng, seg, side);
+        let y = terrain.height_at(x, z);
+        octahedron_tris(tris, x, y + 0.35, z, 0.25, HYDRANT_COLOR);
+        box_tris(tris, x, y + 0.15, z, 0.2, 0.3, 0.2, HYDRANT_COLOR);
+        interactibles.push(Interactible {
+            x, y, z, kind: InteractibleKind::FireHydrant,
+            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+        });
+    }
+
+    // Payphones (2) downtown
+    for i in 0..2 {
+        let ni = (i * 2) % net.nodes.len().max(1);
+        let node = &net.nodes[ni];
+        let x = node[0] + rng.range(-2.0, 2.0);
+        let z = node[1] + rng.range(5.0, 7.0);
+        let y = terrain.height_at(x, z);
+        box_tris(tris, x, y + 0.9, z, 0.4, 1.8, 0.3, PAYPHONE_COLOR);
+        box_tris(tris, x, y + 1.3, z - 0.16, 0.3, 0.3, 0.01, 0xFF222222); // screen
+        interactibles.push(Interactible {
+            x, y, z, kind: InteractibleKind::Payphone,
+            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+        });
     }
 }
 
@@ -624,6 +933,14 @@ pub fn generate_world(game: &mut GameState) {
         bin_count += 1;
     }
 
+    // Industrial dockyard biome
+    generate_dockyard(&mut tris, &game.terrain, &mut rng,
+        &mut game.world.buildings, &mut game.world.interactibles);
+
+    // Interactible objects (phone booths, vending machines, benches, etc.)
+    generate_interactibles(&mut tris, &game.terrain, &mut rng,
+        &game.road_network, &game.world.buildings, &mut game.world.interactibles);
+
     // Ambient vehicles (spawned on CarRoad segments)
     for i in 0..NUM_VEHICLES {
         if car_segments.is_empty() { break; }
@@ -673,6 +990,13 @@ pub fn generate_world(game: &mut GameState) {
     }
 
     // NPCs
+    let npc_jobs = [
+        NpcJob::Collector, NpcJob::GarbageCollector, NpcJob::TaxiDriver,
+        NpcJob::DeliveryCourier, NpcJob::MailCarrier, NpcJob::Paramedic,
+        NpcJob::Firefighter, NpcJob::PolicePatrol, NpcJob::StreetVendor,
+        NpcJob::Mechanic, NpcJob::ConstructionWorker, NpcJob::Fisherman,
+        NpcJob::Farmer, NpcJob::Lumberjack, NpcJob::Scavenger,
+    ];
     for i in 0..NUM_NPCS {
         let home_idx = i % game.world.buildings.len();
         let car_idx = ambient_vehicle_count + i;
@@ -687,6 +1011,7 @@ pub fn generate_world(game: &mut GameState) {
         let rot_y = rng.range(0.0, std::f32::consts::TAU);
         let npc_rng = rng.fork(NUM_VEHICLES as u64 + i as u64);
         let wake_hour = 5.0 + (npc_rng.clone().next() as f32 % 400.0) / 100.0;
+        let job = npc_jobs[i % NPC_JOB_COUNT];
 
         game.world.npcs.push(Npc {
             x, y, z, rot_y, walk_phase: rng.range(0.0, 6.0),
@@ -708,6 +1033,12 @@ pub fn generate_world(game: &mut GameState) {
             stuck_timer: 0.0,
             detour_x: 0.0, detour_z: 0.0,
             detouring: false,
+            job,
+            job_timer: 0.0,
+            job_target_x: x, job_target_z: z,
+            interaction_target: None,
+            interacting_with: None,
+            interaction_timer: 0.0,
         });
     }
 
@@ -733,10 +1064,10 @@ pub fn generate_world(game: &mut GameState) {
     // Set player spawn height
     game.player.y = game.terrain.height_at(game.player.x, game.player.z);
 
-    eprintln!("World: {} tris, {} road segments ({} nodes), {} vehicles ({} NPC-owned), {} npcs, {} items, {} bins",
+    eprintln!("World: {} tris, {} road segments ({} nodes), {} vehicles ({} NPC-owned), {} npcs, {} items, {} bins, {} interactibles",
         tris.len(), game.road_network.segments.len(), game.road_network.nodes.len(),
         game.world.vehicles.len(), NUM_NPCS, game.world.npcs.len(),
-        game.world.items.len(), game.world.trash_bins.len());
+        game.world.items.len(), game.world.trash_bins.len(), game.world.interactibles.len());
     game.world.static_tris = tris;
 }
 

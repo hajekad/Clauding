@@ -48,8 +48,11 @@ pub const NPC_JUMP_VELOCITY: f32 = 6.0;
 pub const NPC_DRIVE_THRESHOLD: f32 = 30.0;
 pub const NPC_PICKUP_DIST: f32 = 1.2;
 pub const NPC_BIN_DIST: f32 = 1.5;
+pub const INTERACT_DIST: f32 = 2.0;
 pub const NIGHT_SPAWN_START: f32 = 20.0; // 8 PM
 pub const NIGHT_SPAWN_END: f32 = 4.0;    // 4 AM
+pub const DOCK_Z_START: f32 = 70.0;
+pub const WATER_Y: f32 = -1.0;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum RoadTier { CarRoad, FieldRoad }
@@ -169,6 +172,90 @@ pub const VEHICLE_COLORS: [u32; 6] = [
 ];
 
 #[derive(Clone, Copy, PartialEq)]
+pub enum NpcJob {
+    Collector,
+    GarbageCollector,
+    TaxiDriver,
+    DeliveryCourier,
+    MailCarrier,
+    Paramedic,
+    Firefighter,
+    PolicePatrol,
+    StreetVendor,
+    Mechanic,
+    ConstructionWorker,
+    Fisherman,
+    Farmer,
+    Lumberjack,
+    Scavenger,
+}
+
+pub const NPC_JOB_COUNT: usize = 15;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum PlayerJobType {
+    None,
+    GarbageCollector,
+    TaxiDriver,
+    DeliveryCourier,
+    MailCarrier,
+    Paramedic,
+    Firefighter,
+    PolicePatrol,
+    StreetVendor,
+    Mechanic,
+    ConstructionWorker,
+    Fisherman,
+    Farmer,
+    Lumberjack,
+    Scavenger,
+}
+
+pub struct PlayerJob {
+    pub job_type: PlayerJobType,
+    pub objective_x: f32,
+    pub objective_z: f32,
+    pub progress: f32,
+    pub earnings: f32,
+    pub time_remaining: f32,
+    pub items_done: u32,
+    pub items_needed: u32,
+}
+
+impl PlayerJob {
+    pub fn none() -> Self {
+        PlayerJob {
+            job_type: PlayerJobType::None,
+            objective_x: 0.0, objective_z: 0.0,
+            progress: 0.0, earnings: 0.0,
+            time_remaining: 0.0, items_done: 0, items_needed: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum InteractibleKind {
+    VendingMachine,
+    ParkBench,
+    Dumpster,
+    Atm,
+    PhoneBooth,
+    FireHydrant,
+    NewspaperStand,
+    Mailbox,
+    Payphone,
+}
+
+pub struct Interactible {
+    pub x: f32, pub y: f32, pub z: f32,
+    pub kind: InteractibleKind,
+    pub rot_y: f32,
+    pub cooldown: f32,
+    pub state_val: f32,
+    pub used_by: Option<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
 pub enum NpcState {
     Sleeping,
     HomeTask,
@@ -176,6 +263,7 @@ pub enum NpcState {
     Working,
     GoingHome,
     Driving,
+    Interacting,
 }
 
 pub struct Npc {
@@ -210,6 +298,14 @@ pub struct Npc {
     pub stuck_timer: f32,
     pub detour_x: f32, pub detour_z: f32,
     pub detouring: bool,
+    // Job system
+    pub job: NpcJob,
+    pub job_timer: f32,
+    pub job_target_x: f32, pub job_target_z: f32,
+    pub interaction_target: Option<usize>, // index into interactibles
+    // Social interactions
+    pub interacting_with: Option<usize>, // other NPC index
+    pub interaction_timer: f32,
 }
 
 pub const NPC_SHIRT_COLORS: [u32; 6] = [
@@ -247,6 +343,12 @@ pub struct Player {
     pub in_vehicle: Option<usize>, // index into vehicles vec
     pub carrying_item: bool,
     pub carrying_bin: Option<usize>,
+    // Job system
+    pub active_job: PlayerJob,
+    pub sitting: bool,
+    pub bank_balance: f32,
+    pub job_menu_open: bool,
+    pub job_menu_cursor: usize,
 }
 
 pub struct Camera {
@@ -274,6 +376,7 @@ pub struct WorldData {
     pub trees: Vec<Tree>,
     pub street_lights: Vec<StreetLight>,
     pub trash_bins: Vec<TrashBin>,
+    pub interactibles: Vec<Interactible>,
 }
 
 pub struct GameState {
@@ -321,6 +424,8 @@ impl GameState {
                 vel_y: 0.0, on_ground: true,
                 walk_phase: 0.0, sprinting: false, in_vehicle: None,
                 carrying_item: false, carrying_bin: None,
+                active_job: PlayerJob::none(), sitting: false, bank_balance: 0.0,
+                job_menu_open: false, job_menu_cursor: 0,
             },
             camera: Camera {
                 x: 0.0, y: 8.0, z: 18.0,
@@ -338,6 +443,7 @@ impl GameState {
                 trees: Vec::new(),
                 street_lights: Vec::new(),
                 trash_bins: Vec::new(),
+                interactibles: Vec::new(),
             },
             mouse_dx: 0.0,
             mouse_dy: 0.0,

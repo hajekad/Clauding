@@ -159,7 +159,31 @@ pub fn sys_emit_particles(ps: &mut ParticleSystem, game: &GameState, _dt: f32) {
             let spread = 0.3;
             let vx = sin_r * 1.0 + ps.emission_rng.range(-0.3, 0.3);
             let vz = cos_r * 1.0 + ps.emission_rng.range(-0.2, 0.2);
-            ps.emit(ex, 0.3, ez, vx * spread, 0.5, vz * spread, 0.8, 0xFF666666);
+            ps.emit(ex, v.y + 0.3, ez, vx * spread, 0.5, vz * spread, 0.8, 0xFF666666);
+        }
+    }
+
+    // Fire hydrant water bursts
+    for inter in &game.world.interactibles {
+        if inter.kind != InteractibleKind::FireHydrant { continue; }
+        if inter.state_val <= 0.0 { continue; }
+        if frame % 2 == 0 {
+            let vx = ps.emission_rng.range(-1.5, 1.5);
+            let vz = ps.emission_rng.range(-1.5, 1.5);
+            let vy = 6.0 + ps.emission_rng.range(0.0, 3.0);
+            ps.emit(inter.x, inter.y + 0.5, inter.z, vx, vy, vz, 1.0, 0xFF3388FF);
+        }
+    }
+
+    // Smokestack smoke (dockyard)
+    // Smokestacks are tall structures in the dockyard; emit from top
+    if frame % 4 == 0 {
+        // Two smokestacks at known positions (matching world.rs)
+        let stacks = [(-25.0f32, DOCK_Z_START + 20.0), (25.0, DOCK_Z_START + 20.0)];
+        for &(sx, sz) in &stacks {
+            let vx = ps.emission_rng.range(-0.3, 0.3);
+            let vz = ps.emission_rng.range(-0.3, 0.3);
+            ps.emit(sx, 12.0, sz, vx, 1.5, vz, 2.5, 0xFF444444);
         }
     }
 
@@ -169,7 +193,7 @@ pub fn sys_emit_particles(ps: &mut ParticleSystem, game: &GameState, _dt: f32) {
         if frame % 2 == 0 {
             let dx = ps.emission_rng.range(-0.75, 0.75);
             let dz = ps.emission_rng.range(-0.45, 0.45);
-            ps.emit(p.x, 0.05, p.z, dx, 0.3, dz, 0.5, 0xFF998866);
+            ps.emit(p.x, p.y + 0.05, p.z, dx, 0.3, dz, 0.5, 0xFF998866);
         }
     }
 }

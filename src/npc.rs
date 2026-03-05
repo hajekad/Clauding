@@ -10,8 +10,6 @@ const HOME_TASK_DURATION: f32 = 240.0;
 const WORK_DURATION: f32 = 720.0;
 // Night spawn interval: ~1 item every 4.8 seconds
 const NIGHT_SPAWN_INTERVAL: f32 = 4.8;
-// Bin relocation threshold: if nearest bin > this distance from item cluster, relocate
-const BIN_RELOCATE_DIST: f32 = 20.0;
 
 pub fn sys_npc(
     world: &mut WorldData, road_network: &RoadNetwork, terrain: &Terrain,
@@ -31,13 +29,14 @@ pub fn sys_npc(
             NpcState::Working => npc_working(world, i, road_network, terrain, dt),
             NpcState::GoingHome => npc_going_home(world, i, road_network, terrain, dt),
             NpcState::Driving => npc_driving(world, i, terrain, dt),
+            NpcState::Interacting => {} // handled by sys_npc_interactions
         }
     }
 }
 
 fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
     let npc = &mut world.npcs[i];
-    if npc.in_vehicle || npc.state == NpcState::Sleeping { return; }
+    if npc.in_vehicle || npc.state == NpcState::Sleeping || npc.state == NpcState::Interacting { return; }
 
     npc.vel_y -= GRAVITY * dt;
     npc.y += npc.vel_y * dt;
@@ -53,7 +52,7 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
 }
 
 /// Walk NPC toward (target_x, target_z) with collision avoidance, pathfinding, and surface-aware speed
-fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &RoadNetwork, terrain: &Terrain, dt: f32) -> f32 {
+pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &RoadNetwork, terrain: &Terrain, dt: f32) -> f32 {
     let npc = &world.npcs[i];
     if npc.in_vehicle { return 0.0; }
 
@@ -305,127 +304,23 @@ fn npc_going_to_work(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain
 fn npc_working(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: &Terrain, dt: f32) {
     world.npcs[i].state_timer += dt;
 
-    let npc = &world.npcs[i];
-
-    if npc.state_timer >= WORK_DURATION {
+    if world.npcs[i].state_timer >= WORK_DURATION {
         // Work day done, go home
         world.npcs[i].state = NpcState::GoingHome;
         world.npcs[i].state_timer = 0.0;
         world.npcs[i].target_item = None;
         world.npcs[i].target_bin = None;
+        world.npcs[i].interaction_target = None;
         world.npcs[i].detouring = false;
-        // Unclaim any item
         unclaim_item(world, i);
-        // Set home as target
         let home = &world.buildings[world.npcs[i].home_idx];
         world.npcs[i].target_x = home.x;
         world.npcs[i].target_z = home.z;
         return;
     }
 
-    if npc.carrying_item {
-        // Find nearest bin to deposit
-        if npc.target_bin.is_none() {
-            let bin_idx = find_nearest_bin(world, npc.x, npc.z);
-            world.npcs[i].target_bin = bin_idx;
-        }
-        if let Some(bi) = world.npcs[i].target_bin {
-            let bx = world.trash_bins[bi].x;
-            let bz = world.trash_bins[bi].z;
-            let remaining = npc_walk_toward(world, i, bx, bz, net, terrain, dt);
-            if remaining < NPC_BIN_DIST {
-                // Deposit item
-                world.npcs[i].carrying_item = false;
-                world.npcs[i].target_bin = None;
-                world.npcs[i].items_deposited_today += 1;
-                world.npcs[i].money += 1.0;
-                world.trash_bins[bi].items_held += 1;
-            }
-        } else {
-            // No bin available, wander
-            pick_npc_wander_target(&mut world.npcs[i]);
-            let tx = world.npcs[i].target_x;
-            let tz = world.npcs[i].target_z;
-            npc_walk_toward(world, i, tx, tz, net, terrain, dt);
-        }
-    } else if world.npcs[i].carrying_bin.is_some() {
-        // Carrying bin: walk to item-dense area, then set down
-        let tx = world.npcs[i].target_x;
-        let tz = world.npcs[i].target_z;
-        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
-        if remaining < 2.0 {
-            // Set bin down at current position
-            if let Some(bi) = world.npcs[i].carrying_bin {
-                world.trash_bins[bi].x = world.npcs[i].x;
-                world.trash_bins[bi].z = world.npcs[i].z;
-                world.trash_bins[bi].y = terrain.height_at(world.npcs[i].x, world.npcs[i].z);
-                world.trash_bins[bi].carried_by = None;
-                world.npcs[i].carrying_bin = None;
-            }
-        }
-    } else {
-        // Not carrying anything — find an item
-        if world.npcs[i].target_item.is_none() {
-            let item_idx = find_best_item(world, i);
-            if let Some(idx) = item_idx {
-                world.npcs[i].target_item = Some(idx);
-                world.items[idx].claimed_by = Some(i);
-                world.npcs[i].target_x = world.items[idx].x;
-                world.npcs[i].target_z = world.items[idx].z;
-
-                // Check if we should relocate a bin closer
-                let nearest_bin = find_nearest_bin(world, world.items[idx].x, world.items[idx].z);
-                if let Some(bi) = nearest_bin {
-                    let bdx = world.trash_bins[bi].x - world.items[idx].x;
-                    let bdz = world.trash_bins[bi].z - world.items[idx].z;
-                    let bin_dist = (bdx * bdx + bdz * bdz).sqrt();
-                    if bin_dist > BIN_RELOCATE_DIST && world.trash_bins[bi].carried_by.is_none() {
-                        // Relocate bin: pick it up and carry closer
-                        world.npcs[i].carrying_bin = Some(bi);
-                        world.trash_bins[bi].carried_by = Some(i);
-                        world.npcs[i].target_x = world.items[idx].x;
-                        world.npcs[i].target_z = world.items[idx].z;
-                        // Unclaim item — we'll pick it up after setting bin down
-                        world.items[idx].claimed_by = None;
-                        world.npcs[i].target_item = None;
-                        // First walk to the bin
-                        world.npcs[i].target_x = world.trash_bins[bi].x;
-                        world.npcs[i].target_z = world.trash_bins[bi].z;
-                        return;
-                    }
-                }
-            } else {
-                // No items — wander
-                pick_npc_wander_target(&mut world.npcs[i]);
-            }
-        }
-
-        if let Some(item_idx) = world.npcs[i].target_item {
-            // Check if item is still valid
-            if item_idx < world.items.len() && world.items[item_idx].active && !world.items[item_idx].falling {
-                let ix = world.items[item_idx].x;
-                let iz = world.items[item_idx].z;
-                let remaining = npc_walk_toward(world, i, ix, iz, net, terrain, dt);
-                if remaining < NPC_PICKUP_DIST {
-                    // Pick up item
-                    world.items[item_idx].active = false;
-                    world.items[item_idx].claimed_by = None;
-                    world.npcs[i].carrying_item = true;
-                    world.npcs[i].target_item = None;
-                }
-            } else {
-                // Item no longer available
-                if item_idx < world.items.len() {
-                    world.items[item_idx].claimed_by = None;
-                }
-                world.npcs[i].target_item = None;
-            }
-        } else {
-            let tx = world.npcs[i].target_x;
-            let tz = world.npcs[i].target_z;
-            npc_walk_toward(world, i, tx, tz, net, terrain, dt);
-        }
-    }
+    // Dispatch to job-specific behavior
+    crate::jobs::npc_work_dispatch(world, i, net, terrain, dt);
 }
 
 fn npc_going_home(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: &Terrain, dt: f32) {
@@ -562,36 +457,12 @@ fn find_best_item(world: &WorldData, npc_idx: usize) -> Option<usize> {
     best_idx
 }
 
-fn find_nearest_bin(world: &WorldData, x: f32, z: f32) -> Option<usize> {
-    let mut best_dist = f32::MAX;
-    let mut best_idx = None;
-
-    for (idx, bin) in world.trash_bins.iter().enumerate() {
-        if bin.carried_by.is_some() { continue; }
-        let dx = bin.x - x;
-        let dz = bin.z - z;
-        let dist = dx * dx + dz * dz;
-        if dist < best_dist {
-            best_dist = dist;
-            best_idx = Some(idx);
-        }
-    }
-    best_idx
-}
-
 fn unclaim_item(world: &mut WorldData, npc_idx: usize) {
     for item in &mut world.items {
         if item.claimed_by == Some(npc_idx) {
             item.claimed_by = None;
         }
     }
-}
-
-fn pick_npc_wander_target(npc: &mut Npc) {
-    npc.target_x = npc.x + npc.rng.range(-15.0, 15.0);
-    npc.target_z = npc.z + npc.rng.range(-15.0, 15.0);
-    npc.target_x = npc.target_x.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-    npc.target_z = npc.target_z.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
 }
 
 // Night sky spawning system
@@ -784,5 +655,157 @@ pub fn sys_player_interact(
         }
     }
 
+    // Priority 5: Near interactible
+    {
+        let interact_dist_sq = INTERACT_DIST * INTERACT_DIST;
+        let mut best_dist = interact_dist_sq;
+        let mut best_ii = None;
+        for (ii, inter) in world.interactibles.iter().enumerate() {
+            if inter.cooldown > 0.0 { continue; }
+            let dx = px - inter.x;
+            let dz = pz - inter.z;
+            let d2 = dx * dx + dz * dz;
+            if d2 < best_dist {
+                best_dist = d2;
+                best_ii = Some(ii);
+            }
+        }
+        if let Some(ii) = best_ii {
+            let kind = world.interactibles[ii].kind;
+            match kind {
+                InteractibleKind::VendingMachine => {
+                    if player.money >= 2.0 {
+                        player.money -= 2.0;
+                        player.stamina = (player.stamina + 20.0).min(100.0);
+                        world.interactibles[ii].cooldown = 3.0;
+                        return Some((world.interactibles[ii].x, world.interactibles[ii].z, 0xFF33DDFF));
+                    }
+                }
+                InteractibleKind::ParkBench => {
+                    player.sitting = true;
+                    return None;
+                }
+                InteractibleKind::Dumpster => {
+                    world.interactibles[ii].cooldown = 5.0;
+                    let roll = (player.x.to_bits() ^ player.z.to_bits()) % 3;
+                    if roll == 0 {
+                        player.money += 1.0 + (player.x.to_bits() % 3) as f32;
+                        return Some((world.interactibles[ii].x, world.interactibles[ii].z, 0xFFFFDD33));
+                    } else if roll == 1 {
+                        player.health = (player.health + 10.0).min(100.0);
+                        return Some((world.interactibles[ii].x, world.interactibles[ii].z, 0xFFFF3333));
+                    }
+                    return None;
+                }
+                InteractibleKind::Atm => {
+                    world.interactibles[ii].cooldown = 2.0;
+                    if player.carrying_item {
+                        // Deposit earnings
+                        player.bank_balance += player.money;
+                        player.money = 0.0;
+                    } else {
+                        // Withdraw
+                        if player.bank_balance >= 50.0 {
+                            player.bank_balance -= 50.0;
+                            player.money += 50.0;
+                        }
+                    }
+                    return Some((world.interactibles[ii].x, world.interactibles[ii].z, 0xFF88BBFF));
+                }
+                InteractibleKind::PhoneBooth => {
+                    player.job_menu_open = true;
+                    player.job_menu_cursor = 0;
+                    return None;
+                }
+                InteractibleKind::FireHydrant => {
+                    world.interactibles[ii].state_val = 5.0;
+                    world.interactibles[ii].cooldown = 10.0;
+                    return Some((world.interactibles[ii].x, world.interactibles[ii].z, 0xFF3388FF));
+                }
+                InteractibleKind::NewspaperStand => {
+                    if player.money >= 1.0 {
+                        player.money -= 1.0;
+                        world.interactibles[ii].cooldown = 5.0;
+                        return None;
+                    }
+                }
+                InteractibleKind::Mailbox => {
+                    // Complete delivery job if carrying
+                    if player.carrying_item && player.active_job.job_type == PlayerJobType::MailCarrier {
+                        player.carrying_item = false;
+                        player.active_job.items_done += 1;
+                        return Some((world.interactibles[ii].x, world.interactibles[ii].z, 0xFF44DDFF));
+                    }
+                }
+                InteractibleKind::Payphone => {
+                    world.interactibles[ii].cooldown = 5.0;
+                    return None;
+                }
+            }
+        }
+    }
+
     None
+}
+
+/// NPC-NPC social interactions
+pub fn sys_npc_interactions(world: &mut WorldData, dt: f32) {
+    let n = world.npcs.len();
+
+    // Update existing interactions
+    for i in 0..n {
+        if world.npcs[i].state != NpcState::Interacting { continue; }
+        world.npcs[i].interaction_timer -= dt;
+        if world.npcs[i].interaction_timer <= 0.0 {
+            world.npcs[i].state = NpcState::Working;
+            world.npcs[i].interacting_with = None;
+            world.npcs[i].interaction_timer = 0.0;
+        }
+    }
+
+    // Start new interactions (working NPCs near each other)
+    for i in 0..n {
+        if world.npcs[i].state != NpcState::Working { continue; }
+        if world.npcs[i].interacting_with.is_some() { continue; }
+
+        for j in (i + 1)..n {
+            if world.npcs[j].state != NpcState::Working { continue; }
+            if world.npcs[j].interacting_with.is_some() { continue; }
+
+            let dx = world.npcs[j].x - world.npcs[i].x;
+            let dz = world.npcs[j].z - world.npcs[i].z;
+            if dx * dx + dz * dz > 4.0 { continue; } // within 2m
+
+            // 1% chance per frame
+            if world.npcs[i].rng.next() % 100 != 0 { continue; }
+
+            let duration = 3.0 + (world.npcs[i].rng.next() % 50) as f32 * 0.1; // 3-8s
+
+            // Face each other
+            let angle_i_to_j = (-dx).atan2(-dz);
+            let angle_j_to_i = dx.atan2(dz);
+            world.npcs[i].rot_y = angle_i_to_j;
+            world.npcs[j].rot_y = angle_j_to_i;
+
+            world.npcs[i].state = NpcState::Interacting;
+            world.npcs[i].interacting_with = Some(j);
+            world.npcs[i].interaction_timer = duration;
+            world.npcs[i].walk_phase = 0.0;
+
+            world.npcs[j].state = NpcState::Interacting;
+            world.npcs[j].interacting_with = Some(i);
+            world.npcs[j].interaction_timer = duration;
+            world.npcs[j].walk_phase = 0.0;
+
+            // Vendor buying
+            if world.npcs[i].job == NpcJob::StreetVendor {
+                world.npcs[i].money += 1.0;
+            }
+            if world.npcs[j].job == NpcJob::StreetVendor {
+                world.npcs[j].money += 1.0;
+            }
+
+            break; // only one interaction per NPC per frame
+        }
+    }
 }

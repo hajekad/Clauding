@@ -15,6 +15,8 @@ mod particle;
 mod rng;
 mod input;
 mod menu;
+mod jobs;
+mod player_jobs;
 
 use std::time::Instant;
 
@@ -133,6 +135,9 @@ fn main() {
                     FIXED_DT, &mut game.spawn_rng,
                 );
                 npc::sys_items_update(&mut game.world, FIXED_DT);
+                npc::sys_npc_interactions(&mut game.world, FIXED_DT);
+                player_jobs::sys_interactibles_update(&mut game.world, FIXED_DT);
+                player_jobs::sys_player_job(&mut game, FIXED_DT);
 
                 // Player physical interaction (Interact key, edge-detected)
                 let interact_now = game.keybinds.is_pressed(input::Action::Interact, &game.keys);
