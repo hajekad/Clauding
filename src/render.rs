@@ -15,6 +15,18 @@ const TIRE_COLOR: u32 = 0xFF222222;
 
 const NEAR_W: f32 = 0.1;
 
+// Trash bin colors
+const BIN_COLOR: u32 = 0xFF226622;
+const BIN_LID_COLOR: u32 = 0xFF338833;
+
+// Interior colors
+const DASHBOARD_COLOR: u32 = 0xFF333333;
+const SEAT_COLOR: u32 = 0xFF444455;
+const STEERING_COLOR: u32 = 0xFF222222;
+
+// Carried item colors
+const BAG_COLOR: u32 = 0xFF886644;
+
 // Sky/fog/light colors for time of day
 struct TimeColors {
     sky: u32,
@@ -93,15 +105,23 @@ pub fn sys_render(
 
     // Dynamic entities: generate into scratch buffer, render once
     scratch.clear();
-    for v in &world.vehicles {
-        gen_vehicle_mesh(v, scratch);
+    for (vi, v) in world.vehicles.iter().enumerate() {
+        let show_interior = player.in_vehicle == Some(vi);
+        gen_vehicle_mesh(v, scratch, show_interior);
     }
     for npc in &world.npcs {
+        if npc.state == NpcState::Sleeping { continue; } // hidden inside building
+        if npc.in_vehicle { continue; } // synced to car, don't render separately
         gen_npc_mesh(npc, scratch);
     }
     for item in &world.items {
-        if !item.active { continue; }
+        if !item.active && !item.falling { continue; }
         gen_item_mesh(item, scratch);
+    }
+    // Trash bins (dynamic — can be carried/moved)
+    for bin in &world.trash_bins {
+        if bin.carried_by.is_some() { continue; } // rendered with NPC
+        gen_trash_bin_mesh(bin, scratch);
     }
     if player.in_vehicle.is_none() {
         gen_player_mesh(player, scratch);
@@ -229,12 +249,25 @@ fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
     let phase = player.walk_phase;
     let swing = phase.sin() * 0.4;
 
+    // Body + head + legs
     push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, SHIRT_COLOR);
     push_box(tris, 0.0, 1.75, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR);
     push_box(tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
     push_box(tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
-    push_box(tris, -0.45, 1.05, swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
-    push_box(tris, 0.45, 1.05, -swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+
+    // Arms depend on carrying state
+    if player.carrying_item {
+        push_box(tris, -0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
+        push_box(tris, 0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
+        push_box(tris, 0.0, 0.9, -0.5, 0.3, 0.3, 0.2, BAG_COLOR);
+    } else if player.carrying_bin.is_some() {
+        push_box(tris, -0.35, 1.0, -0.4, 0.18, 0.55, 0.18, SKIN_COLOR);
+        push_box(tris, 0.35, 1.0, -0.4, 0.18, 0.55, 0.18, SKIN_COLOR);
+        push_box(tris, 0.0, 0.8, -0.55, 0.5, 0.6, 0.4, BIN_COLOR);
+    } else {
+        push_box(tris, -0.45, 1.05, swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+        push_box(tris, 0.45, 1.05, -swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+    }
 
     let (sin_r, cos_r) = player.rot_y.sin_cos();
     for tri in &mut tris[base..] {
@@ -252,18 +285,35 @@ fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
     }
 }
 
-fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>) {
+fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bool) {
     let base = tris.len();
     let color = v.color;
 
+    // Vehicle faces -Z (matching movement convention: -sin(rot)*speed, -cos(rot)*speed)
     push_box(tris, 0.0, 0.45, 0.0, 1.8, 0.6, 3.6, color);
-    push_box(tris, 0.0, 0.95, -0.2, 1.5, 0.5, 1.8, darken(color, VEHICLE_BODY_COLOR_DARKEN));
-    push_box(tris, 0.0, 0.95, 0.75, 1.4, 0.4, 0.05, WINDSHIELD_COLOR);
-    push_box(tris, 0.0, 0.95, -1.15, 1.4, 0.4, 0.05, WINDSHIELD_COLOR);
-    push_box(tris, -0.85, 0.2, 1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
-    push_box(tris, 0.85, 0.2, 1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
-    push_box(tris, -0.85, 0.2, -1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
+    push_box(tris, 0.0, 0.95, 0.2, 1.5, 0.5, 1.8, darken(color, VEHICLE_BODY_COLOR_DARKEN));
+    push_box(tris, 0.0, 0.95, -0.75, 1.4, 0.4, 0.05, WINDSHIELD_COLOR); // front windshield
+    push_box(tris, 0.0, 0.95, 1.15, 1.4, 0.4, 0.05, WINDSHIELD_COLOR);  // rear window
+    push_box(tris, -0.85, 0.2, -1.1, 0.25, 0.4, 0.5, TIRE_COLOR); // front tires
     push_box(tris, 0.85, 0.2, -1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
+    push_box(tris, -0.85, 0.2, 1.1, 0.25, 0.4, 0.5, TIRE_COLOR);  // rear tires
+    push_box(tris, 0.85, 0.2, 1.1, 0.25, 0.4, 0.5, TIRE_COLOR);
+
+    // Interior details (only for player's vehicle)
+    if show_interior {
+        // Dashboard
+        push_box(tris, 0.0, 0.75, -0.6, 1.3, 0.15, 0.4, DASHBOARD_COLOR);
+        // Steering wheel
+        push_box(tris, -0.3, 0.85, -0.45, 0.25, 0.25, 0.05, STEERING_COLOR);
+        // Driver seat
+        push_box(tris, -0.35, 0.55, 0.0, 0.5, 0.15, 0.5, SEAT_COLOR);
+        // Driver seat back
+        push_box(tris, -0.35, 0.85, 0.2, 0.5, 0.45, 0.1, SEAT_COLOR);
+        // Passenger seat
+        push_box(tris, 0.35, 0.55, 0.0, 0.5, 0.15, 0.5, SEAT_COLOR);
+        // Passenger seat back
+        push_box(tris, 0.35, 0.85, 0.2, 0.5, 0.45, 0.1, SEAT_COLOR);
+    }
 
     let (sin_r, cos_r) = v.rot_y.sin_cos();
     for tri in &mut tris[base..] {
@@ -271,6 +321,7 @@ fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>) {
             let rx = vert[0] * cos_r - vert[2] * sin_r;
             let rz = vert[0] * sin_r + vert[2] * cos_r;
             vert[0] = rx + v.x;
+            vert[1] += v.y;
             vert[2] = rz + v.z;
         }
         let nx = tri.normal[0] * cos_r - tri.normal[2] * sin_r;
@@ -284,12 +335,31 @@ fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
     let swing = npc.walk_phase.sin() * 0.4;
 
+    // Body
     push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, npc.shirt_color);
+    // Head
     push_box(tris, 0.0, 1.75, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR);
+    // Legs
     push_box(tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, npc.pants_color);
     push_box(tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, npc.pants_color);
-    push_box(tris, -0.45, 1.05, swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
-    push_box(tris, 0.45, 1.05, -swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+
+    if npc.carrying_item {
+        // Arms forward holding a bag
+        push_box(tris, -0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
+        push_box(tris, 0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
+        // Brown bag in hands
+        push_box(tris, 0.0, 0.9, -0.5, 0.3, 0.3, 0.2, BAG_COLOR);
+    } else if npc.carrying_bin.is_some() {
+        // Arms forward holding a bin
+        push_box(tris, -0.35, 1.0, -0.4, 0.18, 0.55, 0.18, SKIN_COLOR);
+        push_box(tris, 0.35, 1.0, -0.4, 0.18, 0.55, 0.18, SKIN_COLOR);
+        // Green bin in hands
+        push_box(tris, 0.0, 0.8, -0.55, 0.5, 0.6, 0.4, BIN_COLOR);
+    } else {
+        // Normal arm swing
+        push_box(tris, -0.45, 1.05, swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+        push_box(tris, 0.45, 1.05, -swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+    }
 
     let (sin_r, cos_r) = npc.rot_y.sin_cos();
     for tri in &mut tris[base..] {
@@ -297,6 +367,7 @@ fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
             let rx = v[0] * cos_r - v[2] * sin_r;
             let rz = v[0] * sin_r + v[2] * cos_r;
             v[0] = rx + npc.x;
+            v[1] += npc.y;
             v[2] = rz + npc.z;
         }
         let nx = tri.normal[0] * cos_r - tri.normal[2] * sin_r;
@@ -312,7 +383,7 @@ fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
         ItemKind::Money => 0xFFFFDD33,
         ItemKind::Stamina => 0xFF33FF33,
     };
-    let y = 0.8 + (item.spin_phase * 2.0).sin() * 0.2;
+    let y = item.y + 0.8 + (item.spin_phase * 2.0).sin() * 0.2;
 
     let r = 0.35;
     let (sin_s, cos_s) = item.spin_phase.sin_cos();
@@ -331,6 +402,18 @@ fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
         tris.push(WorldTri { v: [top, a, b], normal: n_top, color });
         let n_bot = tri_normal(bot, b, a);
         tris.push(WorldTri { v: [bot, b, a], normal: n_bot, color });
+    }
+}
+
+fn gen_trash_bin_mesh(bin: &TrashBin, tris: &mut Vec<WorldTri>) {
+    // Small box: 0.5 x 0.8 x 0.5, dark green
+    let y = bin.y + 0.4; // center
+    push_box(tris, bin.x, y, bin.z, 0.5, 0.8, 0.5, BIN_COLOR);
+    // Lid on top
+    push_box(tris, bin.x, bin.y + 0.85, bin.z, 0.55, 0.1, 0.55, BIN_LID_COLOR);
+    // Overflow pile if more than half full
+    if bin.items_held > 5 {
+        push_box(tris, bin.x, bin.y + 0.95, bin.z, 0.3, 0.15, 0.3, BAG_COLOR);
     }
 }
 
