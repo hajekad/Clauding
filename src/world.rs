@@ -647,9 +647,9 @@ fn generate_interactibles(
         });
     }
 
-    // Vending Machines (6) near buildings
-    for i in 0..6 {
-        let bi = (i * 7) % buildings.len();
+    // Vending Machines (20) spread across map near buildings
+    for i in 0..20 {
+        let bi = (i * 6 + 1) % buildings.len();
         let b = &buildings[bi];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
         let x = b.x + side * (b.w * 0.5 + 1.2);
@@ -1045,7 +1045,7 @@ pub fn generate_world(game: &mut GameState) {
             home_idx, car_idx,
             wake_hour,
             state_timer: 0.0,
-            money: 0.0,
+            money: NPC_STARTING_MONEY,
             carrying_item: false,
             carrying_bin: None,
             target_item: None,
@@ -1090,9 +1090,8 @@ pub fn generate_world(game: &mut GameState) {
         });
     }
 
-    // Items (weighted: 40% food/water for survival, 60% other)
-    let item_kinds_survival = [ItemKind::Food, ItemKind::Water];
-    let item_kinds_other = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina];
+    // Items: Health, Money, Stamina only (Food/Water from vending machines)
+    let item_kinds = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina];
     for _ in 0..NUM_ITEMS {
         let mut x;
         let mut z;
@@ -1102,11 +1101,7 @@ pub fn generate_world(game: &mut GameState) {
             if !on_any_road(x, z, &game.road_network) { break; }
         }
         let y = game.terrain.height_at(x, z);
-        let kind = if rng.next() % 5 < 2 {
-            item_kinds_survival[rng.next() as usize % 2]
-        } else {
-            item_kinds_other[rng.next() as usize % 3]
-        };
+        let kind = item_kinds[rng.next() as usize % 3];
         game.world.items.push(Item {
             x, y, z, kind, active: true,
             spin_phase: rng.range(0.0, 6.0),

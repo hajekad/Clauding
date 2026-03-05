@@ -210,6 +210,19 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
     (dx2 * dx2 + dz2 * dz2).sqrt()
 }
 
+fn find_nearest_vending_machine(world: &WorldData, x: f32, z: f32) -> Option<(f32, f32)> {
+    let mut best_dist = f32::MAX;
+    let mut best = None;
+    for inter in &world.interactibles {
+        if inter.kind != InteractibleKind::VendingMachine { continue; }
+        let dx = inter.x - x;
+        let dz = inter.z - z;
+        let d = dx * dx + dz * dz;
+        if d < best_dist { best_dist = d; best = Some((inter.x, inter.z)); }
+    }
+    best
+}
+
 fn npc_sleeping(world: &mut WorldData, i: usize, time_of_day: f32) {
     let npc = &mut world.npcs[i];
     // Position NPC inside home building (hidden)
@@ -339,10 +352,35 @@ fn npc_working(
         return;
     }
 
+    // Survival autopilot: traditional AI overrides NN when hungry/thirsty
+    let needs_food = world.npcs[i].hunger < HUNGER_AUTOPILOT && world.npcs[i].money >= VENDING_FOOD_COST;
+    let needs_water = world.npcs[i].thirst < THIRST_AUTOPILOT && world.npcs[i].money >= VENDING_DRINK_COST;
+    if needs_food || needs_water {
+        if let Some((vm_x, vm_z)) = find_nearest_vending_machine(world, world.npcs[i].x, world.npcs[i].z) {
+            let dx = vm_x - world.npcs[i].x;
+            let dz = vm_z - world.npcs[i].z;
+            let dist = (dx * dx + dz * dz).sqrt();
+            if dist < INTERACT_DIST {
+                // At vending machine — buy
+                if needs_water {
+                    world.npcs[i].thirst = (world.npcs[i].thirst + VENDING_WATER_RESTORE).min(100.0);
+                    world.npcs[i].money -= VENDING_DRINK_COST;
+                } else if needs_food {
+                    world.npcs[i].hunger = (world.npcs[i].hunger + VENDING_FOOD_RESTORE).min(100.0);
+                    world.npcs[i].money -= VENDING_FOOD_COST;
+                }
+            } else {
+                // Walk to vending machine
+                npc_walk_toward(world, i, vm_x, vm_z, net, terrain, dt);
+            }
+            return;
+        }
+    }
+
     // NEAT brain evaluation
     let bi = world.npcs[i].brain_idx;
     if bi < brains.len() {
-        // Track fitness: distance traveled + item proximity
+        // Track fitness: distance traveled
         let dx = world.npcs[i].x - world.npcs[i].prev_x;
         let dz = world.npcs[i].z - world.npcs[i].prev_z;
         let dist = (dx * dx + dz * dz).sqrt();
@@ -352,22 +390,6 @@ fn npc_working(
         }
         world.npcs[i].prev_x = world.npcs[i].x;
         world.npcs[i].prev_z = world.npcs[i].z;
-
-        // Proximity reward: closer to items = higher reward (continuous gradient)
-        let mut nearest_item_d2 = f32::MAX;
-        for item in world.items.iter() {
-            if !item.active || item.falling { continue; }
-            let idx = item.x - world.npcs[i].x;
-            let idz = item.z - world.npcs[i].z;
-            let d2 = idx * idx + idz * idz;
-            if d2 < nearest_item_d2 { nearest_item_d2 = d2; }
-        }
-        if nearest_item_d2 < f32::MAX {
-            let nearest_dist = nearest_item_d2.sqrt();
-            // Reward for being within 50m of an item (up to 1.0 per tick at 0 distance)
-            let prox = (1.0 - nearest_dist / 50.0).max(0.0);
-            world.npcs[i].fitness_proximity += prox * dt;
-        }
 
         let inputs = crate::neat::gather_inputs(world, i, net, time_of_day, player_x, player_z);
         let outputs = brains[bi].activate(&inputs);
@@ -562,12 +584,8 @@ pub fn sys_night_spawning(
         let x = rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0);
         let z = rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0);
         let y = 40.0 + rng.range(0.0, 20.0);
-        // Weight toward Food/Water (40%) for NPC survival
-        let kind = if rng.next() % 5 < 2 {
-            [ItemKind::Food, ItemKind::Water][rng.next() as usize % 2]
-        } else {
-            [ItemKind::Health, ItemKind::Money, ItemKind::Stamina][rng.next() as usize % 3]
-        };
+        // Only Health, Money, Stamina (Food/Water from vending machines)
+        let kind = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina][rng.next() as usize % 3];
 
         // Find an inactive item slot to reuse, or push new
         let mut found = false;
@@ -627,6 +645,7 @@ pub fn sys_midnight_reset(
             npc.knockout_timer = 0.0;
             npc.carrying_item = false;
             npc.carrying_bin = None;
+            npc.money = NPC_STARTING_MONEY;
             npc.brain_idx = i;
             npc.fitness_money_earned = 0.0;
             npc.fitness_items_picked = 0;

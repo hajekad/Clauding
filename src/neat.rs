@@ -131,11 +131,7 @@ impl Genome {
             // Weak defensive: low health slightly inhibits attacking
             (28, 8, -0.3),  // self_health -> attack_player (low health = less attack)
             (28, 9, -0.3),  // self_health -> attack_npc
-            // Hunger/thirst: when low, walk toward interactibles (food/water sources)
-            (33, 7, -1.0),  // low hunger -> walk toward interactible
-            (34, 7, -1.0),  // low thirst -> walk toward interactible
-            (33, 3, -0.3),  // low hunger -> slight pickup boost
-            (34, 3, -0.3),  // low thirst -> slight pickup boost
+            // (hunger/thirst survival handled by traditional AI autopilot)
             // Sound/vision communication
             (43, 0, 0.5),   // hear0_dx -> walk_dx (approach sound sources)
             (44, 1, 0.5),   // hear0_dz -> walk_dz

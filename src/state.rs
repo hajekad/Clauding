@@ -67,9 +67,15 @@ pub const STARVATION_DAMAGE: f32 = 5.0;
 pub const DEHYDRATION_DAMAGE: f32 = 8.0;
 pub const FOOD_RESTORE: f32 = 35.0;
 pub const WATER_RESTORE: f32 = 40.0;
-pub const VENDING_WATER_RESTORE: f32 = 30.0;
+pub const VENDING_FOOD_COST: f32 = 1.0;
+pub const VENDING_DRINK_COST: f32 = 1.0;
+pub const VENDING_FOOD_RESTORE: f32 = 40.0;
+pub const VENDING_WATER_RESTORE: f32 = 40.0;
 pub const NEWSPAPER_FOOD_RESTORE: f32 = 20.0;
 pub const PLAYER_MIN_HEALTH_STARVE: f32 = 10.0;
+pub const HUNGER_AUTOPILOT: f32 = 30.0;
+pub const THIRST_AUTOPILOT: f32 = 30.0;
+pub const NPC_STARTING_MONEY: f32 = 5.0;
 
 // NPC sensory communication constants
 pub const SOUND_RANGE: f32 = 30.0;
