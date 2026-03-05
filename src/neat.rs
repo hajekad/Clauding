@@ -33,9 +33,9 @@ const TARGET_SPECIES_MAX: usize = 6;
 const STAGNATION_LIMIT: u16 = 15;
 
 // Fitness weights
-const FIT_PICKUP: f32 = 5.0;             // increased from 2.0 — item pickup is primary goal
+const FIT_PICKUP: f32 = 15.0;            // dominant reward — item pickup is the primary goal
 const FIT_INTERACT: f32 = 0.5;
-const FIT_DISTANCE: f32 = 0.01;
+const FIT_DISTANCE: f32 = 0.001;         // minimal: just breaks ties
 const FIT_STUCK_PENALTY: f32 = 0.5;
 const FIT_KNOCKOUT_PENALTY: f32 = 2.0;
 const FIT_HITS_LANDED: f32 = 0.5;
@@ -1111,15 +1111,14 @@ pub fn evaluate_fitness(npc: &Npc) -> f32 {
     let interact_bonus = npc.fitness_interactions as f32 * FIT_INTERACT;
     let distance_bonus = npc.fitness_distance * FIT_DISTANCE;
     let starve_penalty = npc.fitness_starve_time * 2.0;
-    let stuck_penalty = (npc.fitness_stuck_time * FIT_STUCK_PENALTY).min(30.0); // capped to not drown other signals
+    let stuck_penalty = (npc.fitness_stuck_time * FIT_STUCK_PENALTY).min(20.0); // capped
     let ko_penalty = npc.fitness_knockouts as f32 * FIT_KNOCKOUT_PENALTY;
     let hits_bonus = npc.fitness_hits_landed as f32 * FIT_HITS_LANDED;
-    let proximity_bonus = npc.fitness_proximity * 0.1; // continuous reward for being near items
 
     let comm_bonus = (npc.fitness_npcs_heard as f32 * 0.001).min(1.0);
 
     survival_bonus + food_bonus + money_bonus + deposit_bonus
-    + interact_bonus + distance_bonus + hits_bonus + comm_bonus + proximity_bonus
+    + interact_bonus + distance_bonus + hits_bonus + comm_bonus
     - starve_penalty - stuck_penalty - ko_penalty
 }
 
