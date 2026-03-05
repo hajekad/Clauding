@@ -1,4 +1,5 @@
-// NPC job-specific AI behaviors
+// NPC job-specific AI behaviors (reference/fallback — replaced by NEAT neural networks)
+#![allow(dead_code)]
 // Each job function is called during the Working state based on npc.job
 
 use crate::state::*;

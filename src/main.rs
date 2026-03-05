@@ -18,6 +18,7 @@ mod menu;
 mod jobs;
 mod player_jobs;
 mod telemetry;
+mod neat;
 
 use std::time::Instant;
 
@@ -58,6 +59,11 @@ fn main() {
     let world_seed: u64 = 42;
     let mut game = state::GameState::new(w, h, world_seed);
     world::generate_world(&mut game);
+
+    // Compile NEAT brains from initial population
+    game.neat_brains = game.neat_population.genomes.iter()
+        .map(|g| neat::NeatBrain::compile(g))
+        .collect();
 
     let mut fb = raster::Framebuffer::new(w, h);
     let mut particles = particle::ParticleSystem::new(&mut gpu, world_seed.wrapping_add(0xBEEF));
@@ -119,8 +125,11 @@ fn main() {
                 game.time_of_day += FIXED_DT * 24.0 / state::DAY_LENGTH;
                 if game.time_of_day >= 24.0 { game.time_of_day -= 24.0; }
 
-                // Midnight reset (day counter, bin reset, NPC daily counters)
-                if npc::sys_midnight_reset(&mut game.world, game.time_of_day, prev_time_of_day) {
+                // Midnight reset (day counter, bin reset, NPC daily counters, NEAT evolution)
+                if npc::sys_midnight_reset(
+                    &mut game.world, game.time_of_day, prev_time_of_day,
+                    &mut game.neat_population, &mut game.neat_brains,
+                ) {
                     game.day_count += 1;
                 }
 
@@ -129,7 +138,7 @@ fn main() {
                 vehicle::sys_vehicle(&mut game, FIXED_DT);
                 npc::sys_npc(
                     &mut game.world, &game.road_network, &game.terrain,
-                    FIXED_DT, game.time_of_day,
+                    FIXED_DT, game.time_of_day, &mut game.neat_brains,
                 );
                 npc::sys_night_spawning(
                     &mut game.world, &game.terrain, game.time_of_day,

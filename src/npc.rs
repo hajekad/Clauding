@@ -13,7 +13,7 @@ const NIGHT_SPAWN_INTERVAL: f32 = 4.8;
 
 pub fn sys_npc(
     world: &mut WorldData, road_network: &RoadNetwork, terrain: &Terrain,
-    dt: f32, time_of_day: f32,
+    dt: f32, time_of_day: f32, brains: &mut [crate::neat::NeatBrain],
 ) {
     let n = world.npcs.len();
     for i in 0..n {
@@ -26,7 +26,7 @@ pub fn sys_npc(
             NpcState::Sleeping => npc_sleeping(world, i, time_of_day),
             NpcState::HomeTask => npc_home_task(world, i, terrain, dt),
             NpcState::GoingToWork => npc_going_to_work(world, i, road_network, terrain, dt),
-            NpcState::Working => npc_working(world, i, road_network, terrain, dt),
+            NpcState::Working => npc_working(world, i, road_network, terrain, dt, brains, time_of_day),
             NpcState::GoingHome => npc_going_home(world, i, road_network, terrain, dt),
             NpcState::Driving => npc_driving(world, i, terrain, dt),
             NpcState::Interacting => {} // handled by sys_npc_interactions
@@ -314,7 +314,10 @@ fn npc_going_to_work(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain
     }
 }
 
-fn npc_working(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_working(
+    world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: &Terrain,
+    dt: f32, brains: &mut [crate::neat::NeatBrain], time_of_day: f32,
+) {
     world.npcs[i].state_timer += dt;
 
     if world.npcs[i].state_timer >= WORK_DURATION {
@@ -332,8 +335,24 @@ fn npc_working(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: &Ter
         return;
     }
 
-    // Dispatch to job-specific behavior
-    crate::jobs::npc_work_dispatch(world, i, net, terrain, dt);
+    // NEAT brain evaluation
+    let bi = world.npcs[i].brain_idx;
+    if bi < brains.len() {
+        // Track fitness: distance traveled
+        let dx = world.npcs[i].x - world.npcs[i].prev_x;
+        let dz = world.npcs[i].z - world.npcs[i].prev_z;
+        let dist = (dx * dx + dz * dz).sqrt();
+        world.npcs[i].fitness_distance += dist;
+        if dist < 0.01 * dt {
+            world.npcs[i].fitness_stuck_time += dt;
+        }
+        world.npcs[i].prev_x = world.npcs[i].x;
+        world.npcs[i].prev_z = world.npcs[i].z;
+
+        let inputs = crate::neat::gather_inputs(world, i, net, time_of_day);
+        let outputs = brains[bi].activate(&inputs);
+        crate::neat::execute_outputs(world, i, &outputs, net, terrain, dt);
+    }
 }
 
 fn npc_going_home(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: &Terrain, dt: f32) {
@@ -545,10 +564,36 @@ pub fn sys_night_spawning(
     }
 }
 
-/// Reset daily counters at midnight
-pub fn sys_midnight_reset(world: &mut WorldData, time_of_day: f32, prev_time: f32) -> bool {
+/// Reset daily counters at midnight and evolve NEAT population
+pub fn sys_midnight_reset(
+    world: &mut WorldData, time_of_day: f32, prev_time: f32,
+    population: &mut crate::neat::Population, brains: &mut Vec<crate::neat::NeatBrain>,
+) -> bool {
     // Detect midnight crossing
     if prev_time > 23.5 && time_of_day < 0.5 {
+        // Evaluate fitness and evolve
+        let fitnesses: Vec<f32> = world.npcs.iter()
+            .map(|npc| crate::neat::evaluate_fitness(npc))
+            .collect();
+        population.evolve(&fitnesses);
+
+        // Recompile brains from evolved genomes
+        *brains = population.genomes.iter()
+            .map(|g| crate::neat::NeatBrain::compile(g))
+            .collect();
+
+        // Reset fitness tracking
+        for (i, npc) in world.npcs.iter_mut().enumerate() {
+            npc.brain_idx = i;
+            npc.fitness_money_earned = 0.0;
+            npc.fitness_items_picked = 0;
+            npc.fitness_interactions = 0;
+            npc.fitness_distance = 0.0;
+            npc.fitness_stuck_time = 0.0;
+            npc.prev_x = npc.x;
+            npc.prev_z = npc.z;
+        }
+
         // Reset trash bins
         for bin in &mut world.trash_bins {
             bin.items_held = 0;

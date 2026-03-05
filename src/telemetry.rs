@@ -173,6 +173,32 @@ pub fn sys_telemetry(game: &GameState) {
         let _ = writeln!(s);
     }
 
+    // NEAT stats
+    let _ = writeln!(s, "--- NEAT ---");
+    let _ = writeln!(s, "gen={} species={} compat_thresh={:.2}",
+        game.neat_population.generation,
+        game.neat_population.species.len(),
+        game.neat_population.compat_threshold);
+    // Fitness stats from current NPC tracking
+    let fitnesses: Vec<f32> = w.npcs.iter().map(|n| crate::neat::evaluate_fitness(n)).collect();
+    let best_fit = fitnesses.iter().cloned().fold(f32::MIN, f32::max);
+    let avg_fit = fitnesses.iter().sum::<f32>() / fitnesses.len().max(1) as f32;
+    let _ = writeln!(s, "fitness: best={:.1} avg={:.1}", best_fit, avg_fit);
+    // Species sizes
+    if !game.neat_population.species.is_empty() {
+        let _ = write!(s, "species_sizes:");
+        for sp in &game.neat_population.species {
+            let _ = write!(s, " {}({})", sp.id, sp.members.len());
+        }
+        let _ = writeln!(s);
+    }
+    // Network complexity (avg nodes, avg connections)
+    let total_nodes: usize = game.neat_population.genomes.iter().map(|g| g.nodes.len()).sum();
+    let total_conns: usize = game.neat_population.genomes.iter().map(|g| g.connections.iter().filter(|c| c.enabled).count()).sum();
+    let ng = game.neat_population.genomes.len().max(1);
+    let _ = writeln!(s, "avg_nodes={:.1} avg_conns={:.1}", total_nodes as f32 / ng as f32, total_conns as f32 / ng as f32);
+    let _ = writeln!(s);
+
     // World stats
     let active_items = w.items.iter().filter(|it| it.active).count();
     let falling_items = w.items.iter().filter(|it| it.falling).count();

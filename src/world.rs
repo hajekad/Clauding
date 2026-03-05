@@ -1039,6 +1039,13 @@ pub fn generate_world(game: &mut GameState) {
             interaction_target: None,
             interacting_with: None,
             interaction_timer: 0.0,
+            brain_idx: i,
+            fitness_money_earned: 0.0,
+            fitness_items_picked: 0,
+            fitness_interactions: 0,
+            fitness_distance: 0.0,
+            fitness_stuck_time: 0.0,
+            prev_x: x, prev_z: z,
         });
     }
 

@@ -298,6 +298,14 @@ pub struct Npc {
     // Social interactions
     pub interacting_with: Option<usize>, // other NPC index
     pub interaction_timer: f32,
+    // NEAT fitness tracking
+    pub brain_idx: usize,
+    pub fitness_money_earned: f32,
+    pub fitness_items_picked: u32,
+    pub fitness_interactions: u32,
+    pub fitness_distance: f32,
+    pub fitness_stuck_time: f32,
+    pub prev_x: f32, pub prev_z: f32,
 }
 
 pub const NPC_SHIRT_COLORS: [u32; 6] = [
@@ -392,6 +400,8 @@ pub struct GameState {
     pub invert_mouse_y: bool,
     pub spawn_rng: Rng,
     pub day_count: u32,
+    pub neat_population: crate::neat::Population,
+    pub neat_brains: Vec<crate::neat::NeatBrain>,
 }
 
 impl GameState {
@@ -444,6 +454,8 @@ impl GameState {
             invert_mouse_y: false,
             spawn_rng: Rng::new(seed.wrapping_add(0xDEAD)),
             day_count: 1,
+            neat_population: crate::neat::Population::new(NUM_NPCS, seed.wrapping_add(0xAE47)),
+            neat_brains: Vec::new(),
         }
     }
 }
