@@ -3,6 +3,7 @@
 
 use crate::state::*;
 use crate::raster::Framebuffer;
+use crate::math::*;
 
 const DAY_COLOR: u32 = 0xFFCCCCCC;
 
@@ -13,9 +14,14 @@ const BAR_GAP: usize = 6;
 
 const HEALTH_Y: usize = 20;
 const STAMINA_Y: usize = HEALTH_Y + BAR_H + BAR_GAP;
+const HUNGER_Y: usize = STAMINA_Y + BAR_H + BAR_GAP;
+const THIRST_Y: usize = HUNGER_Y + BAR_H + BAR_GAP;
 
 const HEALTH_COLOR: u32 = 0xFFCC2222;
 const STAMINA_COLOR: u32 = 0xFF22CC22;
+const HUNGER_COLOR: u32 = 0xFFDD8833;
+const THIRST_COLOR: u32 = 0xFF3388FF;
+const BAR_LOW_FLASH: u32 = 0xFFFF2222;
 const BAR_BG: u32 = 0xFF333333;
 const BAR_BORDER: u32 = 0xFF888888;
 
@@ -96,9 +102,15 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
     draw_bar(fb, BAR_X, HEALTH_Y, BAR_W, BAR_H, p.health / 100.0, HEALTH_COLOR);
     // Stamina bar
     draw_bar(fb, BAR_X, STAMINA_Y, BAR_W, BAR_H, p.stamina / 100.0, STAMINA_COLOR);
+    // Hunger bar (flash red when < 20%)
+    let hunger_color = if p.hunger < 20.0 { BAR_LOW_FLASH } else { HUNGER_COLOR };
+    draw_bar(fb, BAR_X, HUNGER_Y, BAR_W, BAR_H, p.hunger / 100.0, hunger_color);
+    // Thirst bar (flash red when < 20%)
+    let thirst_color = if p.thirst < 20.0 { BAR_LOW_FLASH } else { THIRST_COLOR };
+    draw_bar(fb, BAR_X, THIRST_Y, BAR_W, BAR_H, p.thirst / 100.0, thirst_color);
 
     // Money ($ + number)
-    let money_y = STAMINA_Y + BAR_H + BAR_GAP + 2;
+    let money_y = THIRST_Y + BAR_H + BAR_GAP + 2;
     draw_char_idx(fb, BAR_X, money_y, 10, 2, MONEY_COLOR); // $
     draw_number(fb, BAR_X + 10, money_y, p.money as u32, 2, MONEY_COLOR);
 
@@ -181,8 +193,18 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
     draw_text(fb, time_x, day_y, "DAY", 1, DAY_COLOR);
     draw_number(fb, time_x + 16, day_y, game.day_count, 1, DAY_COLOR);
 
+    // Time speed indicator (below day counter)
+    if game.time_speed > 1 {
+        let speed_y = day_y + 14;
+        draw_number(fb, time_x, speed_y, game.time_speed, 2, 0xFFFF8844);
+        draw_text(fb, time_x + 8 * 2 + 8, speed_y, "X", 2, 0xFFFF8844);
+    }
+
     // Minimap (bottom-right)
     draw_minimap(fb, game);
+
+    // NPC health bars (world-space projected)
+    draw_npc_health_bars(fb, game);
 
     // Context-sensitive interaction prompt
     if p.in_vehicle.is_none() {
@@ -259,6 +281,19 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
                 let tw = text.len() * 4 + 8;
                 draw_rect(fb, cx - tw / 2, cy - 4, tw, 14, 0x88000000);
                 draw_text(fb, cx - tw / 2 + 4, cy, text, 1, PROMPT_COLOR);
+            } else {
+                // Attack prompt near NPC
+                let attack_dist_sq = ATTACK_RANGE * ATTACK_RANGE * 4.0;
+                let near_npc = game.world.npcs.iter().any(|n| {
+                    if n.state == NpcState::KnockedOut || n.state == NpcState::Sleeping { return false; }
+                    let ndx = p.x - n.x;
+                    let ndz = p.z - n.z;
+                    ndx * ndx + ndz * ndz < attack_dist_sq
+                });
+                if near_npc {
+                    draw_rect(fb, cx - 50, cy - 4, 100, 14, 0x88000000);
+                    draw_text(fb, cx - 46, cy, "F ATTACK", 1, 0xCCFF6644);
+                }
             }
         }
     }
@@ -561,6 +596,7 @@ fn draw_minimap(fb: &mut Framebuffer, game: &GameState) {
                     }
                 }
                 NpcState::GoingHome => MINIMAP_NPC_HOME,
+                NpcState::KnockedOut => 0xFFCC4444,
             };
             draw_dot(fb, mx + nx, my + nz, 1, color);
         }
@@ -576,6 +612,55 @@ fn draw_minimap(fb: &mut Framebuffer, game: &GameState) {
 
 fn world_to_minimap(coord: f32, size: usize) -> usize {
     ((coord + WORLD_HALF) / WORLD_SIZE * size as f32) as usize
+}
+
+fn draw_npc_health_bars(fb: &mut Framebuffer, game: &GameState) {
+    let aspect = fb.w as f32 / fb.h as f32;
+    let eye = v3(game.camera.x, game.camera.y, game.camera.z);
+    let target = v3(game.camera.tx, game.camera.ty, game.camera.tz);
+    let view = m4_look_at(eye, target, v3(0.0, 1.0, 0.0));
+    let proj = m4_perspective(60.0_f32.to_radians(), aspect, 0.1, 200.0);
+    let vp = m4_mul(&proj, &view);
+    let fw = fb.w as f32;
+    let fh = fb.h as f32;
+
+    for npc in &game.world.npcs {
+        // Only show health bar if damaged or KO'd
+        if npc.health >= NPC_HEALTH_MAX && npc.state != NpcState::KnockedOut { continue; }
+        if npc.state == NpcState::Sleeping { continue; }
+        if npc.in_vehicle { continue; }
+
+        // Project NPC head position to screen
+        let world_pos = [npc.x, npc.y + 2.3, npc.z];
+        let clip = m4_transform_no_div(&vp, world_pos);
+        if clip[3] < 0.1 { continue; } // behind camera
+
+        let inv_w = 1.0 / clip[3];
+        let sx = ((clip[0] * inv_w + 1.0) * 0.5 * fw) as i32;
+        let sy = ((1.0 - clip[1] * inv_w) * 0.5 * fh) as i32;
+
+        // Distance-based size (12-40px)
+        let dx = npc.x - game.camera.x;
+        let dz = npc.z - game.camera.z;
+        let dist = (dx * dx + dz * dz).sqrt().max(1.0);
+        let bar_w = (40.0 / (dist * 0.1 + 1.0)).clamp(12.0, 40.0) as usize;
+        let bar_h = 3usize;
+
+        let bx = (sx - bar_w as i32 / 2).max(0) as usize;
+        let by = sy.max(0) as usize;
+        if bx + bar_w >= fb.w || by + bar_h >= fb.h { continue; }
+
+        let fill = (npc.health / NPC_HEALTH_MAX).clamp(0.0, 1.0);
+        let fill_w = (bar_w as f32 * fill) as usize;
+
+        // Background
+        draw_rect(fb, bx, by, bar_w, bar_h, 0xCC333333);
+        // Fill
+        let bar_color = if npc.state == NpcState::KnockedOut { 0xCC888888 } else { 0xCCCC2222 };
+        if fill_w > 0 {
+            draw_rect(fb, bx, by, fill_w, bar_h, bar_color);
+        }
+    }
 }
 
 fn draw_dot(fb: &mut Framebuffer, cx: usize, cy: usize, r: usize, color: u32) {

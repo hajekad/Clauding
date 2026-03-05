@@ -9,9 +9,10 @@ pub enum Action {
     Sprint,
     Interact,
     Jump,
+    Attack,
 }
 
-pub const ALL_ACTIONS: [Action; 7] = [
+pub const ALL_ACTIONS: [Action; 8] = [
     Action::MoveForward,
     Action::MoveBack,
     Action::MoveLeft,
@@ -19,6 +20,7 @@ pub const ALL_ACTIONS: [Action; 7] = [
     Action::Sprint,
     Action::Interact,
     Action::Jump,
+    Action::Attack,
 ];
 
 impl Action {
@@ -31,12 +33,13 @@ impl Action {
             Action::Sprint => "Sprint",
             Action::Interact => "Interact",
             Action::Jump => "Jump",
+            Action::Attack => "Attack",
         }
     }
 }
 
 pub struct KeyBinds {
-    pub binds: [(Action, usize); 7],
+    pub binds: [(Action, usize); 8],
 }
 
 impl KeyBinds {
@@ -50,6 +53,7 @@ impl KeyBinds {
                 (Action::Sprint, 42),       // Left Shift
                 (Action::Interact, 18),     // E
                 (Action::Jump, 57),         // Space
+                (Action::Attack, 33),       // F
             ],
         }
     }

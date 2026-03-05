@@ -125,36 +125,36 @@ fn generate_road_network(rng: &mut Rng) -> RoadNetwork {
     let center = [rng.range(-3.0, 3.0), rng.range(-3.0, 3.0)];
     nodes.push(center); // index 0
 
-    // Ring 1: 4 nodes at radius ~30
+    // Ring 1: 4 nodes at radius ~75
     let ring1_count = 4;
     let ring1_start = nodes.len();
     let base_angle = rng.range(0.0, std::f32::consts::TAU);
     for i in 0..ring1_count {
         let angle = base_angle + (i as f32 / ring1_count as f32) * std::f32::consts::TAU
             + rng.range(-0.3, 0.3);
-        let radius = rng.range(25.0, 35.0);
+        let radius = rng.range(62.0, 88.0);
         nodes.push([angle.cos() * radius, angle.sin() * radius]);
     }
 
-    // Ring 2: 6 nodes at radius ~60
+    // Ring 2: 6 nodes at radius ~150
     let ring2_count = 6;
     let ring2_start = nodes.len();
     let base_angle2 = rng.range(0.0, std::f32::consts::TAU);
     for i in 0..ring2_count {
         let angle = base_angle2 + (i as f32 / ring2_count as f32) * std::f32::consts::TAU
             + rng.range(-0.25, 0.25);
-        let radius = rng.range(52.0, 68.0);
+        let radius = rng.range(130.0, 170.0);
         nodes.push([angle.cos() * radius, angle.sin() * radius]);
     }
 
-    // Edge nodes: 4 nodes at radius ~85
+    // Edge nodes: 4 nodes at radius ~210
     let edge_count = 4;
     let edge_start = nodes.len();
     let base_angle3 = rng.range(0.0, std::f32::consts::TAU);
     for i in 0..edge_count {
         let angle = base_angle3 + (i as f32 / edge_count as f32) * std::f32::consts::TAU
             + rng.range(-0.3, 0.3);
-        let radius = rng.range(78.0, 90.0);
+        let radius = rng.range(195.0, 225.0);
         nodes.push([angle.cos() * radius, angle.sin() * radius]);
     }
 
@@ -346,11 +346,11 @@ fn generate_heightmap(terrain: &mut Terrain, seed: u64, net: &RoadNetwork) {
             let x = -WORLD_HALF + ix as f32 * cell;
             let z = -WORLD_HALF + iz as f32 * cell;
 
-            // Multi-octave sinusoidal terrain
+            // Multi-octave sinusoidal terrain (frequencies scaled for 500m map)
             let mut h = 0.0f32;
-            h += ((x * 0.03 + phase_x).sin() * (z * 0.025 + phase_z).sin()) * 4.0;
-            h += ((x * 0.07 + phase_z).sin() * (z * 0.06 + phase_x).sin()) * 1.5;
-            h += ((x * 0.15 + phase_x * 2.0).sin() * (z * 0.13 + phase_z * 2.0).sin()) * 0.5;
+            h += ((x * 0.012 + phase_x).sin() * (z * 0.010 + phase_z).sin()) * 4.0;
+            h += ((x * 0.028 + phase_z).sin() * (z * 0.024 + phase_x).sin()) * 1.5;
+            h += ((x * 0.060 + phase_x * 2.0).sin() * (z * 0.052 + phase_z * 2.0).sin()) * 0.5;
 
             // Flatten near roads (smooth falloff based on nearest segment)
             let (rd, tier) = road_dist_network(x, z, net);
@@ -369,10 +369,10 @@ fn generate_heightmap(terrain: &mut Terrain, seed: u64, net: &RoadNetwork) {
 
             // Flatten downtown area (near origin)
             let downtown_dist = (x * x + z * z).sqrt();
-            let downtown_flatten = if downtown_dist < 15.0 {
+            let downtown_flatten = if downtown_dist < 37.5 {
                 0.2
-            } else if downtown_dist < 30.0 {
-                0.2 + 0.8 * ((downtown_dist - 15.0) / 15.0)
+            } else if downtown_dist < 75.0 {
+                0.2 + 0.8 * ((downtown_dist - 37.5) / 37.5)
             } else {
                 1.0
             };
@@ -920,12 +920,35 @@ pub fn generate_world(game: &mut GameState) {
         game.world.street_lights.push(StreetLight { x, z });
     }
 
-    // Trash bins at road network nodes (intersections)
+    // Trash bins at road network nodes (intersections), then along road segments
     let mut bin_count = 0;
     for node in &game.road_network.nodes {
         if bin_count >= NUM_TRASH_BINS { break; }
         let bx = node[0] + 4.0;
         let bz = node[1] + 4.0;
+        let by = game.terrain.height_at(bx, bz);
+        game.world.trash_bins.push(TrashBin {
+            x: bx, y: by, z: bz, items_held: 0, carried_by: None,
+        });
+        bin_count += 1;
+    }
+    // Fill remaining bins along road segments
+    while bin_count < NUM_TRASH_BINS && !car_segments.is_empty() {
+        let seg_idx = rng.next() as usize % car_segments.len();
+        let seg = &car_segments[seg_idx];
+        let t = rng.range(0.2, 0.8);
+        let sx = seg.x0 + (seg.x1 - seg.x0) * t;
+        let sz = seg.z0 + (seg.z1 - seg.z0) * t;
+        let dx = seg.x1 - seg.x0;
+        let dz = seg.z1 - seg.z0;
+        let len = (dx * dx + dz * dz).sqrt();
+        if len < 0.01 { continue; }
+        let perp_x = -dz / len;
+        let perp_z = dx / len;
+        let offset = CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH + 0.3;
+        let side = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
+        let bx = sx + perp_x * offset * side;
+        let bz = sz + perp_z * offset * side;
         let by = game.terrain.height_at(bx, bz);
         game.world.trash_bins.push(TrashBin {
             x: bx, y: by, z: bz, items_held: 0, carried_by: None,
@@ -1046,11 +1069,30 @@ pub fn generate_world(game: &mut GameState) {
             fitness_distance: 0.0,
             fitness_stuck_time: 0.0,
             prev_x: x, prev_z: z,
+            health: NPC_HEALTH_MAX,
+            attack_cooldown: 0.0,
+            attack_phase: 0.0,
+            hit_flash: 0.0,
+            knockout_timer: 0.0,
+            knockback_vx: 0.0,
+            knockback_vz: 0.0,
+            attack_intent: 0,
+            fitness_knockouts: 0,
+            fitness_hits_landed: 0,
+            hunger: 100.0,
+            thirst: 100.0,
+            starving_dead: false,
+            fitness_starve_time: 0.0,
+            sound: [0.0; 3],
+            fitness_sounds_made: 0,
+            fitness_npcs_heard: 0,
+            fitness_proximity: 0.0,
         });
     }
 
-    // Items
-    let item_kinds = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina];
+    // Items (weighted: 40% food/water for survival, 60% other)
+    let item_kinds_survival = [ItemKind::Food, ItemKind::Water];
+    let item_kinds_other = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina];
     for _ in 0..NUM_ITEMS {
         let mut x;
         let mut z;
@@ -1060,7 +1102,11 @@ pub fn generate_world(game: &mut GameState) {
             if !on_any_road(x, z, &game.road_network) { break; }
         }
         let y = game.terrain.height_at(x, z);
-        let kind = item_kinds[rng.next() as usize % 3];
+        let kind = if rng.next() % 5 < 2 {
+            item_kinds_survival[rng.next() as usize % 2]
+        } else {
+            item_kinds_other[rng.next() as usize % 3]
+        };
         game.world.items.push(Item {
             x, y, z, kind, active: true,
             spin_phase: rng.range(0.0, 6.0),

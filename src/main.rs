@@ -1,24 +1,4 @@
-mod math;
-mod state;
-mod raster;
-mod render;
-mod platform;
-mod gpu;
-mod gpu_kernels;
-mod world;
-mod player;
-mod vehicle;
-mod npc;
-mod camera;
-mod hud;
-mod particle;
-mod rng;
-mod input;
-mod menu;
-mod jobs;
-mod player_jobs;
-mod telemetry;
-mod neat;
+use clauding::{state, world, neat, npc, vehicle, player, camera, hud, particle, raster, render, menu, input, combat, player_jobs, telemetry, gpu, platform};
 
 use std::time::Instant;
 
@@ -60,7 +40,19 @@ fn main() {
     let mut game = state::GameState::new(w, h, world_seed);
     world::generate_world(&mut game);
 
-    // Compile NEAT brains from initial population
+    // Try to load saved NEAT population, otherwise use fresh one
+    if let Some(loaded) = neat::load_population("/tmp/clauding_neat.bin", state::NUM_NPCS) {
+        eprintln!("Loaded NEAT population: gen {}, {} genomes", loaded.generation, loaded.genomes.len());
+        game.neat_population = loaded;
+    } else {
+        // Also try the trained binary output
+        if let Some(loaded) = neat::load_population("neat_trained.bin", state::NUM_NPCS) {
+            eprintln!("Loaded trained NEAT population: gen {}, {} genomes", loaded.generation, loaded.genomes.len());
+            game.neat_population = loaded;
+        }
+    }
+
+    // Compile NEAT brains from population
     game.neat_brains = game.neat_population.genomes.iter()
         .map(|g| neat::NeatBrain::compile(g))
         .collect();
@@ -113,11 +105,39 @@ fn main() {
             game.mouse_dy = 0.0;
         }
         if game.menu.state == menu::MenuState::None {
+            // Time speed toggle: T key (scancode 20) edge-detect
+            if game.keys[20] && !game.prev_keys[20] {
+                game.time_speed = match game.time_speed {
+                    1 => 10,
+                    10 => 100,
+                    100 => 1000,
+                    _ => 1,
+                };
+            }
+
             // Fixed timestep accumulator
             accumulator += frame_dt.min(MAX_ACCUMULATOR);
 
-            while accumulator >= FIXED_DT {
-                accumulator -= FIXED_DT;
+            // At high speed, run multiple ticks per frame
+            let ticks_per_frame = if game.time_speed > 1 {
+                (game.time_speed as usize).min(500)
+            } else {
+                0 // use normal accumulator
+            };
+
+            let tick_count = if ticks_per_frame > 0 {
+                accumulator = 0.0;
+                ticks_per_frame
+            } else {
+                let mut count = 0;
+                while accumulator >= FIXED_DT {
+                    accumulator -= FIXED_DT;
+                    count += 1;
+                }
+                count
+            };
+
+            for _ in 0..tick_count {
 
                 prev_time_of_day = game.time_of_day;
 
@@ -139,6 +159,7 @@ fn main() {
                 npc::sys_npc(
                     &mut game.world, &game.road_network, &game.terrain,
                     FIXED_DT, game.time_of_day, &mut game.neat_brains,
+                    game.player.x, game.player.z,
                 );
                 npc::sys_night_spawning(
                     &mut game.world, &game.terrain, game.time_of_day,
@@ -146,6 +167,12 @@ fn main() {
                 );
                 npc::sys_items_update(&mut game.world, FIXED_DT);
                 npc::sys_npc_interactions(&mut game.world, FIXED_DT);
+                combat::sys_combat(
+                    &mut game.world, &mut game.player, &mut particles,
+                    &game.terrain, &game.keys, &game.prev_keys,
+                    &game.keybinds, FIXED_DT,
+                );
+                npc::sys_hunger_thirst(&mut game.world, &mut game.player, FIXED_DT);
                 player_jobs::sys_interactibles_update(&mut game.world, FIXED_DT);
                 player_jobs::sys_player_job(&mut game, FIXED_DT);
 
@@ -170,7 +197,7 @@ fn main() {
                 &mut game.camera, &game.player, &game.terrain,
                 game.mouse_dx, game.mouse_dy,
                 game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
-                frame_dt,
+                frame_dt, game.frame_counter,
             );
             game.mouse_dx = 0.0;
             game.mouse_dy = 0.0;

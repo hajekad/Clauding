@@ -9,13 +9,13 @@ pub const DEFAULT_HEIGHT: usize = 1080;
 pub const MAX_FPS: f32 = 500.0;
 pub const FRAME_TIME_MIN: f32 = 1.0 / MAX_FPS;
 
-pub const WORLD_SIZE: f32 = 200.0;
+pub const WORLD_SIZE: f32 = 500.0;
 pub const WORLD_HALF: f32 = WORLD_SIZE * 0.5;
-pub const NUM_BUILDINGS: usize = 50;
-pub const NUM_TREES: usize = 80;
-pub const NUM_ROCKS: usize = 20;
-pub const NUM_STREET_LIGHTS: usize = 25;
-pub const NUM_VEHICLES: usize = 30;
+pub const NUM_BUILDINGS: usize = 125;
+pub const NUM_TREES: usize = 200;
+pub const NUM_ROCKS: usize = 50;
+pub const NUM_STREET_LIGHTS: usize = 60;
+pub const NUM_VEHICLES: usize = 75;
 pub const CAR_ROAD_WIDTH: f32 = 6.0;
 pub const SIDEWALK_WIDTH: f32 = 1.5;
 pub const FIELD_ROAD_WIDTH: f32 = 2.5;
@@ -29,21 +29,57 @@ pub const VEHICLE_ACCEL: f32 = 12.0;
 pub const VEHICLE_BRAKE: f32 = 20.0;
 pub const VEHICLE_TURN_SPEED: f32 = 2.5;
 pub const VEHICLE_ENTER_DIST: f32 = 3.0;
-pub const FOG_DIST: f32 = 150.0;
+pub const FOG_DIST: f32 = 375.0;
 pub const PLAYER_SPEED: f32 = 5.0;
 pub const SPRINT_SPEED: f32 = 9.0;
 pub const PLAYER_RADIUS: f32 = 0.4;
 pub const DAY_LENGTH: f32 = 1440.0; // 1 game-minute = 1 real second (24 real minutes per day)
-pub const NUM_NPCS: usize = 40;
-pub const NUM_ITEMS: usize = 100;
+pub const NUM_NPCS: usize = 100;
+pub const NUM_ITEMS: usize = 250;
 pub const NPC_SPEED: f32 = 2.5;
-pub const TERRAIN_GRID: usize = 100;
+pub const TERRAIN_GRID: usize = 250;
 pub const TERRAIN_CELL: f32 = WORLD_SIZE / TERRAIN_GRID as f32; // 2m per cell
 pub const GRAVITY: f32 = 20.0;
 pub const JUMP_VELOCITY: f32 = 8.0;
 
+// Combat constants
+pub const ATTACK_RANGE: f32 = 2.0;
+pub const ATTACK_CONE_COS: f32 = 0.5; // cos(60°) — 120° cone
+pub const ATTACK_DAMAGE: f32 = 15.0;
+pub const NPC_ATTACK_DAMAGE: f32 = 10.0;
+pub const ATTACK_COOLDOWN: f32 = 0.5;
+pub const ATTACK_ANIM_DURATION: f32 = 0.3;
+pub const KNOCKBACK_FORCE: f32 = 6.0;
+pub const KNOCKBACK_UP: f32 = 3.0;
+pub const KNOCKBACK_FRICTION: f32 = 5.0;
+pub const KNOCKOUT_TIME: f32 = 10.0;
+pub const KNOCKOUT_REGEN_HP: f32 = 30.0;
+pub const NPC_HEALTH_MAX: f32 = 100.0;
+pub const HEALTH_REGEN_RATE: f32 = 2.0;
+pub const CAMERA_SHAKE_DECAY: f32 = 8.0;
+pub const CAMERA_SHAKE_INTENSITY: f32 = 0.15;
+pub const HIT_FLASH_DURATION: f32 = 0.15;
+
+// Hunger/thirst constants
+pub const HUNGER_DRAIN_RATE: f32 = 0.014;
+pub const THIRST_DRAIN_RATE: f32 = 0.028;
+pub const STARVATION_DAMAGE: f32 = 5.0;
+pub const DEHYDRATION_DAMAGE: f32 = 8.0;
+pub const FOOD_RESTORE: f32 = 35.0;
+pub const WATER_RESTORE: f32 = 40.0;
+pub const VENDING_WATER_RESTORE: f32 = 30.0;
+pub const NEWSPAPER_FOOD_RESTORE: f32 = 20.0;
+pub const PLAYER_MIN_HEALTH_STARVE: f32 = 10.0;
+
+// NPC sensory communication constants
+pub const SOUND_RANGE: f32 = 30.0;
+pub const VISION_RANGE: f32 = 30.0;
+pub const VISION_CONE_COS: f32 = 0.5; // cos(60°) = 120° full cone
+#[allow(dead_code)]
+pub const SOUND_CHANNELS: usize = 3;
+
 // NPC life simulation constants
-pub const NUM_TRASH_BINS: usize = 25;
+pub const NUM_TRASH_BINS: usize = 60;
 pub const NPC_JUMP_VELOCITY: f32 = 6.0;
 pub const NPC_DRIVE_THRESHOLD: f32 = 30.0;
 pub const NPC_PICKUP_DIST: f32 = 1.2;
@@ -51,7 +87,7 @@ pub const NPC_BIN_DIST: f32 = 1.5;
 pub const INTERACT_DIST: f32 = 2.0;
 pub const NIGHT_SPAWN_START: f32 = 20.0; // 8 PM
 pub const NIGHT_SPAWN_END: f32 = 4.0;    // 4 AM
-pub const DOCK_Z_START: f32 = 70.0;
+pub const DOCK_Z_START: f32 = 175.0;
 pub const WATER_Y: f32 = -1.0;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -256,6 +292,7 @@ pub enum NpcState {
     GoingHome,
     Driving,
     Interacting,
+    KnockedOut,
 }
 
 pub struct Npc {
@@ -306,6 +343,28 @@ pub struct Npc {
     pub fitness_distance: f32,
     pub fitness_stuck_time: f32,
     pub prev_x: f32, pub prev_z: f32,
+    // Combat
+    pub health: f32,
+    pub attack_cooldown: f32,
+    pub attack_phase: f32,
+    pub hit_flash: f32,
+    pub knockout_timer: f32,
+    pub knockback_vx: f32,
+    pub knockback_vz: f32,
+    pub attack_intent: u8, // 0=none, 1=player, 2=npc
+    pub fitness_knockouts: u32,
+    pub fitness_hits_landed: u32,
+    // Hunger/thirst
+    pub hunger: f32,
+    pub thirst: f32,
+    pub starving_dead: bool,
+    pub fitness_starve_time: f32,
+    // Sound/vision communication
+    pub sound: [f32; 3],
+    pub fitness_sounds_made: u32,
+    pub fitness_npcs_heard: u32,
+    // Proximity tracking (continuous reward for being near items)
+    pub fitness_proximity: f32,
 }
 
 pub const NPC_SHIRT_COLORS: [u32; 6] = [
@@ -316,7 +375,7 @@ pub const NPC_PANTS_COLORS: [u32; 4] = [
 ];
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum ItemKind { Health, Money, Stamina }
+pub enum ItemKind { Health, Money, Stamina, Food, Water }
 
 pub struct Item {
     pub x: f32, pub y: f32, pub z: f32,
@@ -347,6 +406,14 @@ pub struct Player {
     pub bank_balance: f32,
     pub job_menu_open: bool,
     pub job_menu_cursor: usize,
+    // Combat
+    pub attack_cooldown: f32,
+    pub attack_phase: f32,
+    pub hit_flash: f32,
+    pub damage_shake: f32,
+    // Hunger/thirst
+    pub hunger: f32,
+    pub thirst: f32,
 }
 
 pub struct Camera {
@@ -402,6 +469,7 @@ pub struct GameState {
     pub day_count: u32,
     pub neat_population: crate::neat::Population,
     pub neat_brains: Vec<crate::neat::NeatBrain>,
+    pub time_speed: u32, // 1, 10, 100, 1000
 }
 
 impl GameState {
@@ -426,6 +494,8 @@ impl GameState {
                 carrying_item: false, carrying_bin: None,
                 active_job: PlayerJob::none(), sitting: false, bank_balance: 0.0,
                 job_menu_open: false, job_menu_cursor: 0,
+                attack_cooldown: 0.0, attack_phase: 0.0, hit_flash: 0.0, damage_shake: 0.0,
+                hunger: 100.0, thirst: 100.0,
             },
             camera: Camera {
                 x: 0.0, y: 8.0, z: 18.0,
@@ -456,6 +526,7 @@ impl GameState {
             day_count: 1,
             neat_population: crate::neat::Population::new(NUM_NPCS, seed.wrapping_add(0xAE47)),
             neat_brains: Vec::new(),
+            time_speed: 1,
         }
     }
 }

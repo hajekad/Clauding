@@ -15,14 +15,14 @@ pub fn sys_telemetry(game: &GameState) {
     let hour = game.time_of_day as u32;
     let minute = ((game.time_of_day - hour as f32) * 60.0) as u32;
     let _ = writeln!(s, "=== CLAUDING STATE ===");
-    let _ = writeln!(s, "Day {} | {:02}:{:02} | frame {} | tick {}", game.day_count, hour, minute, game.frame_counter, game.frame_counter);
+    let _ = writeln!(s, "Day {} | {:02}:{:02} | frame {} | tick {} | speed {}x", game.day_count, hour, minute, game.frame_counter, game.frame_counter, game.time_speed);
     let _ = writeln!(s);
 
     // Player
     let p = &game.player;
     let _ = writeln!(s, "--- PLAYER ---");
     let _ = writeln!(s, "pos=({:.1}, {:.1}, {:.1}) rot={:.2}", p.x, p.y, p.z, p.rot_y);
-    let _ = writeln!(s, "health={:.0} stamina={:.0} money=${:.0} bank=${:.0}", p.health, p.stamina, p.money, p.bank_balance);
+    let _ = writeln!(s, "health={:.0} stamina={:.0} hunger={:.0} thirst={:.0} money=${:.0} bank=${:.0}", p.health, p.stamina, p.hunger, p.thirst, p.money, p.bank_balance);
     let _ = write!(s, "flags:");
     if p.in_vehicle.is_some() { let _ = write!(s, " in_vehicle({})", p.in_vehicle.unwrap()); }
     if p.carrying_item { let _ = write!(s, " carrying_item"); }
@@ -84,6 +84,7 @@ pub fn sys_telemetry(game: &GameState) {
             NpcState::Interacting => b'I',
             NpcState::HomeTask => b'H',
             NpcState::GoingToWork | NpcState::GoingHome => b'G',
+            NpcState::KnockedOut => b'K',
         };
     }
 
@@ -95,12 +96,12 @@ pub fn sys_telemetry(game: &GameState) {
         let _ = s.push_str(std::str::from_utf8(row).unwrap_or(""));
         let _ = s.push('\n');
     }
-    let _ = writeln!(s, "Legend: @=player W=working S=sleeping D=driving I=interacting H=home G=going v=vehicle *=item #=building ~=water");
+    let _ = writeln!(s, "Legend: @=player W=working S=sleeping D=driving I=interacting H=home G=going K=knockedout v=vehicle *=item #=building ~=water");
     let _ = writeln!(s);
 
     // NPC state summary
     let _ = writeln!(s, "--- NPC SUMMARY ({} total) ---", w.npcs.len());
-    let mut state_counts = [0u32; 7];
+    let mut state_counts = [0u32; 8];
     for npc in &w.npcs {
         let idx = match npc.state {
             NpcState::Sleeping => 0,
@@ -110,12 +111,13 @@ pub fn sys_telemetry(game: &GameState) {
             NpcState::GoingHome => 4,
             NpcState::Driving => 5,
             NpcState::Interacting => 6,
+            NpcState::KnockedOut => 7,
         };
         state_counts[idx] += 1;
     }
-    let _ = writeln!(s, "Sleeping={} HomeTask={} GoingToWork={} Working={} GoingHome={} Driving={} Interacting={}",
+    let _ = writeln!(s, "Sleeping={} HomeTask={} GoingToWork={} Working={} GoingHome={} Driving={} Interacting={} KnockedOut={}",
         state_counts[0], state_counts[1], state_counts[2], state_counts[3],
-        state_counts[4], state_counts[5], state_counts[6]);
+        state_counts[4], state_counts[5], state_counts[6], state_counts[7]);
 
     // Job counts
     let mut job_counts = [0u32; NPC_JOB_COUNT];
@@ -138,7 +140,7 @@ pub fn sys_telemetry(game: &GameState) {
     // Per-NPC detail
     let _ = writeln!(s, "--- NPC DETAIL ---");
     for (i, npc) in w.npcs.iter().enumerate() {
-        let _ = writeln!(s, "[{:2}] {:12} {:10} pos=({:6.1},{:6.1}) money=${:<5.0} carry={} bin={} dep={}",
+        let _ = writeln!(s, "[{:2}] {:12} {:10} pos=({:6.1},{:6.1}) money=${:<5.0} carry={} bin={} dep={} snd=({:.2},{:.2},{:.2})",
             i,
             npc_job_name(npc.job),
             npc_state_name(npc.state),
@@ -146,7 +148,8 @@ pub fn sys_telemetry(game: &GameState) {
             npc.money,
             npc.carrying_item,
             npc.carrying_bin.is_some(),
-            npc.items_deposited_today);
+            npc.items_deposited_today,
+            npc.sound[0], npc.sound[1], npc.sound[2]);
     }
     let _ = writeln!(s);
 
@@ -205,8 +208,23 @@ pub fn sys_telemetry(game: &GameState) {
     let total_npc_money: f32 = w.npcs.iter().map(|n| n.money).sum();
     let total_deposited: u32 = w.npcs.iter().map(|n| n.items_deposited_today).sum();
     let _ = writeln!(s, "--- WORLD STATS ---");
+    let total_ko: u32 = w.npcs.iter().map(|n| n.fitness_knockouts).sum();
+    let total_hits: u32 = w.npcs.iter().map(|n| n.fitness_hits_landed).sum();
+    let avg_hunger: f32 = w.npcs.iter().map(|n| n.hunger).sum::<f32>() / w.npcs.len().max(1) as f32;
+    let avg_thirst: f32 = w.npcs.iter().map(|n| n.thirst).sum::<f32>() / w.npcs.len().max(1) as f32;
+    let starving: usize = w.npcs.iter().filter(|n| n.hunger <= 0.0).count();
+    let dehydrated: usize = w.npcs.iter().filter(|n| n.thirst <= 0.0).count();
+    let starving_dead: usize = w.npcs.iter().filter(|n| n.starving_dead).count();
     let _ = writeln!(s, "active_items={} falling={} total_npc_money=${:.0} deposited_today={}",
         active_items, falling_items, total_npc_money, total_deposited);
+    let _ = writeln!(s, "combat: ko_today={} hits_landed_today={}", total_ko, total_hits);
+    let _ = writeln!(s, "survival: avg_hunger={:.0} avg_thirst={:.0} starving={} dehydrated={} starving_dead={}",
+        avg_hunger, avg_thirst, starving, dehydrated, starving_dead);
+    let vocalizing_now: usize = w.npcs.iter().filter(|n| n.sound[0] > 0.1 || n.sound[1] > 0.1 || n.sound[2] > 0.1).count();
+    let sound_ticks_today: u32 = w.npcs.iter().map(|n| n.fitness_sounds_made).sum();
+    let heard_ticks_today: u32 = w.npcs.iter().map(|n| n.fitness_npcs_heard).sum();
+    let _ = writeln!(s, "communication: vocalizing_now={} sound_ticks_today={} heard_ticks_today={}",
+        vocalizing_now, sound_ticks_today, heard_ticks_today);
 
     let _ = std::fs::write("/tmp/clauding_state.txt", s);
 }
@@ -231,6 +249,7 @@ fn npc_state_name(s: NpcState) -> &'static str {
         NpcState::GoingHome => "GoHome",
         NpcState::Driving => "Driving",
         NpcState::Interacting => "Interacting",
+        NpcState::KnockedOut => "KnockedOut",
     }
 }
 

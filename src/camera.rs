@@ -16,7 +16,7 @@ pub fn sys_camera(
     cam: &mut Camera, player: &Player, terrain: &Terrain,
     mouse_dx: f32, mouse_dy: f32,
     sensitivity: f32, invert_x: bool, invert_y: bool,
-    _dt: f32,
+    _dt: f32, frame_counter: u64,
 ) {
     // Apply mouse input to yaw/pitch
     // Default: mouse right = look right (yaw decreases = camera orbits left = world moves right)
@@ -52,6 +52,15 @@ pub fn sys_camera(
     let terrain_y = terrain.height_at(cam.x, cam.z) + 1.0;
     if cam.y < terrain_y {
         cam.y = terrain_y;
+    }
+
+    // Camera shake from damage
+    if player.damage_shake > 0.001 {
+        let t = frame_counter as f32;
+        let shake_x = (t * 37.0).sin() * player.damage_shake;
+        let shake_y = (t * 53.0).sin() * player.damage_shake;
+        cam.x += shake_x;
+        cam.y += shake_y;
     }
 
     // Look at player chest

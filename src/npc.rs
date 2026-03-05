@@ -14,6 +14,7 @@ const NIGHT_SPAWN_INTERVAL: f32 = 4.8;
 pub fn sys_npc(
     world: &mut WorldData, road_network: &RoadNetwork, terrain: &Terrain,
     dt: f32, time_of_day: f32, brains: &mut [crate::neat::NeatBrain],
+    player_x: f32, player_z: f32,
 ) {
     let n = world.npcs.len();
     for i in 0..n {
@@ -26,10 +27,11 @@ pub fn sys_npc(
             NpcState::Sleeping => npc_sleeping(world, i, time_of_day),
             NpcState::HomeTask => npc_home_task(world, i, terrain, dt),
             NpcState::GoingToWork => npc_going_to_work(world, i, road_network, terrain, dt),
-            NpcState::Working => npc_working(world, i, road_network, terrain, dt, brains, time_of_day),
+            NpcState::Working => npc_working(world, i, road_network, terrain, dt, brains, time_of_day, player_x, player_z),
             NpcState::GoingHome => npc_going_home(world, i, road_network, terrain, dt),
             NpcState::Driving => npc_driving(world, i, terrain, dt),
             NpcState::Interacting => {} // handled by sys_npc_interactions
+            NpcState::KnockedOut => {}  // recovery handled by combat.rs
         }
     }
 }
@@ -216,6 +218,7 @@ fn npc_sleeping(world: &mut WorldData, i: usize, time_of_day: f32) {
     npc.z = home.z;
     npc.y = home.ground_y;
     npc.walk_phase = 0.0; // no animation
+    npc.sound = [0.0; 3];
 
     // Check wake condition (handle midnight wrap)
     let should_wake = if npc.wake_hour < 12.0 {
@@ -317,6 +320,7 @@ fn npc_going_to_work(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain
 fn npc_working(
     world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: &Terrain,
     dt: f32, brains: &mut [crate::neat::NeatBrain], time_of_day: f32,
+    player_x: f32, player_z: f32,
 ) {
     world.npcs[i].state_timer += dt;
 
@@ -338,7 +342,7 @@ fn npc_working(
     // NEAT brain evaluation
     let bi = world.npcs[i].brain_idx;
     if bi < brains.len() {
-        // Track fitness: distance traveled
+        // Track fitness: distance traveled + item proximity
         let dx = world.npcs[i].x - world.npcs[i].prev_x;
         let dz = world.npcs[i].z - world.npcs[i].prev_z;
         let dist = (dx * dx + dz * dz).sqrt();
@@ -349,9 +353,32 @@ fn npc_working(
         world.npcs[i].prev_x = world.npcs[i].x;
         world.npcs[i].prev_z = world.npcs[i].z;
 
-        let inputs = crate::neat::gather_inputs(world, i, net, time_of_day);
+        // Proximity reward: closer to items = higher reward (continuous gradient)
+        let mut nearest_item_d2 = f32::MAX;
+        for item in world.items.iter() {
+            if !item.active || item.falling { continue; }
+            let idx = item.x - world.npcs[i].x;
+            let idz = item.z - world.npcs[i].z;
+            let d2 = idx * idx + idz * idz;
+            if d2 < nearest_item_d2 { nearest_item_d2 = d2; }
+        }
+        if nearest_item_d2 < f32::MAX {
+            let nearest_dist = nearest_item_d2.sqrt();
+            // Reward for being within 50m of an item (up to 1.0 per tick at 0 distance)
+            let prox = (1.0 - nearest_dist / 50.0).max(0.0);
+            world.npcs[i].fitness_proximity += prox * dt;
+        }
+
+        let inputs = crate::neat::gather_inputs(world, i, net, time_of_day, player_x, player_z);
         let outputs = brains[bi].activate(&inputs);
         crate::neat::execute_outputs(world, i, &outputs, net, terrain, dt);
+
+        // Track hearing fitness: any audible NPC this tick (inputs 45-52 are hear sound channels)
+        let any_heard = inputs[45] > 0.01 || inputs[46] > 0.01 || inputs[47] > 0.01
+            || inputs[50] > 0.01 || inputs[51] > 0.01 || inputs[52] > 0.01;
+        if any_heard {
+            world.npcs[i].fitness_npcs_heard += 1;
+        }
     }
 }
 
@@ -535,8 +562,12 @@ pub fn sys_night_spawning(
         let x = rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0);
         let z = rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0);
         let y = 40.0 + rng.range(0.0, 20.0);
-        let kinds = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina];
-        let kind = kinds[rng.next() as usize % 3];
+        // Weight toward Food/Water (40%) for NPC survival
+        let kind = if rng.next() % 5 < 2 {
+            [ItemKind::Food, ItemKind::Water][rng.next() as usize % 2]
+        } else {
+            [ItemKind::Health, ItemKind::Money, ItemKind::Stamina][rng.next() as usize % 3]
+        };
 
         // Find an inactive item slot to reuse, or push new
         let mut found = false;
@@ -577,19 +608,38 @@ pub fn sys_midnight_reset(
             .collect();
         population.evolve(&fitnesses);
 
+        // Auto-save evolved population
+        crate::neat::save_population("/tmp/clauding_neat.bin", population);
+
         // Recompile brains from evolved genomes
         *brains = population.genomes.iter()
             .map(|g| crate::neat::NeatBrain::compile(g))
             .collect();
 
-        // Reset fitness tracking
+        // Reset ALL NPCs for fair evaluation each generation
         for (i, npc) in world.npcs.iter_mut().enumerate() {
+            // Full reset: every NPC starts fresh each day
+            npc.health = NPC_HEALTH_MAX;
+            npc.hunger = 100.0;
+            npc.thirst = 100.0;
+            npc.starving_dead = false;
+            npc.state = NpcState::Sleeping;
+            npc.knockout_timer = 0.0;
+            npc.carrying_item = false;
+            npc.carrying_bin = None;
             npc.brain_idx = i;
             npc.fitness_money_earned = 0.0;
             npc.fitness_items_picked = 0;
             npc.fitness_interactions = 0;
             npc.fitness_distance = 0.0;
             npc.fitness_stuck_time = 0.0;
+            npc.fitness_knockouts = 0;
+            npc.fitness_hits_landed = 0;
+            npc.fitness_starve_time = 0.0;
+            npc.fitness_sounds_made = 0;
+            npc.fitness_npcs_heard = 0;
+            npc.fitness_proximity = 0.0;
+            npc.sound = [0.0; 3];
             npc.prev_x = npc.x;
             npc.prev_z = npc.z;
         }
@@ -682,14 +732,22 @@ pub fn sys_player_interact(
             }
         }
         if let Some(ii) = best_ii {
-            let color = match world.items[ii].kind {
+            let kind = world.items[ii].kind;
+            let color = match kind {
                 ItemKind::Health => 0xFFFF3333,
                 ItemKind::Money => 0xFFFFDD33,
                 ItemKind::Stamina => 0xFF33FF33,
+                ItemKind::Food => 0xFFDD8833,
+                ItemKind::Water => 0xFF3388FF,
             };
             world.items[ii].active = false;
             world.items[ii].claimed_by = None;
-            player.carrying_item = true;
+            // Food/Water: auto-consume, no carrying
+            match kind {
+                ItemKind::Food => { player.hunger = (player.hunger + FOOD_RESTORE).min(100.0); }
+                ItemKind::Water => { player.thirst = (player.thirst + WATER_RESTORE).min(100.0); }
+                _ => { player.carrying_item = true; }
+            }
             return Some((world.items[ii].x, world.items[ii].z, color));
         }
     }
@@ -737,6 +795,7 @@ pub fn sys_player_interact(
                     if player.money >= 2.0 {
                         player.money -= 2.0;
                         player.stamina = (player.stamina + 20.0).min(100.0);
+                        player.thirst = (player.thirst + VENDING_WATER_RESTORE).min(100.0);
                         world.interactibles[ii].cooldown = 3.0;
                         return Some((world.interactibles[ii].x, world.interactibles[ii].z, 0xFF33DDFF));
                     }
@@ -787,6 +846,7 @@ pub fn sys_player_interact(
                         player.money -= 1.0;
                         player.stamina = 100.0; // full stamina refill
                         player.health = (player.health + 5.0).min(100.0);
+                        player.hunger = (player.hunger + NEWSPAPER_FOOD_RESTORE).min(100.0);
                         world.interactibles[ii].cooldown = 5.0;
                         return Some((world.interactibles[ii].x, world.interactibles[ii].z, 0xFFDDDDDD));
                     }
@@ -834,6 +894,49 @@ pub fn sys_player_interact(
     None
 }
 
+/// Hunger/thirst drain and starvation damage for all characters
+pub fn sys_hunger_thirst(world: &mut WorldData, player: &mut Player, dt: f32) {
+    // NPCs
+    for npc in &mut world.npcs {
+        if npc.state == NpcState::Sleeping || npc.starving_dead { continue; }
+
+        npc.hunger = (npc.hunger - HUNGER_DRAIN_RATE * dt).max(0.0);
+        npc.thirst = (npc.thirst - THIRST_DRAIN_RATE * dt).max(0.0);
+
+        // Track starvation time for fitness
+        if npc.hunger <= 0.0 || npc.thirst <= 0.0 {
+            npc.fitness_starve_time += dt;
+        }
+
+        // Starvation/dehydration damage
+        let mut dmg = 0.0;
+        if npc.hunger <= 0.0 { dmg += STARVATION_DAMAGE * dt; }
+        if npc.thirst <= 0.0 { dmg += DEHYDRATION_DAMAGE * dt; }
+        if dmg > 0.0 {
+            npc.health -= dmg;
+            if npc.health <= 0.0 {
+                npc.health = 0.0;
+                npc.state = NpcState::KnockedOut;
+                npc.starving_dead = true;
+                npc.knockout_timer = f32::MAX;
+                npc.carrying_item = false;
+                npc.carrying_bin = None;
+            }
+        }
+    }
+
+    // Player (god mode: drain but clamp health)
+    player.hunger = (player.hunger - HUNGER_DRAIN_RATE * dt).max(0.0);
+    player.thirst = (player.thirst - THIRST_DRAIN_RATE * dt).max(0.0);
+
+    let mut dmg = 0.0;
+    if player.hunger <= 0.0 { dmg += STARVATION_DAMAGE * dt; }
+    if player.thirst <= 0.0 { dmg += DEHYDRATION_DAMAGE * dt; }
+    if dmg > 0.0 {
+        player.health = (player.health - dmg).max(PLAYER_MIN_HEALTH_STARVE);
+    }
+}
+
 /// NPC-NPC social interactions
 pub fn sys_npc_interactions(world: &mut WorldData, dt: f32) {
     let n = world.npcs.len();
@@ -845,25 +948,32 @@ pub fn sys_npc_interactions(world: &mut WorldData, dt: f32) {
         if world.npcs[i].interaction_timer <= 0.0 {
             world.npcs[i].state = NpcState::Working;
             world.npcs[i].interacting_with = None;
-            world.npcs[i].interaction_timer = 0.0;
+            world.npcs[i].interaction_timer = 30.0; // 30s cooldown before next interaction
         }
     }
 
-    // Start new interactions (working NPCs near each other)
+    // Start new interactions (working NPCs near each other, not KO'd)
     for i in 0..n {
         if world.npcs[i].state != NpcState::Working { continue; }
         if world.npcs[i].interacting_with.is_some() { continue; }
+        if world.npcs[i].state == NpcState::KnockedOut { continue; }
+        // Cooldown: interaction_timer > 0 means recently interacted (reused as cooldown)
+        if world.npcs[i].interaction_timer > 0.0 {
+            world.npcs[i].interaction_timer -= dt;
+            continue;
+        }
 
         for j in (i + 1)..n {
             if world.npcs[j].state != NpcState::Working { continue; }
             if world.npcs[j].interacting_with.is_some() { continue; }
+            if world.npcs[j].interaction_timer > 0.0 { continue; }
 
             let dx = world.npcs[j].x - world.npcs[i].x;
             let dz = world.npcs[j].z - world.npcs[i].z;
-            if dx * dx + dz * dz > 4.0 { continue; } // within 2m
+            if dx * dx + dz * dz > 2.25 { continue; } // within 1.5m
 
-            // 1% chance per frame
-            if world.npcs[i].rng.next() % 100 != 0 { continue; }
+            // 0.1% chance per frame
+            if world.npcs[i].rng.next() % 1000 != 0 { continue; }
 
             let duration = 3.0 + (world.npcs[i].rng.next() % 50) as f32 * 0.1; // 3-8s
 

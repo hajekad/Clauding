@@ -246,10 +246,11 @@ fn shade_and_fog(color: u32, intensity: f32, fog: f32, tc: &TimeColors) -> u32 {
 
 fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
+    let shirt = if player.hit_flash > 0.0 { 0xFFFF4444 } else { SHIRT_COLOR };
 
     if player.sitting {
         // Seated pose: body lowered, legs bent forward, arms resting on knees
-        push_box(tris, 0.0, 0.65, 0.0, 0.6, 0.7, 0.35, SHIRT_COLOR); // body lower
+        push_box(tris, 0.0, 0.65, 0.0, 0.6, 0.7, 0.35, shirt); // body lower
         push_box(tris, 0.0, 1.35, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR); // head
         // Thighs horizontal, shins vertical
         push_box(tris, -0.15, 0.35, -0.25, 0.22, 0.15, 0.45, PANTS_COLOR); // left thigh
@@ -264,13 +265,21 @@ fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
         let swing = phase.sin() * 0.4;
 
         // Body + head + legs
-        push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, SHIRT_COLOR);
+        push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, shirt);
         push_box(tris, 0.0, 1.75, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR);
         push_box(tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
         push_box(tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
 
         // Arms depend on carrying state
-        if player.carrying_item {
+        if player.attack_phase > 0.0 {
+            // Punch animation: right arm extends forward, left arm pulled back
+            let t = (player.attack_phase / ATTACK_ANIM_DURATION).clamp(0.0, 1.0);
+            let extend = 1.0 - (1.0 - t) * (1.0 - t); // quadratic ease-out
+            let right_z = -0.15 - extend * 0.8;
+            let left_z = 0.15 + extend * 0.2;
+            push_box(tris, -0.45, 1.05, left_z, 0.18, 0.6, 0.18, SKIN_COLOR);
+            push_box(tris, 0.45, 1.05, right_z, 0.18, 0.6, 0.18, SKIN_COLOR);
+        } else if player.carrying_item {
             push_box(tris, -0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
             push_box(tris, 0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
             push_box(tris, 0.0, 0.9, -0.5, 0.3, 0.3, 0.2, BAG_COLOR);
@@ -359,8 +368,35 @@ fn job_shirt_color(npc: &Npc) -> u32 {
 
 fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
+    let shirt = if npc.hit_flash > 0.0 { 0xFFFF4444 } else { job_shirt_color(npc) };
+
+    // KO pose: body flat on ground, limbs splayed
+    if npc.state == NpcState::KnockedOut {
+        push_box(tris, 0.0, 0.2, 0.0, 0.6, 0.2, 0.7, shirt);       // body flat
+        push_box(tris, 0.0, 0.2, -0.55, 0.35, 0.2, 0.35, SKIN_COLOR); // head
+        push_box(tris, -0.5, 0.1, 0.2, 0.6, 0.15, 0.22, SKIN_COLOR); // left arm
+        push_box(tris, 0.5, 0.1, -0.1, 0.6, 0.15, 0.22, SKIN_COLOR); // right arm
+        push_box(tris, -0.15, 0.1, 0.5, 0.22, 0.15, 0.65, npc.pants_color); // left leg
+        push_box(tris, 0.15, 0.1, 0.5, 0.22, 0.15, 0.65, npc.pants_color); // right leg
+
+        let (sin_r, cos_r) = npc.rot_y.sin_cos();
+        for tri in &mut tris[base..] {
+            for v in &mut tri.v {
+                let rx = v[0] * cos_r + v[2] * sin_r;
+                let rz = -v[0] * sin_r + v[2] * cos_r;
+                v[0] = rx + npc.x;
+                v[1] += npc.y;
+                v[2] = rz + npc.z;
+            }
+            let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
+            let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
+            tri.normal[0] = nx;
+            tri.normal[2] = nz;
+        }
+        return;
+    }
+
     let swing = npc.walk_phase.sin() * 0.4;
-    let shirt = job_shirt_color(npc);
 
     // Body
     push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, shirt);
@@ -385,7 +421,15 @@ fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
     push_box(tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, npc.pants_color);
     push_box(tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, npc.pants_color);
 
-    if npc.carrying_item {
+    if npc.attack_phase > 0.0 {
+        // Punch animation
+        let t = (npc.attack_phase / ATTACK_ANIM_DURATION).clamp(0.0, 1.0);
+        let extend = 1.0 - (1.0 - t) * (1.0 - t);
+        let right_z = -0.15 - extend * 0.8;
+        let left_z = 0.15 + extend * 0.2;
+        push_box(tris, -0.45, 1.05, left_z, 0.18, 0.6, 0.18, SKIN_COLOR);
+        push_box(tris, 0.45, 1.05, right_z, 0.18, 0.6, 0.18, SKIN_COLOR);
+    } else if npc.carrying_item {
         // Arms forward holding a bag
         push_box(tris, -0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
         push_box(tris, 0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
@@ -424,6 +468,8 @@ fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
         ItemKind::Health => 0xFFFF3333,
         ItemKind::Money => 0xFFFFDD33,
         ItemKind::Stamina => 0xFF33FF33,
+        ItemKind::Food => 0xFFDD8833,
+        ItemKind::Water => 0xFF3388FF,
     };
     let y = item.y + 0.8 + (item.spin_phase * 2.0).sin() * 0.2;
 

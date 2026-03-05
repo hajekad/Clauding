@@ -2,3 +2,11 @@
 name = "clauding"
 version = "0.1.0"
 edition = "2024"
+
+[[bin]]
+name = "clauding"
+path = "src/main.rs"
+
+[[bin]]
+name = "train"
+path = "src/bin/train.rs"

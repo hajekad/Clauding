@@ -9,8 +9,8 @@ use crate::rng::Rng;
 
 // ---- Constants ----
 
-pub const NUM_INPUTS: u16 = 28;
-pub const NUM_OUTPUTS: u16 = 8;
+pub const NUM_INPUTS: u16 = 53;
+pub const NUM_OUTPUTS: u16 = 13;
 const WEIGHT_CLAMP: f32 = 8.0;
 
 // Compatibility distance coefficients
@@ -18,27 +18,27 @@ const C1_EXCESS: f32 = 1.0;
 const C2_DISJOINT: f32 = 1.0;
 const C3_WEIGHT: f32 = 0.4;
 
-// Mutation rates
-const RATE_WEIGHT_PERTURB: f32 = 0.80;
-const RATE_WEIGHT_RESET: f32 = 0.10;
-const RATE_ADD_CONNECTION: f32 = 0.05;
-const RATE_ADD_NODE: f32 = 0.03;
-const RATE_TOGGLE: f32 = 0.01;
+// Mutation rates — conservative to preserve seeded brain behavior
+const RATE_WEIGHT_PERTURB: f32 = 0.30;
+const RATE_WEIGHT_RESET: f32 = 0.02;
+const RATE_ADD_CONNECTION: f32 = 0.02;
+const RATE_ADD_NODE: f32 = 0.005;
+const RATE_TOGGLE: f32 = 0.005;
 
 // Evolution parameters
-const ELITE_FRACTION: f32 = 0.25;
+const ELITE_FRACTION: f32 = 0.50;        // 50% survive unmutated
 const CROSSOVER_FRACTION: f32 = 0.75;
 const TARGET_SPECIES_MIN: usize = 3;
 const TARGET_SPECIES_MAX: usize = 6;
 const STAGNATION_LIMIT: u16 = 15;
 
 // Fitness weights
-const FIT_MONEY: f32 = 3.0;
-const FIT_DEPOSIT: f32 = 5.0;
-const FIT_PICKUP: f32 = 2.0;
-const FIT_INTERACT: f32 = 1.0;
+const FIT_PICKUP: f32 = 5.0;             // increased from 2.0 — item pickup is primary goal
+const FIT_INTERACT: f32 = 0.5;
 const FIT_DISTANCE: f32 = 0.01;
 const FIT_STUCK_PENALTY: f32 = 0.5;
+const FIT_KNOCKOUT_PENALTY: f32 = 2.0;
+const FIT_HITS_LANDED: f32 = 0.5;
 
 // ---- Activation functions ----
 
@@ -113,20 +113,36 @@ impl Genome {
         g.connections.clear();
 
         // Input indices (from gather_inputs):
-        // 0=carrying_item, 6-7=nearest_item_dx/dz, 13-14=nearest_bin_dx/dz
+        // 0=carrying_item, 6-7=nearest_item_dx/dz, 12-13=nearest_bin_dx/dz
         // Outputs: 0=walk_dx, 1=walk_dz, 2=walk_mag, 3=pickup, 4=deposit
+        // Direction inputs normalized by /250.0 (WORLD_HALF), weights scaled accordingly
 
         // Walk toward nearest item (inputs 6,7 -> outputs 0,1)
         let conns = [
-            (6, 0, 1.5),  // item_dx -> walk_dx
-            (7, 1, 1.5),  // item_dz -> walk_dz
-            (27, 2, 1.0), // bias -> walk_magnitude (always walk)
-            (27, 3, 0.5), // bias -> pickup tendency
-            (0, 4, 2.0),  // carrying_item -> deposit
+            (6, 0, 3.75),  // item_dx -> walk_dx (scaled for /250 normalization)
+            (7, 1, 3.75),  // item_dz -> walk_dz
+            (27, 2, 1.0),  // bias -> walk_magnitude (always walk)
+            (27, 3, 2.0),  // bias -> pickup tendency (strong: always try to pick up)
+            (0, 4, 2.0),   // carrying_item -> deposit
             // When carrying, walk toward bin instead
-            (0, 0, -1.5),   // carrying_item suppresses item direction
-            (13, 0, 1.5),   // bin_dx -> walk_dx (when carrying, bin signal dominates)
-            (14, 1, 1.5),   // bin_dz -> walk_dz
+            (0, 0, -3.75),  // carrying_item suppresses item direction
+            (12, 0, 3.75),  // bin_dx -> walk_dx (when carrying, bin signal dominates)
+            (13, 1, 3.75),  // bin_dz -> walk_dz
+            // Weak defensive: low health slightly inhibits attacking
+            (28, 8, -0.3),  // self_health -> attack_player (low health = less attack)
+            (28, 9, -0.3),  // self_health -> attack_npc
+            // Hunger/thirst: when low, walk toward interactibles (food/water sources)
+            (33, 7, -1.0),  // low hunger -> walk toward interactible
+            (34, 7, -1.0),  // low thirst -> walk toward interactible
+            (33, 3, -0.3),  // low hunger -> slight pickup boost
+            (34, 3, -0.3),  // low thirst -> slight pickup boost
+            // Sound/vision communication
+            (43, 0, 0.5),   // hear0_dx -> walk_dx (approach sound sources)
+            (44, 1, 0.5),   // hear0_dz -> walk_dz
+            (27, 10, -0.5), // bias -> sound_0 (suppress constant noise)
+            (35, 0, 0.3),   // vis0_dx -> walk_dx (approach visible NPCs)
+            (36, 1, 0.3),   // vis0_dz -> walk_dz
+            (38, 2, -0.3),  // vis0_health -> walk_mag (avoid injured NPCs)
         ];
         for &(inp, out, w) in &conns {
             let innov = innovation.next(inp, NUM_INPUTS + out);
@@ -237,7 +253,7 @@ impl NeatBrain {
         }
     }
 
-    pub fn activate(&mut self, inputs: &[f32]) -> Vec<f32> {
+    pub fn activate(&mut self, inputs: &[f32]) -> [f32; NUM_OUTPUTS as usize] {
         let n = self.node_values.len();
         let ni = self.num_inputs as usize;
 
@@ -264,8 +280,10 @@ impl NeatBrain {
             };
         }
         // Extract outputs (nodes at indices ni..ni+num_outputs)
-        let no = self.num_outputs as usize;
-        self.node_values[ni..ni + no].to_vec()
+        let no = NUM_OUTPUTS as usize;
+        let mut out = [0.0f32; NUM_OUTPUTS as usize];
+        out.copy_from_slice(&self.node_values[ni..ni + no]);
+        out
     }
 }
 
@@ -297,13 +315,9 @@ impl Population {
         let mut innovation = InnovationTracker::new();
 
         let mut genomes = Vec::with_capacity(pop_size);
-        for i in 0..pop_size {
-            let g = if i < pop_size / 2 {
-                Genome::new_seeded_collector(&mut rng, &mut innovation)
-            } else {
-                Genome::new_minimal(&mut rng, &mut innovation)
-            };
-            genomes.push(g);
+        for _ in 0..pop_size {
+            // All genomes start as seeded collectors for reliable initial behavior
+            genomes.push(Genome::new_seeded_collector(&mut rng, &mut innovation));
         }
 
         Population {
@@ -599,7 +613,7 @@ fn mutate(genome: &mut Genome, rng: &mut Rng, innovation: &mut InnovationTracker
     for c in &mut genome.connections {
         let r = rng.f32();
         if r < RATE_WEIGHT_PERTURB {
-            c.weight += rng.range(-0.5, 0.5);
+            c.weight += rng.range(-0.1, 0.1);
             c.weight = c.weight.clamp(-WEIGHT_CLAMP, WEIGHT_CLAMP);
         } else if r < RATE_WEIGHT_PERTURB + RATE_WEIGHT_RESET {
             c.weight = rng.range(-2.0, 2.0);
@@ -685,7 +699,7 @@ fn mutate_add_node(genome: &mut Genome, rng: &mut Rng, innovation: &mut Innovati
 
 // ---- Input gathering ----
 
-pub fn gather_inputs(world: &WorldData, i: usize, net: &RoadNetwork, time_of_day: f32) -> [f32; NUM_INPUTS as usize] {
+pub fn gather_inputs(world: &WorldData, i: usize, net: &RoadNetwork, time_of_day: f32, player_x: f32, player_z: f32) -> [f32; NUM_INPUTS as usize] {
     let npc = &world.npcs[i];
     let mut inp = [0.0f32; NUM_INPUTS as usize];
 
@@ -697,20 +711,32 @@ pub fn gather_inputs(world: &WorldData, i: usize, net: &RoadNetwork, time_of_day
     inp[4] = (npc.stuck_timer / 5.0).min(1.0);
     inp[5] = if npc.on_ground { 1.0 } else { 0.0 };
 
-    // Nearest 3 items (6-11)
-    let mut item_dists: Vec<(usize, f32)> = Vec::new();
+    // Nearest 3 items (6-11) — inline top-3 tracking, no allocation
+    let mut top3_idx = [usize::MAX; 3];
+    let mut top3_d2 = [f32::MAX; 3];
     for (ii, item) in world.items.iter().enumerate() {
         if !item.active || item.falling { continue; }
         let dx = item.x - npc.x;
         let dz = item.z - npc.z;
-        item_dists.push((ii, dx * dx + dz * dz));
+        let d2 = dx * dx + dz * dz;
+        if d2 < top3_d2[2] {
+            if d2 < top3_d2[0] {
+                top3_d2[2] = top3_d2[1]; top3_idx[2] = top3_idx[1];
+                top3_d2[1] = top3_d2[0]; top3_idx[1] = top3_idx[0];
+                top3_d2[0] = d2; top3_idx[0] = ii;
+            } else if d2 < top3_d2[1] {
+                top3_d2[2] = top3_d2[1]; top3_idx[2] = top3_idx[1];
+                top3_d2[1] = d2; top3_idx[1] = ii;
+            } else {
+                top3_d2[2] = d2; top3_idx[2] = ii;
+            }
+        }
     }
-    item_dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     for k in 0..3 {
-        if k < item_dists.len() {
-            let item = &world.items[item_dists[k].0];
-            inp[6 + k * 2] = ((item.x - npc.x) / 100.0).clamp(-1.0, 1.0);
-            inp[7 + k * 2] = ((item.z - npc.z) / 100.0).clamp(-1.0, 1.0);
+        if top3_idx[k] != usize::MAX {
+            let item = &world.items[top3_idx[k]];
+            inp[6 + k * 2] = ((item.x - npc.x) / 250.0).clamp(-1.0, 1.0);
+            inp[7 + k * 2] = ((item.z - npc.z) / 250.0).clamp(-1.0, 1.0);
         }
     }
 
@@ -725,13 +751,13 @@ pub fn gather_inputs(world: &WorldData, i: usize, net: &RoadNetwork, time_of_day
         if d < best_bin_dist { best_bin_dist = d; best_bin = Some(bi); }
     }
     if let Some(bi) = best_bin {
-        inp[12] = ((world.trash_bins[bi].x - npc.x) / 100.0).clamp(-1.0, 1.0);
-        inp[13] = ((world.trash_bins[bi].z - npc.z) / 100.0).clamp(-1.0, 1.0);
+        inp[12] = ((world.trash_bins[bi].x - npc.x) / 250.0).clamp(-1.0, 1.0);
+        inp[13] = ((world.trash_bins[bi].z - npc.z) / 250.0).clamp(-1.0, 1.0);
         inp[14] = (world.trash_bins[bi].items_held as f32 / 10.0).min(1.0);
     }
 
     // Nearest item active flag (15) — is there a pickable item within 2m?
-    inp[15] = if !item_dists.is_empty() && item_dists[0].1 < NPC_PICKUP_DIST * NPC_PICKUP_DIST { 1.0 } else { 0.0 };
+    inp[15] = if top3_idx[0] != usize::MAX && top3_d2[0] < NPC_PICKUP_DIST * NPC_PICKUP_DIST { 1.0 } else { 0.0 };
 
     // Nearest job-relevant interactible (16-17)
     let relevant_kind = job_relevant_interactible(npc.job);
@@ -746,37 +772,80 @@ pub fn gather_inputs(world: &WorldData, i: usize, net: &RoadNetwork, time_of_day
             if d < best_dist { best_dist = d; best_ix = Some(ii); }
         }
         if let Some(ii) = best_ix {
-            inp[16] = ((world.interactibles[ii].x - npc.x) / 100.0).clamp(-1.0, 1.0);
-            inp[17] = ((world.interactibles[ii].z - npc.z) / 100.0).clamp(-1.0, 1.0);
+            inp[16] = ((world.interactibles[ii].x - npc.x) / 250.0).clamp(-1.0, 1.0);
+            inp[17] = ((world.interactibles[ii].z - npc.z) / 250.0).clamp(-1.0, 1.0);
         }
     }
 
-    // Nearest other NPC (18-19)
+    // Single-pass NPC scan: nearest NPC (18-19), 2 visible (35-42), 2 audible (43-52)
+    let (sin_r, cos_r) = npc.rot_y.sin_cos();
+    let fwd_x = -sin_r;
+    let fwd_z = -cos_r;
+    let vis_range_sq = VISION_RANGE * VISION_RANGE;
+    let hear_range_sq = SOUND_RANGE * SOUND_RANGE;
     let mut best_npc_dist = f32::MAX;
-    let mut best_npc = None;
+    let mut best_npc: Option<usize> = None;
+    let mut vis0_dist = f32::MAX;
+    let mut vis1_dist = f32::MAX;
+    let mut vis0_idx: Option<usize> = None;
+    let mut vis1_idx: Option<usize> = None;
+    let mut hear0_dist = f32::MAX;
+    let mut hear1_dist = f32::MAX;
+    let mut hear0_idx: Option<usize> = None;
+    let mut hear1_idx: Option<usize> = None;
     for j in 0..world.npcs.len() {
         if j == i { continue; }
-        let dx = world.npcs[j].x - npc.x;
-        let dz = world.npcs[j].z - npc.z;
-        let d = dx * dx + dz * dz;
-        if d < best_npc_dist { best_npc_dist = d; best_npc = Some(j); }
+        let other = &world.npcs[j];
+        let dx = other.x - npc.x;
+        let dz = other.z - npc.z;
+        let d2 = dx * dx + dz * dz;
+        // Nearest NPC (any state)
+        if d2 < best_npc_dist { best_npc_dist = d2; best_npc = Some(j); }
+        if other.state == NpcState::Sleeping { continue; }
+        if d2 < 0.01 { continue; }
+        // Vision: within range + forward cone
+        if !other.in_vehicle && d2 <= vis_range_sq {
+            let dist = d2.sqrt();
+            let dot = (dx / dist) * fwd_x + (dz / dist) * fwd_z;
+            if dot >= VISION_CONE_COS {
+                if dist < vis0_dist {
+                    vis1_dist = vis0_dist; vis1_idx = vis0_idx;
+                    vis0_dist = dist; vis0_idx = Some(j);
+                } else if dist < vis1_dist {
+                    vis1_dist = dist; vis1_idx = Some(j);
+                }
+            }
+        }
+        // Hearing: within range + making sound
+        if d2 <= hear_range_sq {
+            let total_sound = other.sound[0] + other.sound[1] + other.sound[2];
+            if total_sound >= 0.01 {
+                let dist = d2.sqrt();
+                if dist < hear0_dist {
+                    hear1_dist = hear0_dist; hear1_idx = hear0_idx;
+                    hear0_dist = dist; hear0_idx = Some(j);
+                } else if dist < hear1_dist {
+                    hear1_dist = dist; hear1_idx = Some(j);
+                }
+            }
+        }
     }
     if let Some(j) = best_npc {
-        inp[18] = ((world.npcs[j].x - npc.x) / 100.0).clamp(-1.0, 1.0);
-        inp[19] = ((world.npcs[j].z - npc.z) / 100.0).clamp(-1.0, 1.0);
+        inp[18] = ((world.npcs[j].x - npc.x) / 250.0).clamp(-1.0, 1.0);
+        inp[19] = ((world.npcs[j].z - npc.z) / 250.0).clamp(-1.0, 1.0);
     }
 
     // Own vehicle (20-21)
     let car_idx = npc.car_idx.min(world.vehicles.len().saturating_sub(1));
     if car_idx < world.vehicles.len() {
-        inp[20] = ((world.vehicles[car_idx].x - npc.x) / 100.0).clamp(-1.0, 1.0);
-        inp[21] = ((world.vehicles[car_idx].z - npc.z) / 100.0).clamp(-1.0, 1.0);
+        inp[20] = ((world.vehicles[car_idx].x - npc.x) / 250.0).clamp(-1.0, 1.0);
+        inp[21] = ((world.vehicles[car_idx].z - npc.z) / 250.0).clamp(-1.0, 1.0);
     }
 
     // Home (22-23)
     let home = &world.buildings[npc.home_idx % world.buildings.len()];
-    inp[22] = ((home.x - npc.x) / 100.0).clamp(-1.0, 1.0);
-    inp[23] = ((home.z - npc.z) / 100.0).clamp(-1.0, 1.0);
+    inp[22] = ((home.x - npc.x) / 250.0).clamp(-1.0, 1.0);
+    inp[23] = ((home.z - npc.z) / 250.0).clamp(-1.0, 1.0);
 
     // Time, surface, job, bias (24-27)
     inp[24] = time_of_day / 24.0;
@@ -788,6 +857,68 @@ pub fn gather_inputs(world: &WorldData, i: usize, net: &RoadNetwork, time_of_day
     };
     inp[26] = npc_job_index(npc.job) as f32 / 14.0;
     inp[27] = 1.0; // bias
+
+    // Combat inputs (28-32)
+    inp[28] = npc.health / NPC_HEALTH_MAX;
+    inp[29] = (npc.knockout_timer / KNOCKOUT_TIME).min(1.0);
+    let pdx = player_x - npc.x;
+    let pdz = player_z - npc.z;
+    inp[30] = (pdx / 125.0).clamp(-1.0, 1.0);
+    inp[31] = (pdz / 125.0).clamp(-1.0, 1.0);
+    let player_dist = (pdx * pdx + pdz * pdz).sqrt();
+    inp[32] = (player_dist / (ATTACK_RANGE * 5.0)).min(1.0);
+
+    // Hunger/thirst (33-34)
+    inp[33] = npc.hunger / 100.0;
+    inp[34] = npc.thirst / 100.0;
+
+    // Write vision results (35-42)
+    if let Some(j) = vis0_idx {
+        let other = &world.npcs[j];
+        let dx = other.x - npc.x;
+        let dz = other.z - npc.z;
+        let dist = vis0_dist.max(0.01);
+        inp[35] = (dx / dist).clamp(-1.0, 1.0);
+        inp[36] = (dz / dist).clamp(-1.0, 1.0);
+        inp[37] = if other.carrying_item { 1.0 } else { 0.0 };
+        inp[38] = other.health / NPC_HEALTH_MAX;
+    }
+    if let Some(j) = vis1_idx {
+        let other = &world.npcs[j];
+        let dx = other.x - npc.x;
+        let dz = other.z - npc.z;
+        let dist = vis1_dist.max(0.01);
+        inp[39] = (dx / dist).clamp(-1.0, 1.0);
+        inp[40] = (dz / dist).clamp(-1.0, 1.0);
+        inp[41] = if other.carrying_item { 1.0 } else { 0.0 };
+        inp[42] = other.health / NPC_HEALTH_MAX;
+    }
+
+    // Write hearing results (43-52)
+    if let Some(j) = hear0_idx {
+        let other = &world.npcs[j];
+        let dx = other.x - npc.x;
+        let dz = other.z - npc.z;
+        let dist = hear0_dist.max(0.01);
+        let atten = 1.0 - dist / SOUND_RANGE;
+        inp[43] = (dx / dist).clamp(-1.0, 1.0);
+        inp[44] = (dz / dist).clamp(-1.0, 1.0);
+        inp[45] = other.sound[0] * atten;
+        inp[46] = other.sound[1] * atten;
+        inp[47] = other.sound[2] * atten;
+    }
+    if let Some(j) = hear1_idx {
+        let other = &world.npcs[j];
+        let dx = other.x - npc.x;
+        let dz = other.z - npc.z;
+        let dist = hear1_dist.max(0.01);
+        let atten = 1.0 - dist / SOUND_RANGE;
+        inp[48] = (dx / dist).clamp(-1.0, 1.0);
+        inp[49] = (dz / dist).clamp(-1.0, 1.0);
+        inp[50] = other.sound[0] * atten;
+        inp[51] = other.sound[1] * atten;
+        inp[52] = other.sound[2] * atten;
+    }
 
     inp
 }
@@ -829,18 +960,28 @@ pub fn execute_outputs(
     world: &mut WorldData, i: usize, outputs: &[f32],
     net: &RoadNetwork, terrain: &Terrain, dt: f32,
 ) {
-    if outputs.len() < 8 { return; }
+    if outputs.len() < 13 { return; }
 
-    let walk_dx = outputs[0];
-    let walk_dz = outputs[1];
+    // Sound outputs (10-12) → NPC sound channels
+    world.npcs[i].sound[0] = outputs[10];
+    world.npcs[i].sound[1] = outputs[11];
+    world.npcs[i].sound[2] = outputs[12];
+    if outputs[10] > 0.1 || outputs[11] > 0.1 || outputs[12] > 0.1 {
+        world.npcs[i].fitness_sounds_made += 1;
+    }
+
+    let walk_dx = outputs[0] * 2.0 - 1.0;  // sigmoid 0-1 → signed -1..+1
+    let walk_dz = outputs[1] * 2.0 - 1.0;
     let walk_mag = outputs[2];
     let do_pickup = outputs[3] > 0.5;
     let do_deposit = outputs[4] > 0.5;
     let do_pickup_bin = outputs[5] > 0.5;
     let do_place_bin = outputs[6] > 0.5;
     let do_interact = outputs[7] > 0.5;
+    let do_attack_player = outputs[8] > 0.5;
+    let do_attack_npc = outputs[9] > 0.5;
 
-    // Action priority: deposit > place_bin > pickup > pickup_bin > interact > walk
+    // Action priority: deposit > place_bin > pickup > pickup_bin > interact > attack > walk
 
     // Deposit item at nearest bin
     if do_deposit && world.npcs[i].carrying_item {
@@ -889,10 +1030,16 @@ pub fn execute_outputs(
             if d < best_d { best_d = d; best_ii = Some(ii); }
         }
         if let Some(ii) = best_ii {
+            let kind = world.items[ii].kind;
             world.items[ii].active = false;
             world.items[ii].claimed_by = None;
-            world.npcs[i].carrying_item = true;
             world.npcs[i].fitness_items_picked += 1;
+            // Food/Water: auto-consume, no carrying
+            match kind {
+                ItemKind::Food => { world.npcs[i].hunger = (world.npcs[i].hunger + FOOD_RESTORE).min(100.0); }
+                ItemKind::Water => { world.npcs[i].thirst = (world.npcs[i].thirst + WATER_RESTORE).min(100.0); }
+                _ => { world.npcs[i].carrying_item = true; }
+            }
             return;
         }
     }
@@ -935,6 +1082,16 @@ pub fn execute_outputs(
         }
     }
 
+    // Attack intent (processed by combat.rs)
+    if do_attack_player {
+        world.npcs[i].attack_intent = 1;
+        return;
+    }
+    if do_attack_npc {
+        world.npcs[i].attack_intent = 2;
+        return;
+    }
+
     // Walk
     if walk_mag > 0.1 {
         let tx = (world.npcs[i].x + walk_dx * 15.0).clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
@@ -946,13 +1103,152 @@ pub fn execute_outputs(
 // ---- Fitness evaluation ----
 
 pub fn evaluate_fitness(npc: &Npc) -> f32 {
-    npc.fitness_money_earned * FIT_MONEY
-    + npc.items_deposited_today as f32 * FIT_DEPOSIT
-    + npc.fitness_items_picked as f32 * FIT_PICKUP
-    + npc.fitness_interactions as f32 * FIT_INTERACT
-    + npc.fitness_distance * FIT_DISTANCE
-    - npc.fitness_stuck_time * FIT_STUCK_PENALTY
+    // Primary: survival (keeping hunger/thirst bars full)
+    let survival_bonus = (npc.hunger / 100.0 + npc.thirst / 100.0) * 15.0; // up to 30 for full bars
+    let food_bonus = npc.fitness_items_picked as f32 * FIT_PICKUP;
+    let money_bonus = npc.fitness_money_earned * 1.0;
+    let deposit_bonus = npc.items_deposited_today as f32 * 2.0;
+    let interact_bonus = npc.fitness_interactions as f32 * FIT_INTERACT;
+    let distance_bonus = npc.fitness_distance * FIT_DISTANCE;
+    let starve_penalty = npc.fitness_starve_time * 2.0;
+    let stuck_penalty = (npc.fitness_stuck_time * FIT_STUCK_PENALTY).min(30.0); // capped to not drown other signals
+    let ko_penalty = npc.fitness_knockouts as f32 * FIT_KNOCKOUT_PENALTY;
+    let hits_bonus = npc.fitness_hits_landed as f32 * FIT_HITS_LANDED;
+    let proximity_bonus = npc.fitness_proximity * 0.1; // continuous reward for being near items
+
+    let comm_bonus = (npc.fitness_npcs_heard as f32 * 0.001).min(1.0);
+
+    survival_bonus + food_bonus + money_bonus + deposit_bonus
+    + interact_bonus + distance_bonus + hits_bonus + comm_bonus + proximity_bonus
+    - starve_penalty - stuck_penalty - ko_penalty
 }
 
 // Work duration constant (same as in npc.rs)
 const WORK_DURATION: f32 = 720.0;
+
+// ---- Save/Load population (raw binary, no crates) ----
+
+const NEAT_MAGIC: [u8; 4] = [b'N', b'E', b'A', b'T'];
+
+pub fn save_population(path: &str, pop: &Population) {
+    let mut buf: Vec<u8> = Vec::new();
+
+    // Header: magic + generation + compat_threshold + innovation counter
+    buf.extend_from_slice(&NEAT_MAGIC);
+    buf.extend_from_slice(&pop.generation.to_le_bytes());
+    buf.extend_from_slice(&pop.compat_threshold.to_le_bytes());
+    buf.extend_from_slice(&pop.innovation.counter.to_le_bytes());
+    buf.extend_from_slice(&(pop.genomes.len() as u32).to_le_bytes());
+
+    for genome in &pop.genomes {
+        // Node count + nodes
+        buf.extend_from_slice(&(genome.nodes.len() as u32).to_le_bytes());
+        for node in &genome.nodes {
+            buf.extend_from_slice(&node.id.to_le_bytes());
+            let kind_byte: u8 = match node.kind {
+                NodeKind::Input => 0,
+                NodeKind::Output => 1,
+                NodeKind::Hidden => 2,
+            };
+            buf.push(kind_byte);
+        }
+        // Connection count + connections
+        buf.extend_from_slice(&(genome.connections.len() as u32).to_le_bytes());
+        for conn in &genome.connections {
+            buf.extend_from_slice(&conn.in_node.to_le_bytes());
+            buf.extend_from_slice(&conn.out_node.to_le_bytes());
+            buf.extend_from_slice(&conn.weight.to_le_bytes());
+            buf.push(if conn.enabled { 1 } else { 0 });
+            buf.extend_from_slice(&conn.innovation.to_le_bytes());
+        }
+    }
+
+    let _ = std::fs::write(path, &buf);
+}
+
+pub fn load_population(path: &str, pop_size: usize) -> Option<Population> {
+    let data = std::fs::read(path).ok()?;
+    if data.len() < 20 { return None; }
+    if &data[0..4] != &NEAT_MAGIC { return None; }
+
+    let mut pos = 4;
+
+    let generation = u32::from_le_bytes(data[pos..pos+4].try_into().ok()?);
+    pos += 4;
+    let compat_threshold = f32::from_le_bytes(data[pos..pos+4].try_into().ok()?);
+    pos += 4;
+    let innov_counter = u32::from_le_bytes(data[pos..pos+4].try_into().ok()?);
+    pos += 4;
+    let genome_count = u32::from_le_bytes(data[pos..pos+4].try_into().ok()?) as usize;
+    pos += 4;
+
+    let mut genomes = Vec::with_capacity(genome_count);
+
+    for _ in 0..genome_count {
+        if pos + 4 > data.len() { return None; }
+        let node_count = u32::from_le_bytes(data[pos..pos+4].try_into().ok()?) as usize;
+        pos += 4;
+
+        let mut nodes = Vec::with_capacity(node_count);
+        for _ in 0..node_count {
+            if pos + 3 > data.len() { return None; }
+            let id = u16::from_le_bytes(data[pos..pos+2].try_into().ok()?);
+            pos += 2;
+            let kind = match data[pos] {
+                0 => NodeKind::Input,
+                1 => NodeKind::Output,
+                _ => NodeKind::Hidden,
+            };
+            pos += 1;
+            nodes.push(NodeGene { id, kind });
+        }
+
+        if pos + 4 > data.len() { return None; }
+        let conn_count = u32::from_le_bytes(data[pos..pos+4].try_into().ok()?) as usize;
+        pos += 4;
+
+        let mut connections = Vec::with_capacity(conn_count);
+        for _ in 0..conn_count {
+            if pos + 11 > data.len() { return None; }
+            let in_node = u16::from_le_bytes(data[pos..pos+2].try_into().ok()?);
+            pos += 2;
+            let out_node = u16::from_le_bytes(data[pos..pos+2].try_into().ok()?);
+            pos += 2;
+            let weight = f32::from_le_bytes(data[pos..pos+4].try_into().ok()?);
+            pos += 4;
+            let enabled = data[pos] != 0;
+            pos += 1;
+            let innovation = u32::from_le_bytes(data[pos..pos+4].try_into().ok()?);
+            pos += 4;
+            connections.push(ConnectionGene { in_node, out_node, weight, enabled, innovation });
+        }
+
+        genomes.push(Genome {
+            nodes,
+            connections,
+            fitness: 0.0,
+            species_id: 0,
+            adjusted_fitness: 0.0,
+        });
+    }
+
+    // Pad or truncate to match pop_size
+    while genomes.len() < pop_size {
+        let src = genomes[genomes.len() % genome_count.max(1)].clone();
+        genomes.push(src);
+    }
+    genomes.truncate(pop_size);
+
+    let mut pop = Population {
+        genomes,
+        species: Vec::new(),
+        innovation: InnovationTracker { counter: innov_counter, history: Vec::new() },
+        generation,
+        rng: Rng::new(generation as u64 ^ 0xBEEF),
+        compat_threshold,
+        next_species_id: 1,
+    };
+    // Re-speciate loaded genomes
+    pop.speciate();
+    Some(pop)
+}
