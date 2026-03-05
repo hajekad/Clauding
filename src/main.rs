@@ -62,6 +62,8 @@ fn main() {
     let mut render_scratch: Vec<state::WorldTri> = Vec::with_capacity(4096);
     let mut last_frame = Instant::now();
     let mut accumulator: f32 = 0.0;
+    let mut prev_time_of_day: f32 = game.time_of_day;
+    let _ = prev_time_of_day; // suppress initial assignment warning
 
     loop {
         // Save previous keys before polling
@@ -108,18 +110,40 @@ fn main() {
             while accumulator >= FIXED_DT {
                 accumulator -= FIXED_DT;
 
+                prev_time_of_day = game.time_of_day;
+
                 // Advance time of day
                 game.time_of_day += FIXED_DT * 24.0 / state::DAY_LENGTH;
                 if game.time_of_day >= 24.0 { game.time_of_day -= 24.0; }
 
+                // Midnight reset (day counter, bin reset, NPC daily counters)
+                if npc::sys_midnight_reset(&mut game.world, game.time_of_day, prev_time_of_day) {
+                    game.day_count += 1;
+                }
+
                 // Game-logic systems at fixed dt
                 player::sys_player(&mut game, FIXED_DT);
                 vehicle::sys_vehicle(&mut game, FIXED_DT);
-                let road_positions = game.road_positions.clone();
-                npc::sys_npc(&mut game.world, &road_positions, FIXED_DT);
-                let pickups = npc::sys_items(&mut game.world, &mut game.player, FIXED_DT);
-                for p in &pickups {
-                    particle::emit_pickup_sparkle(&mut particles, p.x, p.z, p.color);
+                npc::sys_npc(
+                    &mut game.world, &game.road_network, &game.terrain,
+                    FIXED_DT, game.time_of_day,
+                );
+                npc::sys_night_spawning(
+                    &mut game.world, &game.terrain, game.time_of_day,
+                    FIXED_DT, &mut game.spawn_rng,
+                );
+                npc::sys_items_update(&mut game.world, FIXED_DT);
+
+                // Player physical interaction (Interact key, edge-detected)
+                let interact_now = game.keybinds.is_pressed(input::Action::Interact, &game.keys);
+                let interact_prev = game.keybinds.is_pressed(input::Action::Interact, &game.prev_keys);
+                let interact_edge = interact_now && !interact_prev;
+                // Only fire if not in vehicle (vehicle.rs handles that)
+                let do_interact = interact_edge && game.player.in_vehicle.is_none();
+                if let Some((sx, sz, sc)) = npc::sys_player_interact(
+                    &mut game.world, &mut game.player, &game.terrain, do_interact,
+                ) {
+                    particle::emit_pickup_sparkle(&mut particles, sx, sz, sc);
                 }
 
                 game.frame_counter += 1;
@@ -127,7 +151,7 @@ fn main() {
 
             // Visual systems at variable rate
             camera::sys_camera(
-                &mut game.camera, &game.player,
+                &mut game.camera, &game.player, &game.terrain,
                 game.mouse_dx, game.mouse_dy,
                 game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
                 frame_dt,

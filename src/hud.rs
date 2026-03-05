@@ -4,6 +4,8 @@
 use crate::state::*;
 use crate::raster::Framebuffer;
 
+const DAY_COLOR: u32 = 0xFFCCCCCC;
+
 const BAR_X: usize = 20;
 const BAR_W: usize = 200;
 const BAR_H: usize = 16;
@@ -21,13 +23,18 @@ const MINIMAP_SIZE: usize = 140;
 const MINIMAP_MARGIN: usize = 20;
 const MINIMAP_BG: u32 = 0xCC224422;
 const MINIMAP_ROAD: u32 = 0xFF555555;
+const MINIMAP_FIELD_ROAD: u32 = 0xFF665544;
 const MINIMAP_PLAYER: u32 = 0xFFFFFFFF;
-const MINIMAP_NPC: u32 = 0xFFFFDD33;
+const MINIMAP_NPC_WORKING: u32 = 0xFFFFDD33;
+const MINIMAP_NPC_SLEEPING: u32 = 0xFF555544;
+const MINIMAP_NPC_DRIVING: u32 = 0xFF3388FF;
+const MINIMAP_NPC_HOME: u32 = 0xFF886633;
 const MINIMAP_VEHICLE: u32 = 0xFF3388FF;
 const MINIMAP_ITEM: u32 = 0xFFFF3333;
+const MINIMAP_BIN: u32 = 0xFF33AA33;
 
 const MONEY_COLOR: u32 = 0xFFFFDD33;
-const SCORE_COLOR: u32 = 0xFFFFFFFF;
+const CARRYING_COLOR: u32 = 0xFFFFAA44;
 const PROMPT_COLOR: u32 = 0xCCFFFFFF;
 
 // 3x5 pixel font for digits 0-9, symbols, and A-Z
@@ -93,9 +100,14 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
     draw_char_idx(fb, BAR_X, money_y, 10, 2, MONEY_COLOR); // $
     draw_number(fb, BAR_X + 10, money_y, p.money as u32, 2, MONEY_COLOR);
 
-    // Score
-    let score_y = money_y + 14;
-    draw_number(fb, BAR_X, score_y, p.score, 2, SCORE_COLOR);
+    // Carrying status
+    if p.carrying_item {
+        let carry_y = money_y + 18;
+        draw_text(fb, BAR_X, carry_y, "CARRYING", 1, CARRYING_COLOR);
+    } else if p.carrying_bin.is_some() {
+        let carry_y = money_y + 18;
+        draw_text(fb, BAR_X, carry_y, "CARRYING BIN", 1, CARRYING_COLOR);
+    }
 
     // Time of day (top-right, HH:MM format)
     let hour = game.time_of_day as u32;
@@ -109,26 +121,66 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
     let min_x = cx + 6;
     draw_number_padded(fb, min_x, time_y, minute, 2, 2, TIME_COLOR);
 
+    // Day counter (below time)
+    let day_y = time_y + 16;
+    draw_text(fb, time_x, day_y, "DAY", 1, DAY_COLOR);
+    draw_number(fb, time_x + 16, day_y, game.day_count, 1, DAY_COLOR);
+
     // Minimap (bottom-right)
     draw_minimap(fb, game);
 
-    // Vehicle enter prompt
+    // Context-sensitive interaction prompt
     if p.in_vehicle.is_none() {
-        // Check if near any vehicle
-        let near_vehicle = game.world.vehicles.iter().any(|v| {
-            let dx = p.x - v.x;
-            let dz = p.z - v.z;
-            dx * dx + dz * dz < VEHICLE_ENTER_DIST * VEHICLE_ENTER_DIST
-        });
-        if near_vehicle {
-            // Draw "E" prompt at bottom center
-            let cx = fb.w / 2;
-            let cy = fb.h - 60;
-            // Draw a small box with "E" hint
-            draw_rect(fb, cx - 20, cy - 4, 40, 18, 0x88000000);
-            // E = custom pattern
-            let e_pattern: [u8; 5] = [0b111, 0b100, 0b111, 0b100, 0b111];
-            draw_glyph(fb, cx - 4, cy, &e_pattern, 2, PROMPT_COLOR);
+        let cx = fb.w / 2;
+        let cy = fb.h - 60;
+        let pickup_dist_sq = NPC_PICKUP_DIST * NPC_PICKUP_DIST;
+        let bin_dist_sq = NPC_BIN_DIST * NPC_BIN_DIST;
+
+        if p.carrying_item {
+            // Near bin? Show "E DEPOSIT"
+            let near_bin = game.world.trash_bins.iter().any(|b| {
+                if b.carried_by.is_some() { return false; }
+                let dx = p.x - b.x;
+                let dz = p.z - b.z;
+                dx * dx + dz * dz < bin_dist_sq
+            });
+            if near_bin {
+                draw_rect(fb, cx - 50, cy - 4, 100, 14, 0x88000000);
+                draw_text(fb, cx - 46, cy, "E DEPOSIT", 1, PROMPT_COLOR);
+            }
+        } else if p.carrying_bin.is_some() {
+            // Always show "E SET DOWN"
+            draw_rect(fb, cx - 50, cy - 4, 100, 14, 0x88000000);
+            draw_text(fb, cx - 46, cy, "E SET DOWN", 1, PROMPT_COLOR);
+        } else {
+            // Not carrying anything — check what's nearby
+            let near_item = game.world.items.iter().any(|it| {
+                if !it.active || it.falling { return false; }
+                let dx = p.x - it.x;
+                let dz = p.z - it.z;
+                dx * dx + dz * dz < pickup_dist_sq
+            });
+            let near_bin = game.world.trash_bins.iter().any(|b| {
+                if b.carried_by.is_some() { return false; }
+                let dx = p.x - b.x;
+                let dz = p.z - b.z;
+                dx * dx + dz * dz < bin_dist_sq
+            });
+            let near_vehicle = game.world.vehicles.iter().any(|v| {
+                let dx = p.x - v.x;
+                let dz = p.z - v.z;
+                dx * dx + dz * dz < VEHICLE_ENTER_DIST * VEHICLE_ENTER_DIST
+            });
+            if near_item {
+                draw_rect(fb, cx - 50, cy - 4, 100, 14, 0x88000000);
+                draw_text(fb, cx - 46, cy, "E PICK UP", 1, PROMPT_COLOR);
+            } else if near_bin {
+                draw_rect(fb, cx - 50, cy - 4, 100, 14, 0x88000000);
+                draw_text(fb, cx - 46, cy, "E GRAB BIN", 1, PROMPT_COLOR);
+            } else if near_vehicle {
+                draw_rect(fb, cx - 50, cy - 4, 100, 14, 0x88000000);
+                draw_text(fb, cx - 46, cy, "E ENTER", 1, PROMPT_COLOR);
+            }
         }
     }
 }
@@ -296,6 +348,34 @@ fn draw_dot_pair(fb: &mut Framebuffer, x: usize, y: usize, scale: usize, color: 
     }
 }
 
+/// Draw a thick line on the framebuffer using Bresenham's algorithm
+fn draw_minimap_line(fb: &mut Framebuffer, x0: usize, y0: usize, x1: usize, y1: usize, thickness: usize, color: u32) {
+    let (mut cx, mut cy) = (x0 as i32, y0 as i32);
+    let (ex, ey) = (x1 as i32, y1 as i32);
+    let dx = (ex - cx).abs();
+    let dy = -(ey - cy).abs();
+    let sx = if cx < ex { 1 } else { -1 };
+    let sy = if cy < ey { 1 } else { -1 };
+    let mut err = dx + dy;
+    let half = thickness as i32 / 2;
+    loop {
+        // Draw a filled square at (cx, cy) for thickness
+        for ty in -half..=(half) {
+            for tx in -half..=(half) {
+                let px = (cx + tx) as usize;
+                let py = (cy + ty) as usize;
+                if px < fb.w && py < fb.h {
+                    fb.pixels[py * fb.w + px] = color;
+                }
+            }
+        }
+        if cx == ex && cy == ey { break; }
+        let e2 = 2 * err;
+        if e2 >= dy { err += dy; cx += sx; }
+        if e2 <= dx { err += dx; cy += sy; }
+    }
+}
+
 fn draw_minimap(fb: &mut Framebuffer, game: &GameState) {
     let mx = fb.w - MINIMAP_SIZE - MINIMAP_MARGIN;
     let my = fb.h - MINIMAP_SIZE - MINIMAP_MARGIN;
@@ -304,19 +384,17 @@ fn draw_minimap(fb: &mut Framebuffer, game: &GameState) {
     // Background
     draw_rect(fb, mx, my, size, size, MINIMAP_BG);
 
-    // Roads
-    for &r in &game.road_positions {
-        let map_r = world_to_minimap(r, size);
-        let road_w = ((ROAD_WIDTH / WORLD_SIZE) * size as f32) as usize;
-        let rw = road_w.max(1);
-        // Horizontal road
-        if map_r < size {
-            draw_rect(fb, mx, my + map_r.saturating_sub(rw / 2), size, rw, MINIMAP_ROAD);
-        }
-        // Vertical road
-        if map_r < size {
-            draw_rect(fb, mx + map_r.saturating_sub(rw / 2), my, rw, size, MINIMAP_ROAD);
-        }
+    // Roads (draw segments as lines)
+    for seg in &game.road_network.segments {
+        let x0 = world_to_minimap(seg.x0, size);
+        let z0 = world_to_minimap(seg.z0, size);
+        let x1 = world_to_minimap(seg.x1, size);
+        let z1 = world_to_minimap(seg.z1, size);
+        let (thickness, color) = match seg.tier {
+            crate::state::RoadTier::CarRoad => (3usize, MINIMAP_ROAD),
+            crate::state::RoadTier::FieldRoad => (1usize, MINIMAP_FIELD_ROAD),
+        };
+        draw_minimap_line(fb, mx + x0, my + z0, mx + x1, my + z1, thickness, color);
     }
 
     // Items
@@ -338,12 +416,29 @@ fn draw_minimap(fb: &mut Framebuffer, game: &GameState) {
         }
     }
 
-    // NPCs
+    // Trash bins
+    for bin in &game.world.trash_bins {
+        if bin.carried_by.is_some() { continue; }
+        let bx = world_to_minimap(bin.x, size);
+        let bz = world_to_minimap(bin.z, size);
+        if bx < size && bz < size {
+            draw_dot(fb, mx + bx, my + bz, 1, MINIMAP_BIN);
+        }
+    }
+
+    // NPCs (color-coded by state)
     for npc in &game.world.npcs {
         let nx = world_to_minimap(npc.x, size);
         let nz = world_to_minimap(npc.z, size);
         if nx < size && nz < size {
-            draw_dot(fb, mx + nx, my + nz, 1, MINIMAP_NPC);
+            let color = match npc.state {
+                NpcState::Sleeping => MINIMAP_NPC_SLEEPING,
+                NpcState::HomeTask => MINIMAP_NPC_HOME,
+                NpcState::Driving => MINIMAP_NPC_DRIVING,
+                NpcState::Working | NpcState::GoingToWork => MINIMAP_NPC_WORKING,
+                NpcState::GoingHome => MINIMAP_NPC_HOME,
+            };
+            draw_dot(fb, mx + nx, my + nz, 1, color);
         }
     }
 
