@@ -604,7 +604,7 @@ fn generate_dockyard(
         interactibles.push(Interactible {
             x: dx, y: dy, z: dz,
             kind: InteractibleKind::Dumpster,
-            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+            cooldown: 0.0, state_val: 0.0,
         });
     }
 }
@@ -643,7 +643,7 @@ fn generate_interactibles(
         box_tris(tris, x, y + 2.3, z, 0.9, 0.15, 0.9, PHONE_BOOTH_COLOR); // roof
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::PhoneBooth,
-            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+            cooldown: 0.0, state_val: 0.0,
         });
     }
 
@@ -659,7 +659,7 @@ fn generate_interactibles(
         box_tris(tris, x, y + 0.9, z - 0.31, 0.6, 0.8, 0.02, VENDING_PANEL); // front panel
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::VendingMachine,
-            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+            cooldown: 0.0, state_val: 0.0,
         });
     }
 
@@ -674,7 +674,7 @@ fn generate_interactibles(
         box_tris(tris, x, y + 0.5, z + 0.2, 1.5, 0.4, 0.08, BENCH_COLOR); // back
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::ParkBench,
-            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+            cooldown: 0.0, state_val: 0.0,
         });
     }
 
@@ -689,7 +689,7 @@ fn generate_interactibles(
         box_tris(tris, x, y + 1.05, z, 1.3, 0.1, 0.85, 0xFF445599); // lid
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::Dumpster,
-            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+            cooldown: 0.0, state_val: 0.0,
         });
     }
 
@@ -704,7 +704,7 @@ fn generate_interactibles(
         box_tris(tris, x - 0.15, y + 1.0, z - 0.16, 0.25, 0.3, 0.01, ATM_SCREEN);
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::Atm,
-            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+            cooldown: 0.0, state_val: 0.0,
         });
     }
 
@@ -718,7 +718,7 @@ fn generate_interactibles(
         box_tris(tris, x, y + 0.5, z, 0.6, 1.0, 0.4, NEWSSTAND_COLOR);
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::NewspaperStand,
-            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+            cooldown: 0.0, state_val: 0.0,
         });
     }
 
@@ -733,7 +733,7 @@ fn generate_interactibles(
         box_tris(tris, x, y + 1.05, z, 0.45, 0.1, 0.35, 0xFF4455DD); // top
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::Mailbox,
-            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+            cooldown: 0.0, state_val: 0.0,
         });
     }
 
@@ -748,7 +748,7 @@ fn generate_interactibles(
         box_tris(tris, x, y + 0.15, z, 0.2, 0.3, 0.2, HYDRANT_COLOR);
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::FireHydrant,
-            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+            cooldown: 0.0, state_val: 0.0,
         });
     }
 
@@ -763,7 +763,7 @@ fn generate_interactibles(
         box_tris(tris, x, y + 1.3, z - 0.16, 0.3, 0.3, 0.01, 0xFF222222); // screen
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::Payphone,
-            rot_y: 0.0, cooldown: 0.0, state_val: 0.0, used_by: None,
+            cooldown: 0.0, state_val: 0.0,
         });
     }
 }
@@ -1055,7 +1055,7 @@ pub fn generate_world(game: &mut GameState) {
         let y = game.terrain.height_at(x, z);
         let kind = item_kinds[rng.next() as usize % 3];
         game.world.items.push(Item {
-            x, y, z, kind, active: true, respawn_timer: 0.0,
+            x, y, z, kind, active: true,
             spin_phase: rng.range(0.0, 6.0),
             falling: false, vel_y: 0.0, claimed_by: None,
         });

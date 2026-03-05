@@ -201,10 +201,12 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
     if !collides {
         world.vehicles[vi].x = new_x;
         world.vehicles[vi].z = new_z;
+        world.vehicles[vi].speed = speed; // track actual movement
     } else {
-        if is_npc {
-            world.vehicles[vi].speed *= 0.5;
-        } else {
+        // Rotate to try a different angle on next frame
+        world.vehicles[vi].rot_y += 0.8;
+        world.vehicles[vi].speed = 0.0;
+        if !is_npc {
             pick_ai_target(&mut world.vehicles[vi], net);
         }
     }

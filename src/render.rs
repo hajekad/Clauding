@@ -246,27 +246,42 @@ fn shade_and_fog(color: u32, intensity: f32, fog: f32, tc: &TimeColors) -> u32 {
 
 fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
-    let phase = player.walk_phase;
-    let swing = phase.sin() * 0.4;
 
-    // Body + head + legs
-    push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, SHIRT_COLOR);
-    push_box(tris, 0.0, 1.75, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR);
-    push_box(tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
-    push_box(tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
-
-    // Arms depend on carrying state
-    if player.carrying_item {
-        push_box(tris, -0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
-        push_box(tris, 0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
-        push_box(tris, 0.0, 0.9, -0.5, 0.3, 0.3, 0.2, BAG_COLOR);
-    } else if player.carrying_bin.is_some() {
-        push_box(tris, -0.35, 1.0, -0.4, 0.18, 0.55, 0.18, SKIN_COLOR);
-        push_box(tris, 0.35, 1.0, -0.4, 0.18, 0.55, 0.18, SKIN_COLOR);
-        push_box(tris, 0.0, 0.8, -0.55, 0.5, 0.6, 0.4, BIN_COLOR);
+    if player.sitting {
+        // Seated pose: body lowered, legs bent forward, arms resting on knees
+        push_box(tris, 0.0, 0.65, 0.0, 0.6, 0.7, 0.35, SHIRT_COLOR); // body lower
+        push_box(tris, 0.0, 1.35, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR); // head
+        // Thighs horizontal, shins vertical
+        push_box(tris, -0.15, 0.35, -0.25, 0.22, 0.15, 0.45, PANTS_COLOR); // left thigh
+        push_box(tris, 0.15, 0.35, -0.25, 0.22, 0.15, 0.45, PANTS_COLOR); // right thigh
+        push_box(tris, -0.15, 0.05, -0.45, 0.22, 0.30, 0.22, PANTS_COLOR); // left shin
+        push_box(tris, 0.15, 0.05, -0.45, 0.22, 0.30, 0.22, PANTS_COLOR); // right shin
+        // Arms resting on knees
+        push_box(tris, -0.40, 0.55, -0.15, 0.18, 0.45, 0.18, SKIN_COLOR);
+        push_box(tris, 0.40, 0.55, -0.15, 0.18, 0.45, 0.18, SKIN_COLOR);
     } else {
-        push_box(tris, -0.45, 1.05, swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
-        push_box(tris, 0.45, 1.05, -swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+        let phase = player.walk_phase;
+        let swing = phase.sin() * 0.4;
+
+        // Body + head + legs
+        push_box(tris, 0.0, 1.05, 0.0, 0.6, 0.7, 0.35, SHIRT_COLOR);
+        push_box(tris, 0.0, 1.75, 0.0, 0.35, 0.35, 0.35, SKIN_COLOR);
+        push_box(tris, -0.15, 0.35, -swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
+        push_box(tris, 0.15, 0.35, swing * 0.35, 0.22, 0.65, 0.22, PANTS_COLOR);
+
+        // Arms depend on carrying state
+        if player.carrying_item {
+            push_box(tris, -0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
+            push_box(tris, 0.35, 1.0, -0.35, 0.18, 0.55, 0.18, SKIN_COLOR);
+            push_box(tris, 0.0, 0.9, -0.5, 0.3, 0.3, 0.2, BAG_COLOR);
+        } else if player.carrying_bin.is_some() {
+            push_box(tris, -0.35, 1.0, -0.4, 0.18, 0.55, 0.18, SKIN_COLOR);
+            push_box(tris, 0.35, 1.0, -0.4, 0.18, 0.55, 0.18, SKIN_COLOR);
+            push_box(tris, 0.0, 0.8, -0.55, 0.5, 0.6, 0.4, BIN_COLOR);
+        } else {
+            push_box(tris, -0.45, 1.05, swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+            push_box(tris, 0.45, 1.05, -swing * 0.25, 0.18, 0.6, 0.18, SKIN_COLOR);
+        }
     }
 
     let (sin_r, cos_r) = player.rot_y.sin_cos();

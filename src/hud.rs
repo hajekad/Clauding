@@ -254,7 +254,7 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
                     InteractibleKind::FireHydrant => "E ACTIVATE",
                     InteractibleKind::NewspaperStand => "E BUY PAPER $1",
                     InteractibleKind::Mailbox => "E DELIVER",
-                    InteractibleKind::Payphone => "E CALL",
+                    InteractibleKind::Payphone => "E CALL TAXI",
                 };
                 let tw = text.len() * 4 + 8;
                 draw_rect(fb, cx - tw / 2, cy - 4, tw, 14, 0x88000000);

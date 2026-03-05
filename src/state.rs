@@ -213,10 +213,6 @@ pub enum PlayerJobType {
 
 pub struct PlayerJob {
     pub job_type: PlayerJobType,
-    pub objective_x: f32,
-    pub objective_z: f32,
-    pub progress: f32,
-    pub earnings: f32,
     pub time_remaining: f32,
     pub items_done: u32,
     pub items_needed: u32,
@@ -226,8 +222,6 @@ impl PlayerJob {
     pub fn none() -> Self {
         PlayerJob {
             job_type: PlayerJobType::None,
-            objective_x: 0.0, objective_z: 0.0,
-            progress: 0.0, earnings: 0.0,
             time_remaining: 0.0, items_done: 0, items_needed: 0,
         }
     }
@@ -249,10 +243,8 @@ pub enum InteractibleKind {
 pub struct Interactible {
     pub x: f32, pub y: f32, pub z: f32,
     pub kind: InteractibleKind,
-    pub rot_y: f32,
     pub cooldown: f32,
     pub state_val: f32,
-    pub used_by: Option<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -322,8 +314,6 @@ pub struct Item {
     pub x: f32, pub y: f32, pub z: f32,
     pub kind: ItemKind,
     pub active: bool,
-    #[allow(dead_code)]
-    pub respawn_timer: f32,
     pub spin_phase: f32,
     pub falling: bool,
     pub vel_y: f32,

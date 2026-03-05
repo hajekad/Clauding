@@ -17,6 +17,7 @@ mod input;
 mod menu;
 mod jobs;
 mod player_jobs;
+mod telemetry;
 
 use std::time::Instant;
 
@@ -152,6 +153,7 @@ fn main() {
                 }
 
                 game.frame_counter += 1;
+                telemetry::sys_telemetry(&game);
             }
 
             // Visual systems at variable rate

@@ -53,10 +53,6 @@ pub fn accept_job(game: &mut GameState) {
     };
     game.player.active_job = PlayerJob {
         job_type,
-        objective_x: game.player.x,
-        objective_z: game.player.z,
-        progress: 0.0,
-        earnings: 0.0,
         time_remaining: time,
         items_done: 0,
         items_needed,

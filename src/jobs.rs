@@ -194,15 +194,17 @@ fn npc_work_taxi(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: &T
             let cdx = world.vehicles[car_idx].x - world.npcs[i].x;
             let cdz = world.vehicles[car_idx].z - world.npcs[i].z;
             if cdx * cdx + cdz * cdz < 25.0 {
-                world.npcs[i].in_vehicle = true;
-                world.npcs[i].state = NpcState::Driving;
-                world.vehicles[car_idx].ai_active = true;
                 // Pick random road node as destination
                 if !net.nodes.is_empty() {
                     let ni = world.npcs[i].rng.next() as usize % net.nodes.len();
                     world.npcs[i].target_x = net.nodes[ni][0];
                     world.npcs[i].target_z = net.nodes[ni][1];
                 }
+                world.npcs[i].in_vehicle = true;
+                world.npcs[i].state = NpcState::Driving;
+                world.vehicles[car_idx].ai_active = true;
+                world.vehicles[car_idx].ai_target_x = world.npcs[i].target_x;
+                world.vehicles[car_idx].ai_target_z = world.npcs[i].target_z;
             } else {
                 npc_walk_toward(world, i, world.vehicles[car_idx].x, world.vehicles[car_idx].z, net, terrain, dt);
             }
@@ -251,7 +253,13 @@ fn npc_work_mail(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: &T
     world.npcs[i].job_timer += dt;
 
     if world.npcs[i].interaction_target.is_none() {
-        // Find nearest unvisited mailbox
+        // Wait before finding next mailbox so we walk away from the last one
+        if world.npcs[i].job_timer < 5.0 {
+            let tx = world.npcs[i].target_x;
+            let tz = world.npcs[i].target_z;
+            npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+            return;
+        }
         let best = find_nearest_interactible(world, world.npcs[i].x, world.npcs[i].z, InteractibleKind::Mailbox);
         world.npcs[i].interaction_target = best;
     }
@@ -266,6 +274,7 @@ fn npc_work_mail(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: &T
             world.npcs[i].money += 1.0;
             world.npcs[i].items_deposited_today += 1;
             world.npcs[i].interaction_target = None;
+            pick_wander(world, i); // walk away before finding next
         }
     } else {
         pick_wander(world, i);
@@ -371,14 +380,16 @@ fn npc_work_police(world: &mut WorldData, i: usize, net: &RoadNetwork, terrain: 
         let cdx = world.vehicles[car_idx].x - world.npcs[i].x;
         let cdz = world.vehicles[car_idx].z - world.npcs[i].z;
         if cdx * cdx + cdz * cdz < 25.0 {
-            world.npcs[i].in_vehicle = true;
-            world.npcs[i].state = NpcState::Driving;
-            world.vehicles[car_idx].ai_active = true;
             if !net.nodes.is_empty() {
                 let ni = world.npcs[i].rng.next() as usize % net.nodes.len();
                 world.npcs[i].target_x = net.nodes[ni][0];
                 world.npcs[i].target_z = net.nodes[ni][1];
             }
+            world.npcs[i].in_vehicle = true;
+            world.npcs[i].state = NpcState::Driving;
+            world.vehicles[car_idx].ai_active = true;
+            world.vehicles[car_idx].ai_target_x = world.npcs[i].target_x;
+            world.vehicles[car_idx].ai_target_z = world.npcs[i].target_z;
         } else {
             npc_walk_toward(world, i, world.vehicles[car_idx].x, world.vehicles[car_idx].z, net, terrain, dt);
         }
@@ -468,8 +479,10 @@ fn npc_work_construction(world: &mut WorldData, i: usize, net: &RoadNetwork, ter
     let tx = world.npcs[i].job_target_x;
     let tz = world.npcs[i].job_target_z;
 
-    // Set target to dockyard if not set
-    if tx == world.npcs[i].x && tz == world.npcs[i].z {
+    // Set target to dockyard if not set or reached
+    let dx = tx - world.npcs[i].x;
+    let dz = tz - world.npcs[i].z;
+    if (tx == 0.0 && tz == 0.0) || dx * dx + dz * dz < 9.0 {
         world.npcs[i].job_target_x = world.npcs[i].rng.range(-30.0, 30.0);
         world.npcs[i].job_target_z = DOCK_Z_START + world.npcs[i].rng.range(5.0, 15.0);
     }
@@ -498,9 +511,13 @@ fn npc_work_fisherman(world: &mut WorldData, i: usize, net: &RoadNetwork, terrai
     let pier_x = match world.npcs[i].rng.clone().next() % 3 {
         0 => -30.0, 1 => 0.0, _ => 30.0,
     };
-    let pier_z = DOCK_Z_START + 35.0;
+    let pier_z = DOCK_Z_START + 5.0; // stay within world bounds
 
-    if world.npcs[i].job_target_x == world.npcs[i].x && world.npcs[i].job_target_z == world.npcs[i].z {
+    let ftx = world.npcs[i].job_target_x;
+    let ftz = world.npcs[i].job_target_z;
+    let fdx = ftx - world.npcs[i].x;
+    let fdz = ftz - world.npcs[i].z;
+    if (ftx == 0.0 && ftz == 0.0) || fdx * fdx + fdz * fdz < 16.0 {
         world.npcs[i].job_target_x = pier_x;
         world.npcs[i].job_target_z = pier_z;
     }

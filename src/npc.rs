@@ -178,11 +178,24 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
             npc.on_ground = false;
         }
 
-        if npc.stuck_timer > 3.0 {
-            let angle = npc.rng.range(0.0, std::f32::consts::TAU);
-            npc.detour_x = npc.x + angle.cos() * 10.0;
-            npc.detour_z = npc.z + angle.sin() * 10.0;
-            npc.stuck_timer = 0.5;
+        if npc.stuck_timer > 10.0 {
+            // Severely stuck — teleport toward target
+            let toward_x = (tx - npc.x).clamp(-15.0, 15.0);
+            let toward_z = (tz - npc.z).clamp(-15.0, 15.0);
+            npc.x += toward_x;
+            npc.z += toward_z;
+            npc.x = npc.x.clamp(-WORLD_HALF, WORLD_HALF);
+            npc.z = npc.z.clamp(-WORLD_HALF, WORLD_HALF);
+            npc.stuck_timer = 0.0;
+            npc.detouring = false;
+        } else if npc.stuck_timer > 3.0 {
+            // Pick new random detour every 3s (3, 6, 9) without resetting timer
+            let prev = npc.stuck_timer - dt;
+            if (npc.stuck_timer / 3.0) as u32 != (prev / 3.0) as u32 {
+                let angle = npc.rng.range(0.0, std::f32::consts::TAU);
+                npc.detour_x = npc.x + angle.cos() * 10.0;
+                npc.detour_z = npc.z + angle.sin() * 10.0;
+            }
         }
     }
 
@@ -403,6 +416,8 @@ fn npc_enter_car(world: &mut WorldData, i: usize, _terrain: &Terrain) {
     world.npcs[i].in_vehicle = true;
     world.npcs[i].state = NpcState::Driving;
     world.vehicles[car_idx].ai_active = true;
+    world.vehicles[car_idx].ai_target_x = world.npcs[i].target_x;
+    world.vehicles[car_idx].ai_target_z = world.npcs[i].target_z;
     world.vehicles[car_idx].occupied = false; // NPC driving, not player
 }
 
@@ -523,7 +538,7 @@ pub fn sys_night_spawning(
         }
         if !found {
             world.items.push(Item {
-                x, y, z, kind, active: false, respawn_timer: 0.0,
+                x, y, z, kind, active: false,
                 spin_phase: 0.0, falling: true, vel_y: 0.0, claimed_by: None,
             });
         }
@@ -725,8 +740,10 @@ pub fn sys_player_interact(
                 InteractibleKind::NewspaperStand => {
                     if player.money >= 1.0 {
                         player.money -= 1.0;
+                        player.stamina = 100.0; // full stamina refill
+                        player.health = (player.health + 5.0).min(100.0);
                         world.interactibles[ii].cooldown = 5.0;
-                        return None;
+                        return Some((world.interactibles[ii].x, world.interactibles[ii].z, 0xFFDDDDDD));
                     }
                 }
                 InteractibleKind::Mailbox => {
@@ -738,7 +755,31 @@ pub fn sys_player_interact(
                     }
                 }
                 InteractibleKind::Payphone => {
-                    world.interactibles[ii].cooldown = 5.0;
+                    world.interactibles[ii].cooldown = 30.0;
+                    // Call a taxi — teleport nearest unoccupied vehicle to player
+                    let mut best_dist = f32::MAX;
+                    let mut best_vi = None;
+                    for (vi, v) in world.vehicles.iter().enumerate() {
+                        if v.occupied { continue; }
+                        if v.ai_active { continue; }
+                        let vdx = v.x - px;
+                        let vdz = v.z - pz;
+                        let d = vdx * vdx + vdz * vdz;
+                        if d < best_dist {
+                            best_dist = d;
+                            best_vi = Some(vi);
+                        }
+                    }
+                    if let Some(vi) = best_vi {
+                        // Move vehicle near player
+                        let angle = player.rot_y;
+                        world.vehicles[vi].x = px + angle.sin() * 5.0;
+                        world.vehicles[vi].z = pz + angle.cos() * 5.0;
+                        world.vehicles[vi].y = terrain.height_at(world.vehicles[vi].x, world.vehicles[vi].z);
+                        world.vehicles[vi].rot_y = angle;
+                        world.vehicles[vi].speed = 0.0;
+                        return Some((world.vehicles[vi].x, world.vehicles[vi].z, 0xFFFFFF44));
+                    }
                     return None;
                 }
             }
