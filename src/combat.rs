@@ -228,6 +228,99 @@ fn npc_attack_npc_check(ax: f32, az: f32, arot: f32, tx: f32, tz: f32) -> bool {
     dot >= ATTACK_CONE_COS
 }
 
+/// Verlet ragdoll physics update — called each frame after sys_collisions
+pub fn sys_ragdoll_update(world: &mut WorldData, terrain: &Terrain, dt: f32) {
+    let gravity_dt2 = GRAVITY * dt * dt;
+
+    for npc in &mut world.npcs {
+        if !npc.ragdoll_active { continue; }
+
+        // Verlet integration for each point
+        for i in 0..RAGDOLL_POINT_COUNT {
+            let cur = npc.ragdoll_points[i];
+            let prev = npc.ragdoll_prev[i];
+
+            let new_x = cur[0] + (cur[0] - prev[0]) * 0.98; // 0.98 = damping
+            let new_y = cur[1] + (cur[1] - prev[1]) * 0.98 - gravity_dt2;
+            let new_z = cur[2] + (cur[2] - prev[2]) * 0.98;
+
+            npc.ragdoll_prev[i] = cur;
+            npc.ragdoll_points[i] = [new_x, new_y, new_z];
+        }
+
+        // Ground collision per point
+        for i in 0..RAGDOLL_POINT_COUNT {
+            let ground = terrain.height_at(npc.ragdoll_points[i][0], npc.ragdoll_points[i][2]);
+            if npc.ragdoll_points[i][1] < ground {
+                npc.ragdoll_points[i][1] = ground;
+                // Friction: reduce horizontal velocity
+                let dx = npc.ragdoll_points[i][0] - npc.ragdoll_prev[i][0];
+                let dz = npc.ragdoll_points[i][2] - npc.ragdoll_prev[i][2];
+                npc.ragdoll_prev[i][0] = npc.ragdoll_points[i][0] - dx * 0.3;
+                npc.ragdoll_prev[i][2] = npc.ragdoll_points[i][2] - dz * 0.3;
+                // Bounce: reverse vertical
+                npc.ragdoll_prev[i][1] = npc.ragdoll_points[i][1] + (npc.ragdoll_points[i][1] - npc.ragdoll_prev[i][1]) * 0.2;
+            }
+        }
+
+        // Distance constraint solving: 4 iterations
+        for _ in 0..4 {
+            for &(a, b, rest) in &RAGDOLL_CONSTRAINTS {
+                let ax = npc.ragdoll_points[a][0];
+                let ay = npc.ragdoll_points[a][1];
+                let az = npc.ragdoll_points[a][2];
+                let bx = npc.ragdoll_points[b][0];
+                let by = npc.ragdoll_points[b][1];
+                let bz = npc.ragdoll_points[b][2];
+
+                let dx = bx - ax;
+                let dy = by - ay;
+                let dz = bz - az;
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt().max(0.001);
+                let diff = (dist - rest) / dist * 0.5;
+
+                npc.ragdoll_points[a][0] += dx * diff;
+                npc.ragdoll_points[a][1] += dy * diff;
+                npc.ragdoll_points[a][2] += dz * diff;
+                npc.ragdoll_points[b][0] -= dx * diff;
+                npc.ragdoll_points[b][1] -= dy * diff;
+                npc.ragdoll_points[b][2] -= dz * diff;
+            }
+        }
+
+        // World bounds
+        for i in 0..RAGDOLL_POINT_COUNT {
+            npc.ragdoll_points[i][0] = npc.ragdoll_points[i][0].clamp(-WORLD_HALF, WORLD_HALF);
+            npc.ragdoll_points[i][2] = npc.ragdoll_points[i][2].clamp(-WORLD_HALF, WORLD_HALF);
+        }
+
+        // Timer
+        npc.ragdoll_timer -= dt;
+        if npc.ragdoll_timer <= 0.0 {
+            // Snap NPC to hips position
+            npc.x = npc.ragdoll_points[0][0];
+            npc.y = terrain.height_at(npc.ragdoll_points[0][0], npc.ragdoll_points[0][2]);
+            npc.z = npc.ragdoll_points[0][2];
+            npc.ragdoll_active = false;
+            npc.knockback_vx = 0.0;
+            npc.knockback_vz = 0.0;
+
+            // Enter KnockedOut if not already
+            if npc.state != NpcState::KnockedOut {
+                npc.state = NpcState::KnockedOut;
+                npc.knockout_timer = KNOCKOUT_TIME;
+                npc.carrying_item = false;
+                npc.carrying_bin = None;
+            }
+        }
+
+        // Keep NPC position synced to hips during ragdoll
+        npc.x = npc.ragdoll_points[0][0];
+        npc.y = npc.ragdoll_points[0][1];
+        npc.z = npc.ragdoll_points[0][2];
+    }
+}
+
 fn emit_hit_particles(ps: &mut ParticleSystem, x: f32, y: f32, z: f32) {
     for i in 0..6 {
         let angle = i as f32 * std::f32::consts::TAU / 6.0;

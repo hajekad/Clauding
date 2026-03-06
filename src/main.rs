@@ -1,4 +1,4 @@
-use clauding::{state, world, neat, npc, vehicle, player, camera, hud, particle, raster, render, menu, input, combat, player_jobs, telemetry, gpu, platform};
+use clauding::{state, world, neat, npc, vehicle, player, camera, hud, particle, raster, render, menu, input, combat, collision, player_jobs, telemetry, gpu, platform};
 
 use std::time::Instant;
 
@@ -157,7 +157,7 @@ fn main() {
                 player::sys_player(&mut game, FIXED_DT);
                 vehicle::sys_vehicle(&mut game, FIXED_DT);
                 npc::sys_npc(
-                    &mut game.world, &game.road_network, &game.terrain,
+                    &mut game.world, &mut game.road_network, &game.terrain,
                     FIXED_DT, game.time_of_day, &mut game.neat_brains,
                     game.player.x, game.player.z,
                 );
@@ -167,6 +167,10 @@ fn main() {
                 );
                 npc::sys_items_update(&mut game.world, FIXED_DT);
                 npc::sys_npc_interactions(&mut game.world, FIXED_DT);
+                collision::sys_collisions(
+                    &mut game.world, &mut game.player, &game.terrain, FIXED_DT,
+                );
+                combat::sys_ragdoll_update(&mut game.world, &game.terrain, FIXED_DT);
                 combat::sys_combat(
                     &mut game.world, &mut game.player, &mut particles,
                     &game.terrain, &game.keys, &game.prev_keys,

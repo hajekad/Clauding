@@ -3,7 +3,7 @@
 // Character always faces camera forward direction, smooth rotation
 
 use crate::state::*;
-use crate::world::check_building_collision;
+use crate::world::{check_building_collision, on_river_not_bridge};
 use crate::input::Action;
 
 const TURN_RATE: f32 = 10.0; // radians/sec for character rotation toward movement dir
@@ -132,6 +132,12 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
 
     p.x = p.x.clamp(-WORLD_HALF, WORLD_HALF);
     p.z = p.z.clamp(-WORLD_HALF, WORLD_HALF);
+
+    // River: current push + drowning damage
+    if on_river_not_bridge(p.x, p.z, &state.world.river_segments, &state.world.bridges) {
+        p.x += RIVER_CURRENT * dt;
+        p.health = (p.health - DROWN_DAMAGE * dt).max(0.0);
+    }
 
     // Re-snap to terrain after XZ movement (walking on slopes)
     if p.on_ground {

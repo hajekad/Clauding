@@ -1,8 +1,9 @@
-// sys_vehicle: AI road-following for parked/roaming cars, player driving controls
+// sys_vehicle: GTA V-style traffic AI — lane discipline, pathfinding, intersection stops,
+// following distance, speed variation, smooth steering, parking
 // Player enters/exits with Interact key, drives with movement keys
 
 use crate::state::*;
-use crate::world::check_building_collision;
+use crate::world::{check_building_collision, surface_at};
 use crate::input::Action;
 
 pub fn sys_vehicle(state: &mut GameState, dt: f32) {
@@ -40,6 +41,14 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
             if let Some(vi) = best_idx {
                 state.world.vehicles[vi].occupied = true;
                 state.world.vehicles[vi].speed = 0.0;
+                state.world.vehicles[vi].parked = false;
+                // Release parking spot
+                if let Some(si) = state.world.vehicles[vi].parking_target {
+                    if si < state.road_network.parking_spots.len() {
+                        state.road_network.parking_spots[si].occupied_by = None;
+                    }
+                    state.world.vehicles[vi].parking_target = None;
+                }
                 state.player.in_vehicle = Some(vi);
             }
         }
@@ -50,11 +59,12 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
         drive_vehicle(state, vi, dt);
     }
 
-    // AI for unoccupied vehicles (ambient + NPC-driven)
+    // AI for NPC-driven vehicles
     let n = state.world.vehicles.len();
     for i in 0..n {
         if state.world.vehicles[i].occupied { continue; }
         if !state.world.vehicles[i].ai_active { continue; }
+        if state.world.vehicles[i].parked { continue; }
         ai_drive(i, &mut state.world, &state.road_network, &state.terrain, dt);
     }
 }
@@ -114,121 +124,454 @@ fn drive_vehicle(state: &mut GameState, vi: usize, dt: f32) {
     state.player.y = state.world.vehicles[vi].y;
     state.player.z = state.world.vehicles[vi].z;
     state.player.rot_y = state.world.vehicles[vi].rot_y;
+
+    // Speed limit check: player speeding on car road
+    if state.world.vehicles[vi].speed.abs() > SPEED_LIMIT {
+        let surf = surface_at(state.world.vehicles[vi].x, state.world.vehicles[vi].z, &state.road_network);
+        if surf == Surface::CarRoad {
+            state.player.wanted_vehicle_hit = true;
+            state.player.bounty += 5.0 * dt;
+        }
+    }
+}
+
+// --- Dijkstra pathfinding on road graph ---
+
+fn find_nearest_node(x: f32, z: f32, nodes: &[[f32; 2]]) -> usize {
+    let mut best = 0;
+    let mut best_d = f32::MAX;
+    for (i, n) in nodes.iter().enumerate() {
+        let dx = x - n[0];
+        let dz = z - n[1];
+        let d = dx * dx + dz * dz;
+        if d < best_d { best_d = d; best = i; }
+    }
+    best
+}
+
+fn dijkstra(graph: &RoadGraph, start: usize, end: usize, node_count: usize) -> Vec<PathWaypoint> {
+    if start == end || node_count == 0 { return Vec::new(); }
+
+    let mut dist = vec![f32::MAX; node_count];
+    let mut prev: Vec<Option<(usize, usize)>> = vec![None; node_count]; // (prev_node, seg_idx)
+    let mut visited = vec![false; node_count];
+    dist[start] = 0.0;
+
+    for _ in 0..node_count {
+        // Find unvisited node with minimum distance (linear scan — fine for ~15 nodes)
+        let mut u = usize::MAX;
+        let mut u_dist = f32::MAX;
+        for n in 0..node_count {
+            if !visited[n] && dist[n] < u_dist {
+                u_dist = dist[n];
+                u = n;
+            }
+        }
+        if u == usize::MAX || u == end { break; }
+        visited[u] = true;
+
+        if u >= graph.adjacency.len() { break; }
+        for &(neighbor, seg_idx, edge_dist) in &graph.adjacency[u] {
+            let alt = dist[u] + edge_dist;
+            if alt < dist[neighbor] {
+                dist[neighbor] = alt;
+                prev[neighbor] = Some((u, seg_idx));
+            }
+        }
+    }
+
+    // Reconstruct path
+    if dist[end] == f32::MAX { return Vec::new(); }
+    let mut path = Vec::new();
+    let mut cur = end;
+    while let Some((p, seg)) = prev[cur] {
+        path.push(PathWaypoint { node_idx: cur, segment_idx: seg });
+        cur = p;
+    }
+    path.reverse();
+    path
+}
+
+fn plan_route(v: &mut Vehicle, net: &RoadNetwork) {
+    if net.nodes.is_empty() || net.graph.adjacency.is_empty() { return; }
+
+    let start = find_nearest_node(v.x, v.z, &net.nodes);
+    let end = v.rng.next() as usize % net.nodes.len();
+    if start == end {
+        let end2 = (end + 1) % net.nodes.len();
+        v.path = dijkstra(&net.graph, start, end2, net.nodes.len());
+    } else {
+        v.path = dijkstra(&net.graph, start, end, net.nodes.len());
+    }
+    v.path_idx = 0;
+    v.intersection_state = IntersectionState::Cruising;
+
+    if !v.path.is_empty() {
+        v.current_segment = Some(v.path[0].segment_idx);
+        // Set ai_target to first waypoint node for NPC driving compatibility
+        let ni = v.path[0].node_idx;
+        v.ai_target_x = net.nodes[ni][0];
+        v.ai_target_z = net.nodes[ni][1];
+    }
+}
+
+/// Compute lane center position at parameter t along a segment, offset to the right
+fn lane_center(seg: &RoadSegment, t: f32, dir: LaneDirection) -> (f32, f32) {
+    let dx = seg.x1 - seg.x0;
+    let dz = seg.z1 - seg.z0;
+    let len = (dx * dx + dz * dz).sqrt().max(0.01);
+    let dir_x = dx / len;
+    let dir_z = dz / len;
+
+    // Perpendicular: always offset to right of travel direction
+    let (perp_x, perp_z) = match dir {
+        LaneDirection::Forward => (dir_z, -dir_x),   // right of A→B
+        LaneDirection::Reverse => (-dir_z, dir_x),    // right of B→A (left of A→B)
+    };
+
+    let cx = seg.x0 + dx * t + perp_x * LANE_OFFSET;
+    let cz = seg.z0 + dz * t + perp_z * LANE_OFFSET;
+    (cx, cz)
+}
+
+/// Determine lane direction for a vehicle on a segment
+fn compute_lane_dir(vx: f32, vz: f32, seg: &RoadSegment, target_x: f32, target_z: f32) -> LaneDirection {
+    let dx = seg.x1 - seg.x0;
+    let dz = seg.z1 - seg.z0;
+    // Direction we're heading
+    let tx = target_x - vx;
+    let tz = target_z - vz;
+    // Dot with segment direction
+    let dot = tx * dx + tz * dz;
+    if dot >= 0.0 { LaneDirection::Forward } else { LaneDirection::Reverse }
+}
+
+/// Wrap angle difference to [-PI, PI]
+fn angle_diff(a: f32, b: f32) -> f32 {
+    let mut d = a - b;
+    while d > std::f32::consts::PI { d -= 2.0 * std::f32::consts::PI; }
+    while d < -std::f32::consts::PI { d += 2.0 * std::f32::consts::PI; }
+    d
 }
 
 fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terrain, dt: f32) {
-    let v = &world.vehicles[vi];
-    let dx = v.ai_target_x - v.x;
-    let dz = v.ai_target_z - v.z;
-    let dist = (dx * dx + dz * dz).sqrt();
-
-    if dist < 5.0 {
-        if let Some(_npc_owner) = world.vehicles[vi].owner_npc {
-            world.vehicles[vi].ai_active = false;
+    // 1. If no path → plan_route()
+    if world.vehicles[vi].path.is_empty() {
+        plan_route(&mut world.vehicles[vi], net);
+        if world.vehicles[vi].path.is_empty() {
+            // Fallback: no graph, just idle
             world.vehicles[vi].speed = 0.0;
             return;
         }
-        pick_ai_target(&mut world.vehicles[vi], net);
     }
 
-    // Soft road-following: if drifting off CarRoad, gentle perpendicular correction
-    {
-        let v = &world.vehicles[vi];
-        let vx = v.x;
-        let vz = v.z;
-        let mut best_dist = f32::MAX;
-        let mut best_proj_x = vx;
-        let mut best_proj_z = vz;
-        for seg in &net.segments {
-            if seg.tier != RoadTier::CarRoad { continue; }
-            let sdx = seg.x1 - seg.x0;
-            let sdz = seg.z1 - seg.z0;
-            let len_sq = sdx * sdx + sdz * sdz;
-            if len_sq < 1e-8 { continue; }
-            let t = ((vx - seg.x0) * sdx + (vz - seg.z0) * sdz) / len_sq;
-            let t = t.clamp(0.0, 1.0);
-            let px = seg.x0 + t * sdx;
-            let pz = seg.z0 + t * sdz;
-            let ex = vx - px;
-            let ez = vz - pz;
-            let d = ex * ex + ez * ez;
-            if d < best_dist {
-                best_dist = d;
-                best_proj_x = px;
-                best_proj_z = pz;
+    let path_idx = world.vehicles[vi].path_idx;
+    if path_idx >= world.vehicles[vi].path.len() {
+        // Arrived at end of path — deactivate (NPC handles next drive)
+        world.vehicles[vi].ai_active = false;
+        world.vehicles[vi].speed = 0.0;
+        world.vehicles[vi].path.clear();
+        return;
+    }
+
+    let path_idx = world.vehicles[vi].path_idx;
+    let waypoint = world.vehicles[vi].path[path_idx];
+    let target_node = net.nodes[waypoint.node_idx];
+    let seg_idx = waypoint.segment_idx;
+
+    // 2. Distance to current waypoint node
+    let vx = world.vehicles[vi].x;
+    let vz = world.vehicles[vi].z;
+    let dx_node = target_node[0] - vx;
+    let dz_node = target_node[1] - vz;
+    let dist_to_node = (dx_node * dx_node + dz_node * dz_node).sqrt();
+
+    // 3. Advance path when within 3m of current waypoint
+    if dist_to_node < 3.0 {
+        world.vehicles[vi].path_idx += 1;
+        world.vehicles[vi].intersection_state = IntersectionState::Cruising;
+        world.vehicles[vi].intersection_wait_timer = 0.0;
+
+        if world.vehicles[vi].path_idx >= world.vehicles[vi].path.len() {
+            // End of path — deactivate (NPC handles next drive)
+            world.vehicles[vi].ai_active = false;
+            world.vehicles[vi].speed = 0.0;
+            world.vehicles[vi].path.clear();
+            return;
+        }
+
+        // Update target from new waypoint
+        let new_idx = world.vehicles[vi].path_idx;
+        if new_idx < world.vehicles[vi].path.len() {
+            let wp = world.vehicles[vi].path[new_idx];
+            world.vehicles[vi].ai_target_x = net.nodes[wp.node_idx][0];
+            world.vehicles[vi].ai_target_z = net.nodes[wp.node_idx][1];
+            world.vehicles[vi].current_segment = Some(wp.segment_idx);
+        }
+        return; // process new waypoint next frame
+    }
+
+    // 4. Update intersection state based on distance + cross-traffic
+    let cruise_speed = world.vehicles[vi].cruise_speed;
+    let mut target_speed = cruise_speed;
+
+    match world.vehicles[vi].intersection_state {
+        IntersectionState::Cruising => {
+            if dist_to_node < INTERSECTION_APPROACH_DIST {
+                world.vehicles[vi].intersection_state = IntersectionState::Approaching;
             }
         }
-        let road_offset = best_dist.sqrt();
-        if road_offset > CAR_ROAD_WIDTH * 0.3 && road_offset < CAR_ROAD_WIDTH * 2.0 {
-            let correction = 0.5 * dt;
-            let cdx = best_proj_x - vx;
-            let cdz = best_proj_z - vz;
-            let cd = (cdx * cdx + cdz * cdz).sqrt().max(0.01);
-            world.vehicles[vi].x += cdx / cd * correction;
-            world.vehicles[vi].z += cdz / cd * correction;
+        IntersectionState::Approaching => {
+            // Decelerate proportionally
+            let factor = (dist_to_node / INTERSECTION_APPROACH_DIST).clamp(0.2, 1.0);
+            target_speed = cruise_speed * factor;
+
+            if dist_to_node < INTERSECTION_STOP_DIST {
+                // Check for cross-traffic
+                let has_cross_traffic = check_cross_traffic(vi, world, net, waypoint.node_idx);
+                if has_cross_traffic {
+                    world.vehicles[vi].intersection_state = IntersectionState::Waiting;
+                    world.vehicles[vi].intersection_wait_timer = 0.0;
+                } else {
+                    world.vehicles[vi].intersection_state = IntersectionState::Turning;
+                }
+            }
+        }
+        IntersectionState::Waiting => {
+            target_speed = 0.0;
+            world.vehicles[vi].intersection_wait_timer += dt;
+
+            // Re-check yield each frame, force through after max wait
+            let has_cross_traffic = check_cross_traffic(vi, world, net, waypoint.node_idx);
+            if !has_cross_traffic || world.vehicles[vi].intersection_wait_timer > INTERSECTION_WAIT_MAX {
+                world.vehicles[vi].intersection_state = IntersectionState::Turning;
+            }
+        }
+        IntersectionState::Turning => {
+            target_speed = cruise_speed * 0.4;
         }
     }
 
-    let v = &mut world.vehicles[vi];
+    // 5. Compute turn angle for speed adjustment
+    let desired = (-dx_node).atan2(-dz_node);
+    let turn_angle = angle_diff(desired, world.vehicles[vi].rot_y).abs();
+    let turn_factor = if turn_angle < 0.3 { 1.0 }
+                      else if turn_angle < 1.0 { 0.6 }
+                      else { 0.35 };
+    target_speed *= turn_factor;
 
-    // Turn toward target
-    let dx = v.ai_target_x - v.x;
-    let dz = v.ai_target_z - v.z;
-    let desired = (-dx).atan2(-dz);
-    let mut diff = desired - v.rot_y;
-    while diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
-    while diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
-    v.rot_y += diff.clamp(-2.0 * dt, 2.0 * dt);
+    // 6. Vehicle-ahead awareness
+    {
+        let vx = world.vehicles[vi].x;
+        let vz = world.vehicles[vi].z;
+        let rot = world.vehicles[vi].rot_y;
+        let (sin_r, cos_r) = rot.sin_cos();
+        let fwd_x = -sin_r;
+        let fwd_z = -cos_r;
 
-    let is_npc = v.owner_npc.is_some();
-    let speed = if is_npc { VEHICLE_SPEED * 0.5 } else { VEHICLE_SPEED * 0.4 };
-    let new_x = v.x - v.rot_y.sin() * speed * dt;
-    let new_z = v.z - v.rot_y.cos() * speed * dt;
+        let n_veh = world.vehicles.len();
+        for j in 0..n_veh {
+            if j == vi { continue; }
+            if world.vehicles[j].parked { continue; }
+            let ojx = world.vehicles[j].x - vx;
+            let ojz = world.vehicles[j].z - vz;
 
-    let collides = world.buildings.iter().any(|b| {
-        new_x + 1.5 > b.x - b.w * 0.5 && new_x - 1.5 < b.x + b.w * 0.5
-        && new_z + 1.5 > b.z - b.d * 0.5 && new_z - 1.5 < b.z + b.d * 0.5
-    }) || world.rocks.iter().any(|r| {
-        let rdx = new_x - r.x;
-        let rdz = new_z - r.z;
-        rdx * rdx + rdz * rdz < (r.size + 1.5) * (r.size + 1.5)
-    }) || world.trees.iter().any(|t| {
-        let tdx = new_x - t.x;
-        let tdz = new_z - t.z;
-        tdx * tdx + tdz * tdz < (t.trunk_radius + 1.5) * (t.trunk_radius + 1.5)
-    });
+            // Project onto forward vector
+            let proj = ojx * fwd_x + ojz * fwd_z;
+            if proj < 0.0 || proj > FOLLOW_DISTANCE { continue; }
 
-    if !collides {
-        world.vehicles[vi].x = new_x;
-        world.vehicles[vi].z = new_z;
-        world.vehicles[vi].speed = speed; // track actual movement
+            // Lateral offset
+            let lateral = (ojx * fwd_z - ojz * fwd_x).abs();
+            if lateral > 2.5 { continue; }
+
+            // Same lane ahead — reduce speed
+            if proj < MIN_FOLLOW_DISTANCE {
+                target_speed = 0.0; // emergency brake
+            } else {
+                let factor = ((proj - MIN_FOLLOW_DISTANCE) / (FOLLOW_DISTANCE - MIN_FOLLOW_DISTANCE)).clamp(0.0, 1.0);
+                let follow_speed = cruise_speed * factor;
+                if follow_speed < target_speed {
+                    target_speed = follow_speed;
+                }
+            }
+        }
+    }
+
+    world.vehicles[vi].target_speed = target_speed;
+
+    // 7. Lane discipline — steer toward lane center point ahead on segment
+    let steer_target_x;
+    let steer_target_z;
+
+    if seg_idx < net.segments.len() {
+        let seg = &net.segments[seg_idx];
+        let vx = world.vehicles[vi].x;
+        let vz = world.vehicles[vi].z;
+        let target_x = world.vehicles[vi].ai_target_x;
+        let target_z = world.vehicles[vi].ai_target_z;
+
+        let lane_dir = compute_lane_dir(vx, vz, seg, target_x, target_z);
+        world.vehicles[vi].lane_dir = lane_dir;
+
+        // Find parameter t along segment closest to vehicle
+        let sdx = seg.x1 - seg.x0;
+        let sdz = seg.z1 - seg.z0;
+        let len_sq = sdx * sdx + sdz * sdz;
+        let t = if len_sq > 1e-8 {
+            ((vx - seg.x0) * sdx + (vz - seg.z0) * sdz) / len_sq
+        } else { 0.5 };
+
+        // Look 5m ahead along segment
+        let seg_len = len_sq.sqrt().max(0.01);
+        let t_ahead = match lane_dir {
+            LaneDirection::Forward => (t + 5.0 / seg_len).min(1.0),
+            LaneDirection::Reverse => (t - 5.0 / seg_len).max(0.0),
+        };
+
+        let (lx, lz) = lane_center(seg, t_ahead, lane_dir);
+
+        // Blend between lane center and waypoint node when close
+        if dist_to_node < 8.0 {
+            let blend = dist_to_node / 8.0;
+            steer_target_x = lx * blend + target_node[0] * (1.0 - blend);
+            steer_target_z = lz * blend + target_node[1] * (1.0 - blend);
+        } else {
+            steer_target_x = lx;
+            steer_target_z = lz;
+        }
     } else {
-        // Rotate to try a different angle on next frame
-        world.vehicles[vi].rot_y += 0.8;
-        world.vehicles[vi].speed = 0.0;
-        if !is_npc {
-            pick_ai_target(&mut world.vehicles[vi], net);
+        steer_target_x = target_node[0];
+        steer_target_z = target_node[1];
+    }
+
+    // 8. Steer toward target
+    {
+        let vx = world.vehicles[vi].x;
+        let vz = world.vehicles[vi].z;
+        let dx = steer_target_x - vx;
+        let dz = steer_target_z - vz;
+        let desired = (-dx).atan2(-dz);
+        let diff = angle_diff(desired, world.vehicles[vi].rot_y);
+        world.vehicles[vi].rot_y += diff.clamp(-VEHICLE_TURN_SPEED * dt, VEHICLE_TURN_SPEED * dt);
+    }
+
+    // 9. Accelerate/brake toward target_speed
+    {
+        let v = &mut world.vehicles[vi];
+        let ts = v.target_speed;
+        if v.speed < ts {
+            v.speed = (v.speed + VEHICLE_ACCEL * 0.5 * dt).min(ts);
+        } else if v.speed > ts {
+            v.speed = (v.speed - VEHICLE_BRAKE * 0.5 * dt).max(ts).max(0.0);
         }
     }
 
+    // 10. Move + building collision check
+    {
+        let rot = world.vehicles[vi].rot_y;
+        let spd = world.vehicles[vi].speed;
+        let cur_x = world.vehicles[vi].x;
+        let cur_z = world.vehicles[vi].z;
+        let new_x = cur_x - rot.sin() * spd * dt;
+        let new_z = cur_z - rot.cos() * spd * dt;
+
+        if !check_building_collision(world, new_x, cur_z, 1.5) {
+            world.vehicles[vi].x = new_x;
+        } else {
+            world.vehicles[vi].speed *= -0.3;
+            // Try to recover by adjusting rotation
+            world.vehicles[vi].rot_y += 0.3;
+        }
+        let cur_x = world.vehicles[vi].x;
+        if !check_building_collision(world, cur_x, new_z, 1.5) {
+            world.vehicles[vi].z = new_z;
+        } else {
+            world.vehicles[vi].speed *= -0.3;
+        }
+    }
+
+    // 11. Clamp + terrain follow
     world.vehicles[vi].x = world.vehicles[vi].x.clamp(-WORLD_HALF, WORLD_HALF);
     world.vehicles[vi].z = world.vehicles[vi].z.clamp(-WORLD_HALF, WORLD_HALF);
     world.vehicles[vi].y = terrain.height_at(world.vehicles[vi].x, world.vehicles[vi].z);
+
+    // 12. Gridlock recovery — auto-park vehicles stuck at low speed for too long
+    if world.vehicles[vi].speed.abs() < 0.5 {
+        world.vehicles[vi].idle_timer += dt;
+        if world.vehicles[vi].idle_timer > 8.0 {
+            world.vehicles[vi].ai_active = false;
+            world.vehicles[vi].speed = 0.0;
+            world.vehicles[vi].parked = true;
+            world.vehicles[vi].path.clear();
+            world.vehicles[vi].idle_timer = 0.0;
+            return;
+        }
+    } else {
+        world.vehicles[vi].idle_timer = 0.0;
+    }
+
+    // Speed limit check for NPC drivers
+    if let Some(owner) = world.vehicles[vi].owner_npc {
+        if world.vehicles[vi].speed.abs() > SPEED_LIMIT && owner < world.npcs.len() {
+            let surf = surface_at(world.vehicles[vi].x, world.vehicles[vi].z, net);
+            if surf == Surface::CarRoad && world.npcs[owner].violation_timer <= 0.0 {
+                world.npcs[owner].wanted = true;
+                world.npcs[owner].bounty += 5.0;
+                world.npcs[owner].violation_timer = 10.0;
+            }
+        }
+    }
 }
 
-fn pick_ai_target(v: &mut Vehicle, net: &RoadNetwork) {
-    if net.nodes.is_empty() { return; }
-    // Find nearest node, then pick a random different node as target
-    let mut best_dist = f32::MAX;
-    let mut _best_node = 0;
-    for (i, node) in net.nodes.iter().enumerate() {
-        let dx = v.x - node[0];
-        let dz = v.z - node[1];
-        let d = dx * dx + dz * dz;
-        if d < best_dist { best_dist = d; _best_node = i; }
+/// Check if there's cross-traffic at intersection node that we should yield to
+fn check_cross_traffic(vi: usize, world: &WorldData, net: &RoadNetwork, node_idx: usize) -> bool {
+    let node = net.nodes[node_idx];
+    let our_rot = world.vehicles[vi].rot_y;
+    let (our_sin, our_cos) = our_rot.sin_cos();
+    let our_fwd_x = -our_sin;
+    let our_fwd_z = -our_cos;
+    let our_dist_to_node = {
+        let dx = node[0] - world.vehicles[vi].x;
+        let dz = node[1] - world.vehicles[vi].z;
+        (dx * dx + dz * dz).sqrt()
+    };
+
+    for (j, other) in world.vehicles.iter().enumerate() {
+        if j == vi { continue; }
+        if other.parked || other.speed < 0.5 { continue; }
+
+        let dx = other.x - node[0];
+        let dz = other.z - node[1];
+        let dist = (dx * dx + dz * dz).sqrt();
+        if dist > 12.0 { continue; }
+
+        // Check if perpendicular heading (|dot product| < 0.5)
+        let (o_sin, o_cos) = other.rot_y.sin_cos();
+        let o_fwd_x = -o_sin;
+        let o_fwd_z = -o_cos;
+        let dot = our_fwd_x * o_fwd_x + our_fwd_z * o_fwd_z;
+
+        if dot.abs() < 0.5 {
+            // Perpendicular traffic — yield if they're closer or already turning
+            if dist < our_dist_to_node || other.intersection_state == IntersectionState::Turning {
+                return true;
+            }
+        }
     }
-    // Pick a random node as destination (vehicles drive between intersections)
-    let target_idx = v.rng.next() as usize % net.nodes.len();
-    v.ai_target_x = net.nodes[target_idx][0];
-    v.ai_target_z = net.nodes[target_idx][1];
+    false
+}
+
+/// Find nearest free parking spot within max_dist of (x, z)
+pub fn find_nearest_parking_spot(net: &RoadNetwork, x: f32, z: f32, max_dist: f32) -> Option<usize> {
+    let max_d2 = max_dist * max_dist;
+    let mut best_d2 = max_d2;
+    let mut best = None;
+    for (i, spot) in net.parking_spots.iter().enumerate() {
+        if spot.occupied_by.is_some() { continue; }
+        let dx = spot.x - x;
+        let dz = spot.z - z;
+        let d2 = dx * dx + dz * dz;
+        if d2 < best_d2 { best_d2 = d2; best = Some(i); }
+    }
+    best
 }

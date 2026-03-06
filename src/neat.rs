@@ -1,6 +1,6 @@
 // NEAT (NeuroEvolution of Augmenting Topologies) for NPC AI
-// Each NPC has its own neural network with evolvable topology and weights.
-// Replaces the 15 hard-coded job functions in jobs.rs during the Working state.
+// NN observes the world, handles combat/sounds, and picks daily job.
+// Job-specific work behavior is handled by jobs.rs dispatch.
 
 use crate::state::*;
 use crate::npc::npc_walk_toward;
@@ -10,7 +10,15 @@ use crate::rng::Rng;
 // ---- Constants ----
 
 pub const NUM_INPUTS: u16 = 53;
-pub const NUM_OUTPUTS: u16 = 13;
+pub const NUM_OUTPUTS: u16 = 14; // 0-12: movement/combat/sound, 13: job_choice
+
+pub const ALL_JOBS: [NpcJob; NPC_JOB_COUNT] = [
+    NpcJob::Collector, NpcJob::GarbageCollector, NpcJob::TaxiDriver,
+    NpcJob::DeliveryCourier, NpcJob::MailCarrier, NpcJob::Paramedic,
+    NpcJob::Firefighter, NpcJob::PolicePatrol, NpcJob::StreetVendor,
+    NpcJob::Mechanic, NpcJob::ConstructionWorker, NpcJob::Fisherman,
+    NpcJob::Farmer, NpcJob::Lumberjack, NpcJob::Scavenger,
+];
 const WEIGHT_CLAMP: f32 = 8.0;
 
 // Compatibility distance coefficients
@@ -114,7 +122,7 @@ impl Genome {
 
         // Input indices (from gather_inputs):
         // 0=carrying_item, 6-7=nearest_item_dx/dz, 12-13=nearest_bin_dx/dz
-        // Outputs: 0=walk_dx, 1=walk_dz, 2=walk_mag, 3=pickup, 4=deposit
+        // Outputs: 0=walk_dx, 1=walk_dz, 2=walk_mag, 3=pickup, 4=deposit, ..., 13=job_choice
         // Direction inputs normalized by /250.0 (WORLD_HALF), weights scaled accordingly
 
         // Walk toward nearest item (inputs 6,7 -> outputs 0,1)
@@ -139,6 +147,8 @@ impl Genome {
             (35, 0, 0.3),   // vis0_dx -> walk_dx (approach visible NPCs)
             (36, 1, 0.3),   // vis0_dz -> walk_dz
             (38, 2, -0.3),  // vis0_health -> walk_mag (avoid injured NPCs)
+            // Job choice (output 13): neutral start, NN learns which jobs earn most
+            (27, 13, 0.0),  // bias -> job_choice (neutral)
         ];
         for &(inp, out, w) in &conns {
             let innov = innovation.next(inp, NUM_INPUTS + out);

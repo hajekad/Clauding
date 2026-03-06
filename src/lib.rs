@@ -22,3 +22,4 @@ pub mod player_jobs;
 pub mod telemetry;
 pub mod neat;
 pub mod combat;
+pub mod collision;

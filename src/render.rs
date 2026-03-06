@@ -367,8 +367,23 @@ fn job_shirt_color(npc: &Npc) -> u32 {
 }
 
 fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
-    let base = tris.len();
     let shirt = if npc.hit_flash > 0.0 { 0xFFFF4444 } else { job_shirt_color(npc) };
+
+    // Ragdoll rendering: use ragdoll_points positions directly
+    if npc.ragdoll_active {
+        let p = &npc.ragdoll_points;
+        // hips=0, chest=1, head=2, l_hand=3, r_hand=4, l_foot=5, r_foot=6
+        push_box(tris, p[1][0], p[1][1], p[1][2], 0.6, 0.5, 0.35, shirt);         // chest
+        push_box(tris, p[0][0], p[0][1], p[0][2], 0.5, 0.3, 0.3, npc.pants_color); // hips
+        push_box(tris, p[2][0], p[2][1], p[2][2], 0.35, 0.35, 0.35, SKIN_COLOR);   // head
+        push_box(tris, p[3][0], p[3][1], p[3][2], 0.18, 0.5, 0.18, SKIN_COLOR);    // l_hand
+        push_box(tris, p[4][0], p[4][1], p[4][2], 0.18, 0.5, 0.18, SKIN_COLOR);    // r_hand
+        push_box(tris, p[5][0], p[5][1], p[5][2], 0.22, 0.55, 0.22, npc.pants_color); // l_foot
+        push_box(tris, p[6][0], p[6][1], p[6][2], 0.22, 0.55, 0.22, npc.pants_color); // r_foot
+        return;
+    }
+
+    let base = tris.len();
 
     // KO pose: body flat on ground, limbs splayed
     if npc.state == NpcState::KnockedOut {

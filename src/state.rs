@@ -15,7 +15,6 @@ pub const NUM_BUILDINGS: usize = 125;
 pub const NUM_TREES: usize = 200;
 pub const NUM_ROCKS: usize = 50;
 pub const NUM_STREET_LIGHTS: usize = 60;
-pub const NUM_VEHICLES: usize = 75;
 pub const CAR_ROAD_WIDTH: f32 = 6.0;
 pub const SIDEWALK_WIDTH: f32 = 1.5;
 pub const FIELD_ROAD_WIDTH: f32 = 2.5;
@@ -29,6 +28,14 @@ pub const VEHICLE_ACCEL: f32 = 12.0;
 pub const VEHICLE_BRAKE: f32 = 20.0;
 pub const VEHICLE_TURN_SPEED: f32 = 2.5;
 pub const VEHICLE_ENTER_DIST: f32 = 3.0;
+pub const LANE_OFFSET: f32 = CAR_ROAD_WIDTH * 0.25; // 1.5m — center of each 3m lane
+pub const INTERSECTION_APPROACH_DIST: f32 = 15.0;
+pub const INTERSECTION_STOP_DIST: f32 = 5.0;
+pub const INTERSECTION_WAIT_MAX: f32 = 4.0;
+pub const FOLLOW_DISTANCE: f32 = 20.0;
+pub const MIN_FOLLOW_DISTANCE: f32 = 6.0;
+pub const PARKING_SPOT_LENGTH: f32 = 5.0;
+pub const PARKING_SPOT_WIDTH: f32 = 2.5;
 pub const FOG_DIST: f32 = 375.0;
 pub const PLAYER_SPEED: f32 = 5.0;
 pub const SPRINT_SPEED: f32 = 9.0;
@@ -41,6 +48,25 @@ pub const TERRAIN_GRID: usize = 250;
 pub const TERRAIN_CELL: f32 = WORLD_SIZE / TERRAIN_GRID as f32; // 2m per cell
 pub const GRAVITY: f32 = 20.0;
 pub const JUMP_VELOCITY: f32 = 8.0;
+
+// Collision/vehicle damage constants
+pub const VEHICLE_HIT_DAMAGE_MULT: f32 = 5.0;  // damage = speed * this
+pub const VEHICLE_HIT_LAUNCH_UP: f32 = 5.0;    // upward velocity on hit
+pub const VEHICLE_CRASH_SELF_DAMAGE: f32 = 0.3; // fraction of speed as damage to vehicle occupant
+pub const SPEED_LIMIT: f32 = 10.0;              // speeding threshold on CarRoad
+
+// Ragdoll constants
+pub const RAGDOLL_DURATION: f32 = 3.0;
+pub const RAGDOLL_POINT_COUNT: usize = 7;
+// (idx_a, idx_b, rest_length): hips=0, chest=1, head=2, l_hand=3, r_hand=4, l_foot=5, r_foot=6
+pub const RAGDOLL_CONSTRAINTS: [(usize, usize, f32); 6] = [
+    (0, 1, 0.7),  // hips-chest
+    (1, 2, 0.45), // chest-head
+    (1, 3, 0.65), // chest-l_hand
+    (1, 4, 0.65), // chest-r_hand
+    (0, 5, 0.65), // hips-l_foot
+    (0, 6, 0.65), // hips-r_foot
+];
 
 // Combat constants
 pub const ATTACK_RANGE: f32 = 2.0;
@@ -75,7 +101,7 @@ pub const NEWSPAPER_FOOD_RESTORE: f32 = 20.0;
 pub const PLAYER_MIN_HEALTH_STARVE: f32 = 10.0;
 pub const HUNGER_AUTOPILOT: f32 = 30.0;
 pub const THIRST_AUTOPILOT: f32 = 30.0;
-pub const NPC_STARTING_MONEY: f32 = 5.0;
+pub const NPC_STARTING_MONEY: f32 = 0.0;
 
 // NPC sensory communication constants
 pub const SOUND_RANGE: f32 = 30.0;
@@ -87,7 +113,7 @@ pub const SOUND_CHANNELS: usize = 3;
 // NPC life simulation constants
 pub const NUM_TRASH_BINS: usize = 60;
 pub const NPC_JUMP_VELOCITY: f32 = 6.0;
-pub const NPC_DRIVE_THRESHOLD: f32 = 30.0;
+pub const NPC_DRIVE_THRESHOLD: f32 = 15.0;
 pub const NPC_PICKUP_DIST: f32 = 4.0;  // generous range for 500m world
 pub const NPC_BIN_DIST: f32 = 1.5;
 pub const INTERACT_DIST: f32 = 2.0;
@@ -95,6 +121,19 @@ pub const NIGHT_SPAWN_START: f32 = 20.0; // 8 PM
 pub const NIGHT_SPAWN_END: f32 = 4.0;    // 4 AM
 pub const DOCK_Z_START: f32 = 175.0;
 pub const WATER_Y: f32 = -1.0;
+pub const RIVER_WIDTH: f32 = 12.0;
+pub const RIVER_DEPTH: f32 = 3.0;
+pub const RIVER_CURRENT: f32 = 2.0;
+pub const DROWN_DAMAGE: f32 = 8.0;
+pub const PARKING_LOT_COUNT: usize = 4;
+
+pub struct Wall { pub x: f32, pub z: f32, pub hw: f32, pub hd: f32, pub height: f32 }
+
+pub struct RiverSegment { pub x1: f32, pub z1: f32, pub x2: f32, pub z2: f32, pub width: f32 }
+
+/// Bridge zone: oriented rectangle where NPCs can walk across river.
+/// dir = road direction unit vector, hw = half-width, hl = half-length.
+pub struct Bridge { pub cx: f32, pub cz: f32, pub dir_x: f32, pub dir_z: f32, pub hw: f32, pub hl: f32 }
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum RoadTier { CarRoad, FieldRoad }
@@ -112,11 +151,36 @@ pub struct RoadSegment {
 pub struct RoadNetwork {
     pub segments: Vec<RoadSegment>,
     pub nodes: Vec<[f32; 2]>,
+    pub graph: RoadGraph,
+    pub parking_spots: Vec<ParkingSpot>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum LaneDirection { Forward, Reverse }
+
+#[derive(Clone, Copy)]
+pub struct PathWaypoint { pub node_idx: usize, pub segment_idx: usize }
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum IntersectionState { Cruising, Approaching, Waiting, Turning }
+
+pub struct ParkingSpot {
+    pub x: f32, pub z: f32, pub rot_y: f32,
+    pub occupied_by: Option<usize>, // vehicle index
+}
+
+pub struct RoadGraph {
+    pub adjacency: Vec<Vec<(usize, usize, f32)>>, // per-node: (neighbor, seg_idx, dist)
+    pub segment_nodes: Vec<(usize, usize)>,        // per-segment: (node_a, node_b)
 }
 
 impl RoadNetwork {
     pub fn new() -> Self {
-        RoadNetwork { segments: Vec::new(), nodes: Vec::new() }
+        RoadNetwork {
+            segments: Vec::new(), nodes: Vec::new(),
+            graph: RoadGraph { adjacency: Vec::new(), segment_nodes: Vec::new() },
+            parking_spots: Vec::new(),
+        }
     }
 }
 
@@ -207,13 +271,25 @@ pub struct Vehicle {
     pub ai_target_z: f32,
     pub rng: Rng,
     pub owner_npc: Option<usize>, // None = ambient traffic, Some(i) = NPC-owned
+    // Traffic AI fields
+    pub path: Vec<PathWaypoint>,
+    pub path_idx: usize,
+    pub current_segment: Option<usize>,
+    pub lane_dir: LaneDirection,
+    pub intersection_state: IntersectionState,
+    pub intersection_wait_timer: f32,
+    pub cruise_speed: f32,       // per-vehicle 7.0–12.0 m/s
+    pub target_speed: f32,
+    pub parking_target: Option<usize>,
+    pub parked: bool,
+    pub idle_timer: f32,          // tracks how long vehicle has been at speed < 0.5
 }
 
 pub const VEHICLE_COLORS: [u32; 6] = [
     0xFFCC3333, 0xFF3333CC, 0xFF33CC33, 0xFFCCCC33, 0xFFCC33CC, 0xFFFFFFFF,
 ];
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum NpcJob {
     Collector,
     GarbageCollector,
@@ -289,7 +365,7 @@ pub struct Interactible {
     pub state_val: f32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum NpcState {
     Sleeping,
     HomeTask,
@@ -331,6 +407,7 @@ pub struct Npc {
     pub parked_x: f32, pub parked_z: f32,
     // Pathfinding
     pub stuck_timer: f32,
+    pub stuck_count: u8, // consecutive stuck events — escalates recovery
     pub detour_x: f32, pub detour_z: f32,
     pub detouring: bool,
     // Job system
@@ -371,6 +448,19 @@ pub struct Npc {
     pub fitness_npcs_heard: u32,
     // Proximity tracking (continuous reward for being near items)
     pub fitness_proximity: f32,
+    // Ragdoll
+    pub ragdoll_active: bool,
+    pub ragdoll_points: [[f32; 3]; 7],  // hips, chest, head, l_hand, r_hand, l_foot, r_foot
+    pub ragdoll_prev: [[f32; 3]; 7],
+    pub ragdoll_timer: f32,
+    // Law system
+    pub wanted: bool,
+    pub bounty: f32,
+    pub violation_timer: f32,
+    // Police
+    pub police_target: Option<usize>,
+    // Target cooldown — prevents re-targeting same unreachable item after stuck recovery
+    pub wander_cooldown: f32,
 }
 
 pub const NPC_SHIRT_COLORS: [u32; 6] = [
@@ -391,6 +481,7 @@ pub struct Item {
     pub falling: bool,
     pub vel_y: f32,
     pub claimed_by: Option<usize>, // NPC index heading for this
+    pub skip_until: f32, // countdown — NPCs skip this item while > 0 (marked unreachable)
 }
 
 pub struct Player {
@@ -420,6 +511,9 @@ pub struct Player {
     // Hunger/thirst
     pub hunger: f32,
     pub thirst: f32,
+    // Law system
+    pub wanted_vehicle_hit: bool,
+    pub bounty: f32,
 }
 
 pub struct Camera {
@@ -448,6 +542,9 @@ pub struct WorldData {
     pub street_lights: Vec<StreetLight>,
     pub trash_bins: Vec<TrashBin>,
     pub interactibles: Vec<Interactible>,
+    pub walls: Vec<Wall>,
+    pub river_segments: Vec<RiverSegment>,
+    pub bridges: Vec<Bridge>,
 }
 
 pub struct GameState {
@@ -502,6 +599,7 @@ impl GameState {
                 job_menu_open: false, job_menu_cursor: 0,
                 attack_cooldown: 0.0, attack_phase: 0.0, hit_flash: 0.0, damage_shake: 0.0,
                 hunger: 100.0, thirst: 100.0,
+                wanted_vehicle_hit: false, bounty: 0.0,
             },
             camera: Camera {
                 x: 0.0, y: 8.0, z: 18.0,
@@ -520,6 +618,9 @@ impl GameState {
                 street_lights: Vec::new(),
                 trash_bins: Vec::new(),
                 interactibles: Vec::new(),
+                walls: Vec::new(),
+                river_segments: Vec::new(),
+                bridges: Vec::new(),
             },
             mouse_dx: 0.0,
             mouse_dy: 0.0,

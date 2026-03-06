@@ -2,7 +2,7 @@
 // Usage: cargo run --bin train -- [seed] [days]
 // No Wayland, no rendering, no input. Evolves NPC brains at max tick speed.
 
-use clauding::{state, world, npc, neat, vehicle};
+use clauding::{state, world, npc, neat, vehicle, collision, combat};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
@@ -73,7 +73,7 @@ fn main() {
 
         // NPC systems
         npc::sys_npc(
-            &mut game.world, &game.road_network, &game.terrain,
+            &mut game.world, &mut game.road_network, &game.terrain,
             FIXED_DT, game.time_of_day, &mut game.neat_brains,
             game.player.x, game.player.z,
         );
@@ -84,6 +84,10 @@ fn main() {
         npc::sys_items_update(&mut game.world, FIXED_DT);
         npc::sys_npc_interactions(&mut game.world, FIXED_DT);
         npc::sys_hunger_thirst(&mut game.world, &mut game.player, FIXED_DT);
+
+        // Collision + ragdoll physics
+        collision::sys_collisions_headless(&mut game.world, &game.terrain, FIXED_DT);
+        combat::sys_ragdoll_update(&mut game.world, &game.terrain, FIXED_DT);
 
         // Headless NPC-NPC combat (no particles/rendering needed)
         headless_combat(&mut game.world, &game.terrain, FIXED_DT);
