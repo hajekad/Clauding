@@ -136,8 +136,9 @@ const VK_SHADER_STAGE_FRAGMENT_BIT: u32 = 0x10;
 const VK_PIPELINE_BIND_POINT_GRAPHICS: u32 = 0;
 const VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: u32 = 3;
 const VK_POLYGON_MODE_FILL: u32 = 0;
-const _VK_CULL_MODE_BACK_BIT: u32 = 2;
-const VK_FRONT_FACE_COUNTER_CLOCKWISE: u32 = 1;
+const VK_CULL_MODE_BACK_BIT: u32 = 2;
+const _VK_FRONT_FACE_COUNTER_CLOCKWISE: u32 = 0;
+const VK_FRONT_FACE_CLOCKWISE: u32 = 1;
 const VK_COMPARE_OP_LESS: u32 = 1;
 const VK_DYNAMIC_STATE_VIEWPORT: u32 = 0;
 const VK_DYNAMIC_STATE_SCISSOR: u32 = 1;
@@ -1878,8 +1879,8 @@ impl GpuContext {
                 depth_clamp_enable: 0,
                 rasterizer_discard_enable: 0,
                 polygon_mode: VK_POLYGON_MODE_FILL,
-                cull_mode: 0, // VK_CULL_MODE_NONE — match CPU rasterizer (draws both sides)
-                front_face: VK_FRONT_FACE_COUNTER_CLOCKWISE,
+                cull_mode: VK_CULL_MODE_BACK_BIT,
+                front_face: _VK_FRONT_FACE_COUNTER_CLOCKWISE, // mesh.rs primitives = CCW screen = front
                 depth_bias_enable: 0,
                 depth_bias_constant_factor: 0.0,
                 depth_bias_clamp: 0.0,

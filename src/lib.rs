@@ -24,3 +24,4 @@ pub mod telemetry;
 pub mod neat;
 pub mod combat;
 pub mod collision;
+pub mod mesh;

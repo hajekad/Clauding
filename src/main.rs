@@ -99,9 +99,9 @@ fn main() {
     let mut fb = raster::Framebuffer::new(w, h);
     let mut particles = particle::ParticleSystem::new(&mut gpu, world_seed.wrapping_add(0xBEEF));
 
-    let mut render_scratch: Vec<state::WorldTri> = Vec::with_capacity(4096);
-    let mut gpu_static_verts: Vec<gpu::GpuVertex> = Vec::with_capacity(512 * 1024);
-    let mut gpu_dynamic_verts: Vec<gpu::GpuVertex> = Vec::with_capacity(64 * 1024);
+    let mut render_scratch: Vec<state::WorldTri> = Vec::with_capacity(16384);
+    let mut gpu_static_verts: Vec<gpu::GpuVertex> = Vec::with_capacity(1024 * 1024);
+    let mut gpu_dynamic_verts: Vec<gpu::GpuVertex> = Vec::with_capacity(256 * 1024);
     let mut static_regen_timer: f32 = 0.0;
 
     // Pre-generate and upload static GPU vertices

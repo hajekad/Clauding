@@ -3,11 +3,21 @@
 
 use crate::state::*;
 use crate::rng::Rng;
+use crate::mesh;
 
 const BUILDING_COLORS: [u32; 10] = [
-    0xFF887766, 0xFF776688, 0xFF668877, 0xFF998877, 0xFF778899,
-    0xFF886677, 0xFF667788, 0xFF888888, 0xFF997766, 0xFF779988,
+    0xFFCCBB99, 0xFFBBAA88, 0xFFDDCCAA, 0xFFBBBBAA, 0xFFCCBBAA,
+    0xFFD4C4A8, 0xFFE0D0B0, 0xFFC8B898, 0xFFCCCCBB, 0xFFBBAAAA,
 ];
+// ACU-style building accents
+const TIMBER_COLOR: u32 = 0xFF443322;
+const SHUTTER_COLORS: [u32; 4] = [0xFF556644, 0xFF445566, 0xFF664433, 0xFF554444];
+const AWNING_COLORS: [u32; 5] = [0xFFCC4433, 0xFF336644, 0xFF884422, 0xFF334466, 0xFF997744];
+const SHOP_FRONT_COLOR: u32 = 0xFF554433;
+const SIGN_COLORS: [u32; 4] = [0xFF884422, 0xFF446633, 0xFF553344, 0xFF666644];
+const BALCONY_RAIL_COLOR: u32 = 0xFF444444;
+const FLOWER_BOX_COLOR: u32 = 0xFF886644;
+const FLOWER_COLORS: [u32; 3] = [0xFFCC3344, 0xFFEECC33, 0xFFCC66AA];
 
 const CANOPY_COLORS: [u32; 4] = [0xFF338833, 0xFF228822, 0xFF448844, 0xFF2A7A2A];
 const TRUNK_COLOR: u32 = 0xFF554422;
@@ -433,10 +443,11 @@ fn octahedron_tris(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, r: f32, 
     for i in 0..4 {
         let a = pts[i];
         let b = pts[(i + 1) % 4];
-        let n_top = normalize_tri_normal(top, a, b);
-        tris.push(WorldTri { v: [top, a, b], normal: n_top, color });
-        let n_bot = normalize_tri_normal(bot, b, a);
-        tris.push(WorldTri { v: [bot, b, a], normal: n_bot, color });
+        // Reversed winding → CCW screen + outward normals
+        let n_top = normalize_tri_normal(top, b, a);
+        tris.push(WorldTri { v: [top, b, a], normal: n_top, color });
+        let n_bot = normalize_tri_normal(bot, a, b);
+        tris.push(WorldTri { v: [bot, a, b], normal: n_bot, color });
     }
 }
 
@@ -454,6 +465,13 @@ fn lerp_color(a: u32, b: u32, t: f32) -> u32 {
     let g = (((a >> 8) & 0xFF) as f32 * (1.0 - t) + ((b >> 8) & 0xFF) as f32 * t) as u32;
     let bl = ((a & 0xFF) as f32 * (1.0 - t) + (b & 0xFF) as f32 * t) as u32;
     0xFF000000 | (r << 16) | (g << 8) | bl
+}
+
+fn darken_color(c: u32, factor: f32) -> u32 {
+    let r = (((c >> 16) & 0xFF) as f32 * factor) as u32;
+    let g = (((c >> 8) & 0xFF) as f32 * factor) as u32;
+    let b = ((c & 0xFF) as f32 * factor) as u32;
+    0xFF000000 | (r.min(255) << 16) | (g.min(255) << 8) | b.min(255)
 }
 
 /// Generate heightmap from multi-octave sinusoidal waves, flattened near roads/downtown
@@ -561,10 +579,11 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
                 lerp_color(GROUND_LOW, GROUND_HIGH, t)
             };
 
-            let n1 = normalize_tri_normal(v00, v10, v11);
-            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
-            let n2 = normalize_tri_normal(v00, v11, v01);
-            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
+            // Reversed winding → CCW screen + upward normals
+            let n1 = normalize_tri_normal(v00, v11, v10);
+            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
+            let n2 = normalize_tri_normal(v00, v01, v11);
+            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
         }
     }
 }
@@ -620,8 +639,9 @@ fn generate_road_strip(
         let v_l1 = [lx1, hl1, lz1];
         let v_r1 = [rx1, hr1, rz1];
 
-        tris.push(WorldTri { v: [v_l0, v_r0, v_r1], normal: [0.0, 1.0, 0.0], color });
-        tris.push(WorldTri { v: [v_l0, v_r1, v_l1], normal: [0.0, 1.0, 0.0], color });
+        // Reversed winding → CCW screen, keep upward normal for lighting
+        tris.push(WorldTri { v: [v_l0, v_r1, v_r0], normal: [0.0, 1.0, 0.0], color });
+        tris.push(WorldTri { v: [v_l0, v_l1, v_r1], normal: [0.0, 1.0, 0.0], color });
     }
 }
 
@@ -632,27 +652,17 @@ fn generate_dockyard(
 ) {
     let dock_z = DOCK_Z_START + 10.0;
 
-    // Water plane
-    let step = 10.0;
+    // Wave water surface — never flat, prevents z-fighting with dock/terrain
     let x_min = -WORLD_HALF + 10.0;
     let x_max = WORLD_HALF - 10.0;
     let z_min = DOCK_Z_START + 15.0;
     let z_max = WORLD_HALF - 5.0;
-    let nx = ((x_max - x_min) / step) as usize;
-    let nz = ((z_max - z_min) / step).max(1.0) as usize;
-    for iz in 0..nz {
-        for ix in 0..nx {
-            let wx0 = x_min + ix as f32 * step;
-            let wz0 = z_min + iz as f32 * step;
-            let wx1 = wx0 + step;
-            let wz1 = wz0 + step;
-            let y = WATER_Y;
-            tris.push(WorldTri { v: [[wx0, y, wz0], [wx1, y, wz0], [wx1, y, wz1]], normal: [0.0, 1.0, 0.0], color: WATER_COLOR });
-            tris.push(WorldTri { v: [[wx0, y, wz0], [wx1, y, wz1], [wx0, y, wz1]], normal: [0.0, 1.0, 0.0], color: WATER_COLOR });
-        }
-    }
+    mesh::wave_surface_tris(tris, x_min, x_max, z_min, z_max,
+        WATER_Y, 0.12, 0.5,
+        ((x_max - x_min) / 5.0) as usize, ((z_max - z_min) / 5.0).max(1.0) as usize,
+        WATER_COLOR);
 
-    // 6 Warehouses
+    // 6 Warehouses — beveled with corrugated look
     for i in 0..6 {
         let wx = -50.0 + i as f32 * 18.0 + rng.range(-2.0, 2.0);
         let wz = dock_z + rng.range(0.0, 8.0);
@@ -661,24 +671,34 @@ fn generate_dockyard(
         let wh = rng.range(4.0, 7.0);
         let gy = terrain.height_at(wx, wz);
         let color = WAREHOUSE_COLORS[i % WAREHOUSE_COLORS.len()];
-        box_tris(tris, wx, gy + wh * 0.5, wz, ww, wh, wd, color);
-        // Garage door
-        box_tris(tris, wx, gy + 2.0, wz - wd * 0.5 - 0.01, ww * 0.4, 4.0, 0.05, 0xFF333322);
+        mesh::beveled_box_tris(tris, wx, gy + wh * 0.5, wz, ww, wh, wd, 0.1, color);
+        // Recessed garage door
+        mesh::box_tris(tris, wx, gy + 2.0, wz - wd * 0.5 + 0.08, ww * 0.4, 4.0, 0.16, 0xFF333322);
+        // Pitched roof
+        mesh::pitched_roof_tris(tris, wx, gy + wh, wz, ww + 0.2, wd + 0.2, 1.5, darken_color(color, 0.7));
         buildings.push(Building { x: wx, z: wz, w: ww, d: wd, h: wh, ground_y: gy });
     }
 
-    // 3 Cranes
+    // 3 Cranes — cylinder lattice structure
     for i in 0..3 {
         let cx = -30.0 + i as f32 * 30.0;
         let cz = dock_z + 22.0;
         let gy = terrain.height_at(cx, cz);
         let crane_h = 25.0;
-        box_tris(tris, cx, gy + crane_h * 0.5, cz, 0.8, crane_h, 0.8, CRANE_COLOR);
-        box_tris(tris, cx + 5.0, gy + crane_h - 0.5, cz, 12.0, 0.5, 0.6, CRANE_COLOR);
-        box_tris(tris, cx - 3.0, gy + crane_h - 1.0, cz, 2.0, 2.0, 1.5, CHIMNEY_COLOR);
+        // Main tower — cylinder
+        mesh::cylinder_tris(tris, cx, gy + crane_h * 0.5, cz, 0.35, crane_h, 8, CRANE_COLOR);
+        // Boom arm — cylinder between points
+        mesh::cylinder_between(tris,
+            [cx, gy + crane_h, cz],
+            [cx + 11.0, gy + crane_h - 0.5, cz],
+            0.15, 6, CRANE_COLOR);
+        // Counterweight — beveled box
+        mesh::beveled_box_tris(tris, cx - 3.0, gy + crane_h - 1.0, cz, 2.0, 2.0, 1.5, 0.1, CHIMNEY_COLOR);
+        // Cabin — beveled box
+        mesh::beveled_box_tris(tris, cx, gy + crane_h - 2.0, cz, 1.5, 2.0, 1.5, 0.08, 0xFF888833);
     }
 
-    // 15 Cargo containers
+    // 15 Cargo containers — beveled
     for _ in 0..15 {
         let cx = rng.range(-40.0, 40.0);
         let cz = dock_z + rng.range(5.0, 25.0);
@@ -686,42 +706,43 @@ fn generate_dockyard(
         let color = CONTAINER_COLORS[rng.next() as usize % CONTAINER_COLORS.len()];
         let stack = 1 + rng.next() as usize % 3;
         for s in 0..stack {
-            box_tris(tris, cx, gy + 1.3 + s as f32 * 2.5, cz, 6.0, 2.5, 2.5, color);
+            mesh::beveled_box_tris(tris, cx, gy + 1.3 + s as f32 * 2.5, cz, 6.0, 2.5, 2.5, 0.05, color);
         }
     }
 
-    // 3 Fishing piers
+    // 3 Fishing piers — plank deck with cylinder supports
     for i in 0..3 {
         let px = -30.0 + i as f32 * 30.0;
         let pz_start = dock_z + 25.0;
         let pier_len = 12.0;
         let gy = terrain.height_at(px, pz_start);
-        // Pier deck
-        box_tris(tris, px, gy + 0.5, pz_start + pier_len * 0.5, 2.0, 0.2, pier_len, PIER_COLOR);
-        // Pier supports
+        // Pier deck (thick enough to not z-fight)
+        mesh::box_tris(tris, px, gy + 0.5, pz_start + pier_len * 0.5, 2.0, 0.25, pier_len, PIER_COLOR);
+        // Cylinder pile supports
         for s in 0..3 {
             let sz = pz_start + s as f32 * 4.0 + 2.0;
-            box_tris(tris, px - 0.8, gy * 0.5, sz, 0.2, gy.abs() + 1.0, 0.2, PIER_COLOR);
-            box_tris(tris, px + 0.8, gy * 0.5, sz, 0.2, gy.abs() + 1.0, 0.2, PIER_COLOR);
+            mesh::cylinder_tris(tris, px - 0.8, gy * 0.5, sz, 0.08, gy.abs() + 1.0, 5, PIER_COLOR);
+            mesh::cylinder_tris(tris, px + 0.8, gy * 0.5, sz, 0.08, gy.abs() + 1.0, 5, PIER_COLOR);
         }
     }
 
-    // Scrap yard (east side)
-    for _ in 0..20 {
+    // Scrap yard — perturbed spheres for scrap piles
+    for si in 0..20 {
         let sx = rng.range(25.0, 55.0);
         let sz = dock_z + rng.range(0.0, 12.0);
         let gy = terrain.height_at(sx, sz);
         let size = rng.range(0.3, 1.5);
-        box_tris(tris, sx, gy + size * 0.5, sz, size, size, size, SCRAP_COLOR);
+        mesh::perturbed_sphere_tris(tris, sx, gy + size * 0.5, sz, size, 0, 0.3, si as u64 * 7777, SCRAP_COLOR);
     }
 
-    // 2 Smokestacks
+    // 2 Smokestacks — tall cylinders with cap
     for i in 0..2 {
         let sx = -60.0 + i as f32 * 40.0;
         let sz = dock_z + 5.0;
         let gy = terrain.height_at(sx, sz);
-        box_tris(tris, sx, gy + 10.0, sz, 1.5, 20.0, 1.5, CHIMNEY_COLOR);
-        box_tris(tris, sx, gy + 20.5, sz, 2.0, 1.0, 2.0, 0xFF444444);
+        mesh::cylinder_tris(tris, sx, gy + 10.0, sz, 0.6, 20.0, 8, CHIMNEY_COLOR);
+        // Rim cap at top
+        mesh::cylinder_tris(tris, sx, gy + 20.3, sz, 0.8, 0.6, 8, 0xFF444444);
     }
 
     // Dockyard dumpsters
@@ -760,22 +781,23 @@ fn generate_interactibles(
         (sx + px * offset * side, sz + pz * offset * side)
     };
 
-    // Phone Booths (4) at ring-1 area
+    // Phone Booths (4) — beveled body with cylinder roof
     for i in 0..4 {
         if i >= net.nodes.len() { break; }
         let node = &net.nodes[i.min(net.nodes.len() - 1)];
         let x = node[0] + rng.range(3.0, 5.0);
         let z = node[1] + rng.range(3.0, 5.0);
         let y = terrain.height_at(x, z);
-        box_tris(tris, x, y + 1.1, z, 0.8, 2.2, 0.8, PHONE_BOOTH_COLOR);
-        box_tris(tris, x, y + 2.3, z, 0.9, 0.15, 0.9, PHONE_BOOTH_COLOR); // roof
+        mesh::beveled_box_tris(tris, x, y + 1.1, z, 0.8, 2.2, 0.8, 0.06, PHONE_BOOTH_COLOR);
+        // Domed roof
+        mesh::sphere_tris(tris, x, y + 2.25, z, 0.45, 1, PHONE_BOOTH_COLOR);
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::PhoneBooth,
             cooldown: 0.0, state_val: 0.0,
         });
     }
 
-    // Vending Machines (20) spread across map near buildings
+    // Vending Machines (20) — beveled body with recessed screen
     for i in 0..20 {
         let bi = (i * 6 + 1) % buildings.len();
         let b = &buildings[bi];
@@ -783,112 +805,136 @@ fn generate_interactibles(
         let x = b.x + side * (b.w * 0.5 + 1.2);
         let z = b.z;
         let y = terrain.height_at(x, z);
-        box_tris(tris, x, y + 0.75, z, 0.7, 1.5, 0.6, VENDING_COLOR);
-        box_tris(tris, x, y + 0.9, z - 0.31, 0.6, 0.8, 0.02, VENDING_PANEL); // front panel
+        mesh::beveled_box_tris(tris, x, y + 0.75, z, 0.7, 1.5, 0.6, 0.04, VENDING_COLOR);
+        // Recessed panel (into body, not flush)
+        mesh::box_tris(tris, x, y + 0.9, z - 0.25, 0.55, 0.7, 0.06, VENDING_PANEL);
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::VendingMachine,
             cooldown: 0.0, state_val: 0.0,
         });
     }
 
-    // Park Benches (8) along roads
+    // Park Benches (8) — slatted seat + back using thin boxes
     for i in 0..8 {
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
         let (x, z) = sidewalk_pos(rng, seg, side);
         let y = terrain.height_at(x, z);
-        box_tris(tris, x, y + 0.25, z, 1.5, 0.1, 0.5, BENCH_COLOR); // seat
-        box_tris(tris, x, y + 0.5, z + 0.2, 1.5, 0.4, 0.08, BENCH_COLOR); // back
+        // Seat slats (3)
+        for si in 0..3 {
+            let sz = z - 0.15 + si as f32 * 0.15;
+            mesh::box_tris(tris, x, y + 0.25, sz, 1.5, 0.05, 0.1, BENCH_COLOR);
+        }
+        // Backrest slats (2)
+        for si in 0..2 {
+            let bh = 0.38 + si as f32 * 0.18;
+            mesh::box_tris(tris, x, y + bh, z + 0.22, 1.5, 0.05, 0.04, BENCH_COLOR);
+        }
+        // Legs (cylinder)
+        for lx in [-0.6f32, 0.6] {
+            mesh::cylinder_tris(tris, x + lx, y + 0.125, z, 0.025, 0.25, 4, 0xFF554422);
+        }
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::ParkBench,
             cooldown: 0.0, state_val: 0.0,
         });
     }
 
-    // Dumpsters (6) behind buildings
+    // Dumpsters (6) — beveled body with lid
     for i in 0..6 {
         let bi = (i * 5 + 3) % buildings.len();
         let b = &buildings[bi];
         let x = b.x;
         let z = b.z - b.d * 0.5 - 1.5;
         let y = terrain.height_at(x, z);
-        box_tris(tris, x, y + 0.5, z, 1.2, 1.0, 0.8, DUMPSTER_COLOR);
-        box_tris(tris, x, y + 1.05, z, 1.3, 0.1, 0.85, 0xFF445599); // lid
+        mesh::beveled_box_tris(tris, x, y + 0.5, z, 1.2, 1.0, 0.8, 0.05, DUMPSTER_COLOR);
+        mesh::box_tris(tris, x, y + 1.05, z, 1.25, 0.08, 0.82, 0xFF445599); // lid
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::Dumpster,
             cooldown: 0.0, state_val: 0.0,
         });
     }
 
-    // ATMs (3) downtown
+    // ATMs (3) — beveled body with recessed screen
     for i in 0..3 {
         let bi = i % buildings.len().min(10);
         let b = &buildings[bi];
         let x = b.x + b.w * 0.5 + 0.4;
         let z = b.z;
         let y = terrain.height_at(x, z);
-        box_tris(tris, x, y + 0.7, z, 0.6, 1.4, 0.3, ATM_COLOR);
-        box_tris(tris, x - 0.15, y + 1.0, z - 0.16, 0.25, 0.3, 0.01, ATM_SCREEN);
+        mesh::beveled_box_tris(tris, x, y + 0.7, z, 0.6, 1.4, 0.3, 0.03, ATM_COLOR);
+        // Recessed screen (into body)
+        mesh::box_tris(tris, x - 0.15, y + 1.0, z - 0.1, 0.22, 0.25, 0.05, ATM_SCREEN);
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::Atm,
             cooldown: 0.0, state_val: 0.0,
         });
     }
 
-    // Newspaper Stands (4)
+    // Newspaper Stands (4) — beveled box
     for i in 0..4 {
         let ni = (i + 1) % net.nodes.len().max(1);
         let node = &net.nodes[ni];
         let x = node[0] - rng.range(3.0, 5.0);
         let z = node[1] - rng.range(3.0, 5.0);
         let y = terrain.height_at(x, z);
-        box_tris(tris, x, y + 0.5, z, 0.6, 1.0, 0.4, NEWSSTAND_COLOR);
+        mesh::beveled_box_tris(tris, x, y + 0.5, z, 0.6, 1.0, 0.4, 0.03, NEWSSTAND_COLOR);
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::NewspaperStand,
             cooldown: 0.0, state_val: 0.0,
         });
     }
 
-    // Mailboxes (8) along car roads
+    // Mailboxes (8) — beveled box with rounded top
     for i in 0..8 {
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
         let (x, z) = sidewalk_pos(rng, seg, side);
         let y = terrain.height_at(x, z);
-        box_tris(tris, x, y + 0.5, z, 0.4, 1.0, 0.3, MAILBOX_COLOR);
-        box_tris(tris, x, y + 1.05, z, 0.45, 0.1, 0.35, 0xFF4455DD); // top
+        mesh::beveled_box_tris(tris, x, y + 0.5, z, 0.4, 1.0, 0.3, 0.03, MAILBOX_COLOR);
+        // Rounded top
+        mesh::sphere_tris(tris, x, y + 1.0, z, 0.2, 0, 0xFF4455DD);
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::Mailbox,
             cooldown: 0.0, state_val: 0.0,
         });
     }
 
-    // Fire Hydrants (6) along car roads
+    // Fire Hydrants (6) — lathe profile
     for i in 0..6 {
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
         let (x, z) = sidewalk_pos(rng, seg, side);
         let y = terrain.height_at(x, z);
-        octahedron_tris(tris, x, y + 0.35, z, 0.25, HYDRANT_COLOR);
-        box_tris(tris, x, y + 0.15, z, 0.2, 0.3, 0.2, HYDRANT_COLOR);
+        // Lathe profile for hydrant shape
+        let profile: [[f32;2]; 6] = [
+            [0.0, 0.0],   // bottom center
+            [0.12, 0.0],  // base
+            [0.1, 0.25],  // body
+            [0.15, 0.35], // cap bulge
+            [0.08, 0.5],  // top neck
+            [0.0, 0.55],  // top center
+        ];
+        mesh::lathe_tris(tris, x, y, z, &profile, 6, HYDRANT_COLOR);
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::FireHydrant,
             cooldown: 0.0, state_val: 0.0,
         });
     }
 
-    // Payphones (2) downtown
+    // Payphones (2) — beveled body with recessed screen
     for i in 0..2 {
         let ni = (i * 2) % net.nodes.len().max(1);
         let node = &net.nodes[ni];
         let x = node[0] + rng.range(-2.0, 2.0);
         let z = node[1] + rng.range(5.0, 7.0);
         let y = terrain.height_at(x, z);
-        box_tris(tris, x, y + 0.9, z, 0.4, 1.8, 0.3, PAYPHONE_COLOR);
-        box_tris(tris, x, y + 1.3, z - 0.16, 0.3, 0.3, 0.01, 0xFF222222); // screen
+        mesh::beveled_box_tris(tris, x, y + 0.9, z, 0.4, 1.8, 0.3, 0.03, PAYPHONE_COLOR);
+        // Recessed screen (into body)
+        mesh::box_tris(tris, x, y + 1.3, z - 0.1, 0.25, 0.25, 0.05, 0xFF222222);
         interactibles.push(Interactible {
             x, y, z, kind: InteractibleKind::Payphone,
             cooldown: 0.0, state_val: 0.0,
@@ -977,26 +1023,65 @@ fn generate_river(
         }
     }
 
-    // Water surface tris — follow bank height per segment
-    for (si, seg) in river_segments.iter().enumerate() {
-        let dx = seg.x2 - seg.x1;
-        let dz = seg.z2 - seg.z1;
-        let len = (dx * dx + dz * dz).sqrt();
-        if len < 0.01 { continue; }
-        let perp_x = -dz / len;
-        let perp_z = dx / len;
-        let hw = RIVER_WIDTH * 0.5;
+    // Wave water surface — never coplanar with banks (sinusoidal undulation)
+    // Compute overall river bounding box for wave surface
+    if !river_segments.is_empty() {
+        let x_min = river_segments.iter().map(|s| s.x1.min(s.x2)).fold(f32::MAX, f32::min) - RIVER_WIDTH * 0.5;
+        let x_max = river_segments.iter().map(|s| s.x1.max(s.x2)).fold(f32::MIN, f32::max) + RIVER_WIDTH * 0.5;
+        // Average bank height
+        let avg_bank_h: f32 = bank_heights.iter().map(|(h0, h1)| (h0 + h1) * 0.5).sum::<f32>() / bank_heights.len().max(1) as f32;
+        let water_y = avg_bank_h - 0.5;
 
-        // Water at bank level - 0.5m (so it sits just below bank surface)
-        let wy0 = bank_heights[si].0 - 0.5;
-        let wy1 = bank_heights[si].1 - 0.5;
+        // For each segment, generate wave surface within the segment's river corridor
+        for (si, seg) in river_segments.iter().enumerate() {
+            let dx = seg.x2 - seg.x1;
+            let dz = seg.z2 - seg.z1;
+            let len = (dx * dx + dz * dz).sqrt();
+            if len < 0.01 { continue; }
+            let perp_x = -dz / len;
+            let perp_z = dx / len;
+            let hw = RIVER_WIDTH * 0.5;
+            let wy = (bank_heights[si].0 + bank_heights[si].1) * 0.5 - 0.5;
 
-        let v0 = [seg.x1 + perp_x * hw, wy0, seg.z1 + perp_z * hw];
-        let v1 = [seg.x1 - perp_x * hw, wy0, seg.z1 - perp_z * hw];
-        let v2 = [seg.x2 - perp_x * hw, wy1, seg.z2 - perp_z * hw];
-        let v3 = [seg.x2 + perp_x * hw, wy1, seg.z2 + perp_z * hw];
-        tris.push(WorldTri { v: [v0, v1, v2], normal: [0.0, 1.0, 0.0], color: RIVER_COLOR });
-        tris.push(WorldTri { v: [v0, v2, v3], normal: [0.0, 1.0, 0.0], color: RIVER_COLOR });
+            // Subdivide along segment length
+            let sub_count = (len / 2.0).ceil() as usize;
+            let cross_count = 4_usize;
+            for si in 0..sub_count {
+                for ci in 0..cross_count {
+                    let t0 = si as f32 / sub_count as f32;
+                    let t1 = (si + 1) as f32 / sub_count as f32;
+                    let c0 = ci as f32 / cross_count as f32 * 2.0 - 1.0;
+                    let c1 = (ci + 1) as f32 / cross_count as f32 * 2.0 - 1.0;
+
+                    let x00 = seg.x1 + dx * t0 + perp_x * hw * c0;
+                    let z00 = seg.z1 + dz * t0 + perp_z * hw * c0;
+                    let x10 = seg.x1 + dx * t1 + perp_x * hw * c0;
+                    let z10 = seg.z1 + dz * t1 + perp_z * hw * c0;
+                    let x01 = seg.x1 + dx * t0 + perp_x * hw * c1;
+                    let z01 = seg.z1 + dz * t0 + perp_z * hw * c1;
+                    let x11 = seg.x1 + dx * t1 + perp_x * hw * c1;
+                    let z11 = seg.z1 + dz * t1 + perp_z * hw * c1;
+
+                    // Wave offset — never flat
+                    let wave = |x: f32, z: f32| -> f32 {
+                        wy + (x * 0.8).sin() * (z * 0.5).cos() * 0.15
+                            + (x * 1.5 + 1.0).sin() * 0.08
+                    };
+
+                    let v00 = [x00, wave(x00, z00), z00];
+                    let v10 = [x10, wave(x10, z10), z10];
+                    let v01 = [x01, wave(x01, z01), z01];
+                    let v11 = [x11, wave(x11, z11), z11];
+
+                    // Reversed winding → CCW screen + upward normals
+                    let n1 = normalize_tri_normal(v00, v11, v10);
+                    tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: RIVER_COLOR });
+                    let n2 = normalize_tri_normal(v00, v01, v11);
+                    tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: RIVER_COLOR });
+                }
+            }
+        }
+        let _ = (x_min, x_max, water_y); // used for bounding box reference
     }
 }
 
@@ -1083,10 +1168,13 @@ fn generate_bridges(
             }
         }
 
-        // Deck (flat box at deck height)
-        box_tris(tris, cx, deck_y - 0.15, cz, bridge_hw * 2.0, 0.3, bridge_len, BRIDGE_DECK_COLOR);
+        // Beveled deck (thick enough to avoid terrain z-fighting)
+        mesh::beveled_box_tris(tris, cx, deck_y - 0.2, cz, bridge_hw * 2.0, 0.4, bridge_len, 0.05, BRIDGE_DECK_COLOR);
 
-        // Support pillars under deck
+        // Girder under deck
+        mesh::box_tris(tris, cx, deck_y - 0.5, cz, bridge_hw * 1.5, 0.2, bridge_len, darken_color(BRIDGE_DECK_COLOR, 0.7));
+
+        // Cylinder pillar supports
         let pillar_count = (bridge_len / 8.0).ceil() as i32;
         for pi in 0..pillar_count {
             let t = (pi as f32 + 0.5) / pillar_count as f32;
@@ -1095,17 +1183,33 @@ fn generate_bridges(
             let base_y = terrain.height_at(px, pz) - RIVER_DEPTH;
             let pillar_h = deck_y - base_y;
             if pillar_h > 0.5 {
-                box_tris(tris, px, base_y + pillar_h * 0.5, pz, 0.6, pillar_h, 0.6, BRIDGE_RAIL_COLOR);
+                mesh::cylinder_tris(tris, px, base_y + pillar_h * 0.5, pz, 0.25, pillar_h, 6, BRIDGE_RAIL_COLOR);
             }
         }
 
-        // Railings (left and right)
+        // Railing posts + rail bars
         let rail_x_l = cx + perp_x * bridge_hw;
         let rail_z_l = cz + perp_z * bridge_hw;
         let rail_x_r = cx - perp_x * bridge_hw;
         let rail_z_r = cz - perp_z * bridge_hw;
-        box_tris(tris, rail_x_l, deck_y + 0.5, rail_z_l, 0.15, 1.0, bridge_len, BRIDGE_RAIL_COLOR);
-        box_tris(tris, rail_x_r, deck_y + 0.5, rail_z_r, 0.15, 1.0, bridge_len, BRIDGE_RAIL_COLOR);
+        // Rail bars (cylinder between endpoints)
+        let rail_start_l = [rail_x_l - dir_x * bridge_len * 0.5, deck_y + 0.8, rail_z_l - dir_z * bridge_len * 0.5];
+        let rail_end_l = [rail_x_l + dir_x * bridge_len * 0.5, deck_y + 0.8, rail_z_l + dir_z * bridge_len * 0.5];
+        mesh::cylinder_between(tris, rail_start_l, rail_end_l, 0.04, 4, BRIDGE_RAIL_COLOR);
+        let rail_start_r = [rail_x_r - dir_x * bridge_len * 0.5, deck_y + 0.8, rail_z_r - dir_z * bridge_len * 0.5];
+        let rail_end_r = [rail_x_r + dir_x * bridge_len * 0.5, deck_y + 0.8, rail_z_r + dir_z * bridge_len * 0.5];
+        mesh::cylinder_between(tris, rail_start_r, rail_end_r, 0.04, 4, BRIDGE_RAIL_COLOR);
+        // Railing posts (vertical cylinders)
+        let post_count = (bridge_len / 3.0).ceil() as i32;
+        for pi in 0..post_count {
+            let t = (pi as f32 + 0.5) / post_count as f32 - 0.5;
+            let pxl = rail_x_l + dir_x * t * bridge_len;
+            let pzl = rail_z_l + dir_z * t * bridge_len;
+            mesh::cylinder_tris(tris, pxl, deck_y + 0.4, pzl, 0.03, 0.8, 4, BRIDGE_RAIL_COLOR);
+            let pxr = rail_x_r + dir_x * t * bridge_len;
+            let pzr = rail_z_r + dir_z * t * bridge_len;
+            mesh::cylinder_tris(tris, pxr, deck_y + 0.4, pzr, 0.03, 0.8, 4, BRIDGE_RAIL_COLOR);
+        }
 
         // Railing walls for collision
         walls.push(Wall { x: rail_x_l, z: rail_z_l, hw: 0.15, hd: bridge_len * 0.5, height: 1.0 });
@@ -1196,50 +1300,67 @@ fn generate_parking_lots(
                 parking_spots.push(ParkingSpot {
                     x: row_x, z: spot_z, rot_y: rot, occupied_by: None,
                 });
-                // White line markings
+                // Raised line markings (no z-fighting with asphalt)
                 let line_y = gy + 0.04;
                 let lz0 = spot_z - spot_spacing * 0.45;
                 let lz1 = spot_z + spot_spacing * 0.45;
                 let lx = row_x - PARKING_SPOT_WIDTH * 0.5;
-                tris.push(WorldTri {
-                    v: [[lx, line_y, lz0], [lx + 0.1, line_y, lz0], [lx + 0.1, line_y, lz1]],
-                    normal: [0.0, 1.0, 0.0], color: PARKING_LINE_COLOR,
-                });
-                tris.push(WorldTri {
-                    v: [[lx, line_y, lz0], [lx + 0.1, line_y, lz1], [lx, line_y, lz1]],
-                    normal: [0.0, 1.0, 0.0], color: PARKING_LINE_COLOR,
-                });
+                mesh::raised_strip_tris(tris,
+                    &[[lx, line_y, lz0], [lx, line_y, lz1]],
+                    0.1, 0.02, PARKING_LINE_COLOR);
             }
         }
 
-        // Perimeter fence (3 sides, road-adjacent side open)
+        // Perimeter fence (3 sides, road-adjacent side open) — cylinder posts + rail
         let fence_h = 1.5;
-        // Back wall
-        box_tris(tris, lot_cx, gy + fence_h * 0.5, lot_cz - lot_hd, lot_w, fence_h, 0.15, FENCE_COLOR);
+        // Back fence — posts
+        let back_post_count = (lot_w / 2.0) as usize;
+        for fp in 0..=back_post_count {
+            let t = fp as f32 / back_post_count as f32;
+            let fx = lot_cx - lot_hw + t * lot_w;
+            let fz = lot_cz - lot_hd;
+            mesh::cylinder_tris(tris, fx, gy + fence_h * 0.5, fz, 0.04, fence_h, 4, FENCE_COLOR);
+        }
+        // Back fence rail
+        mesh::cylinder_between(tris,
+            [lot_cx - lot_hw, gy + fence_h * 0.8, lot_cz - lot_hd],
+            [lot_cx + lot_hw, gy + fence_h * 0.8, lot_cz - lot_hd],
+            0.03, 4, FENCE_COLOR);
         walls.push(Wall { x: lot_cx, z: lot_cz - lot_hd, hw: lot_hw, hd: 0.15, height: fence_h });
-        // Left wall
-        box_tris(tris, lot_cx - lot_hw, gy + fence_h * 0.5, lot_cz, 0.15, fence_h, lot_d, FENCE_COLOR);
-        walls.push(Wall { x: lot_cx - lot_hw, z: lot_cz, hw: 0.15, hd: lot_hd, height: fence_h });
-        // Right wall
-        box_tris(tris, lot_cx + lot_hw, gy + fence_h * 0.5, lot_cz, 0.15, fence_h, lot_d, FENCE_COLOR);
-        walls.push(Wall { x: lot_cx + lot_hw, z: lot_cz, hw: 0.15, hd: lot_hd, height: fence_h });
 
-        // Corner trees
+        // Side fences — posts + rail
+        for side_x in [-1.0f32, 1.0] {
+            let fx = lot_cx + side_x * lot_hw;
+            let side_post_count = (lot_d / 2.0) as usize;
+            for fp in 0..=side_post_count {
+                let t = fp as f32 / side_post_count as f32;
+                let fz = lot_cz - lot_hd + t * lot_d;
+                mesh::cylinder_tris(tris, fx, gy + fence_h * 0.5, fz, 0.04, fence_h, 4, FENCE_COLOR);
+            }
+            mesh::cylinder_between(tris,
+                [fx, gy + fence_h * 0.8, lot_cz - lot_hd],
+                [fx, gy + fence_h * 0.8, lot_cz + lot_hd],
+                0.03, 4, FENCE_COLOR);
+            walls.push(Wall { x: fx, z: lot_cz, hw: 0.15, hd: lot_hd, height: fence_h });
+        }
+
+        // Corner trees — cylinder trunk + sphere canopy
         for corner in &[(-1.0f32, -1.0f32), (1.0, -1.0)] {
             let tx = lot_cx + corner.0 * (lot_hw - 1.0);
             let tz = lot_cz + corner.1 * (lot_hd - 1.0);
             let tgy = terrain.height_at(tx, tz);
-            box_tris(tris, tx, tgy + 1.5, tz, 0.3, 3.0, 0.3, TRUNK_COLOR);
-            octahedron_tris(tris, tx, tgy + 3.5, tz, 1.5, CANOPY_COLORS[rng.next() as usize % 4]);
+            mesh::cylinder_tris(tris, tx, tgy + 1.5, tz, 0.12, 3.0, 5, TRUNK_COLOR);
+            let cc = CANOPY_COLORS[rng.next() as usize % 4];
+            mesh::sphere_tris(tris, tx, tgy + 3.5, tz, 1.2, 1, cc);
             trees.push(Tree { x: tx, z: tz, trunk_radius: 0.3 });
         }
 
-        // Corner lights
+        // Corner lights — cylinder pole + sphere globe
         let lx = lot_cx + lot_hw - 0.5;
         let lz = lot_cz + lot_hd - 0.5;
         let lgy = terrain.height_at(lx, lz);
-        box_tris(tris, lx, lgy + 2.5, lz, 0.15, 5.0, 0.15, LAMP_POLE_COLOR);
-        octahedron_tris(tris, lx, lgy + 5.2, lz, 0.3, LAMP_GLOW_COLOR);
+        mesh::cylinder_tris(tris, lx, lgy + 2.5, lz, 0.06, 5.0, 6, LAMP_POLE_COLOR);
+        mesh::sphere_tris(tris, lx, lgy + 5.2, lz, 0.2, 1, LAMP_GLOW_COLOR);
         street_lights.push(StreetLight { x: lx, z: lz });
     }
 }
@@ -1267,28 +1388,30 @@ fn generate_market_stalls(
         let gy = terrain.height_at(sx, sz);
         let canvas_color = STALL_CANVAS_COLORS[i % 4];
 
-        // Wooden frame (4 posts)
+        // Wooden frame (4 cylinder posts)
         let sw = 3.0;
         let sd = 2.0;
         let sh = 2.5;
         for dx in [-1.0f32, 1.0] {
             for dz in [-1.0f32, 1.0] {
-                box_tris(tris, sx + dx * sw * 0.45, gy + sh * 0.5, sz + dz * sd * 0.45,
-                    0.1, sh, 0.1, STALL_FRAME_COLOR);
+                mesh::cylinder_tris(tris, sx + dx * sw * 0.45, gy + sh * 0.5, sz + dz * sd * 0.45,
+                    0.04, sh, 4, STALL_FRAME_COLOR);
             }
         }
 
-        // Canvas roof (angled slightly)
+        // Canvas roof (angled slightly — quad, not coplanar with anything)
         let roof_y = gy + sh;
         let v0 = [sx - sw * 0.5, roof_y + 0.3, sz - sd * 0.5];
         let v1 = [sx + sw * 0.5, roof_y + 0.3, sz - sd * 0.5];
         let v2 = [sx + sw * 0.5, roof_y - 0.1, sz + sd * 0.5];
         let v3 = [sx - sw * 0.5, roof_y - 0.1, sz + sd * 0.5];
-        tris.push(WorldTri { v: [v0, v1, v2], normal: [0.0, 0.9, 0.4], color: canvas_color });
-        tris.push(WorldTri { v: [v0, v2, v3], normal: [0.0, 0.9, 0.4], color: canvas_color });
+        // Reversed winding → CCW screen; normal points upward for canopy top
+        let roof_n = normalize_tri_normal(v0, v2, v1);
+        tris.push(WorldTri { v: [v0, v2, v1], normal: roof_n, color: canvas_color });
+        tris.push(WorldTri { v: [v0, v3, v2], normal: roof_n, color: canvas_color });
 
-        // Counter front
-        box_tris(tris, sx, gy + 0.5, sz - sd * 0.5 + 0.1, sw * 0.9, 1.0, 0.2, STALL_COUNTER_COLOR);
+        // Counter front — beveled
+        mesh::beveled_box_tris(tris, sx, gy + 0.5, sz - sd * 0.5 + 0.1, sw * 0.9, 1.0, 0.2, 0.03, STALL_COUNTER_COLOR);
         walls.push(Wall { x: sx, z: sz - sd * 0.5 + 0.1, hw: sw * 0.45, hd: 0.15, height: 1.0 });
     }
 }
@@ -1328,35 +1451,38 @@ fn generate_bus_stops(
 
         let gy = terrain.height_at(bx, bz);
 
-        // Shelter: 3 glass walls + roof
+        // Shelter: 3 glass walls (beveled) + roof
         let shelter_w = 2.5;
         let shelter_d = 1.5;
         let shelter_h = 2.5;
 
-        // Back wall
-        box_tris(tris, bx, gy + shelter_h * 0.5, bz - shelter_d * 0.5,
-            shelter_w, shelter_h, 0.1, BUS_GLASS_COLOR);
+        // Back wall — beveled
+        mesh::beveled_box_tris(tris, bx, gy + shelter_h * 0.5, bz - shelter_d * 0.5,
+            shelter_w, shelter_h, 0.1, 0.02, BUS_GLASS_COLOR);
         // Left wall
-        box_tris(tris, bx - shelter_w * 0.5, gy + shelter_h * 0.5, bz,
-            0.1, shelter_h, shelter_d, BUS_GLASS_COLOR);
+        mesh::beveled_box_tris(tris, bx - shelter_w * 0.5, gy + shelter_h * 0.5, bz,
+            0.1, shelter_h, shelter_d, 0.02, BUS_GLASS_COLOR);
         // Right wall
-        box_tris(tris, bx + shelter_w * 0.5, gy + shelter_h * 0.5, bz,
-            0.1, shelter_h, shelter_d, BUS_GLASS_COLOR);
-        // Roof
-        box_tris(tris, bx, gy + shelter_h + 0.05, bz, shelter_w + 0.3, 0.1, shelter_d + 0.3, BUS_ROOF_COLOR);
+        mesh::beveled_box_tris(tris, bx + shelter_w * 0.5, gy + shelter_h * 0.5, bz,
+            0.1, shelter_h, shelter_d, 0.02, BUS_GLASS_COLOR);
+        // Roof — beveled
+        mesh::beveled_box_tris(tris, bx, gy + shelter_h + 0.05, bz, shelter_w + 0.3, 0.1, shelter_d + 0.3, 0.02, BUS_ROOF_COLOR);
 
         // Walls for collision
         walls.push(Wall { x: bx, z: bz - shelter_d * 0.5, hw: shelter_w * 0.5, hd: 0.1, height: shelter_h });
         walls.push(Wall { x: bx - shelter_w * 0.5, z: bz, hw: 0.1, hd: shelter_d * 0.5, height: shelter_h });
         walls.push(Wall { x: bx + shelter_w * 0.5, z: bz, hw: 0.1, hd: shelter_d * 0.5, height: shelter_h });
 
-        // Bench
-        box_tris(tris, bx, gy + 0.25, bz, 1.5, 0.1, 0.4, DECO_BENCH_COLOR);
+        // Bench — slatted
+        for si in 0..3 {
+            let bsz = bz - 0.15 + si as f32 * 0.15;
+            mesh::box_tris(tris, bx, gy + 0.25, bsz, 1.5, 0.04, 0.1, DECO_BENCH_COLOR);
+        }
 
-        // Sign post
+        // Sign post — cylinder + sign plate
         let sign_x = bx + shelter_w * 0.5 + 0.5;
-        box_tris(tris, sign_x, gy + 1.5, bz, 0.1, 3.0, 0.1, LAMP_POLE_COLOR);
-        box_tris(tris, sign_x, gy + 3.1, bz, 0.4, 0.4, 0.1, BUS_SIGN_COLOR);
+        mesh::cylinder_tris(tris, sign_x, gy + 1.5, bz, 0.04, 3.0, 4, LAMP_POLE_COLOR);
+        mesh::beveled_box_tris(tris, sign_x, gy + 3.1, bz, 0.4, 0.4, 0.08, 0.02, BUS_SIGN_COLOR);
     }
 }
 
@@ -1377,7 +1503,7 @@ fn generate_decorations(
         (angle.cos() * radius, angle.sin() * radius)
     };
 
-    // Bollards (25) along walkway edges
+    // Bollards (25) — cylinder posts
     for _ in 0..25 {
         let (bx, bz) = town_pos(rng);
         if on_any_road(bx, bz, net) { continue; }
@@ -1386,11 +1512,13 @@ fn generate_decorations(
         });
         if overlaps { continue; }
         let gy = terrain.height_at(bx, bz);
-        octahedron_tris(tris, bx, gy + 0.3, bz, 0.15, BOLLARD_COLOR);
-        rocks.push(Rock { x: bx, z: bz, size: 0.15 }); // collision as small rock
+        mesh::cylinder_tris(tris, bx, gy + 0.25, bz, 0.08, 0.5, 6, BOLLARD_COLOR);
+        // Rounded top
+        mesh::sphere_tris(tris, bx, gy + 0.5, bz, 0.08, 0, BOLLARD_COLOR);
+        rocks.push(Rock { x: bx, z: bz, size: 0.15 });
     }
 
-    // Planters (12)
+    // Planters (12) — beveled box + sphere shrub
     for _ in 0..12 {
         let (px, pz) = town_pos(rng);
         if on_any_road(px, pz, net) { continue; }
@@ -1399,12 +1527,12 @@ fn generate_decorations(
         });
         if overlaps { continue; }
         let gy = terrain.height_at(px, pz);
-        box_tris(tris, px, gy + 0.2, pz, 0.5, 0.4, 0.5, PLANTER_BOX_COLOR);
-        octahedron_tris(tris, px, gy + 0.55, pz, 0.3, PLANTER_GREEN_COLOR);
+        mesh::beveled_box_tris(tris, px, gy + 0.2, pz, 0.5, 0.4, 0.5, 0.04, PLANTER_BOX_COLOR);
+        mesh::sphere_tris(tris, px, gy + 0.55, pz, 0.3, 1, PLANTER_GREEN_COLOR);
         walls.push(Wall { x: px, z: pz, hw: 0.25, hd: 0.25, height: 0.4 });
     }
 
-    // Picnic tables (5)
+    // Picnic tables (5) — box top + benches + cylinder legs
     for _ in 0..5 {
         let (px, pz) = town_pos(rng);
         if on_any_road(px, pz, net) { continue; }
@@ -1414,18 +1542,18 @@ fn generate_decorations(
         if overlaps { continue; }
         let gy = terrain.height_at(px, pz);
         // Table top
-        box_tris(tris, px, gy + 0.75, pz, 1.8, 0.08, 0.9, PICNIC_TABLE_COLOR);
-        // Two benches
-        box_tris(tris, px, gy + 0.3, pz - 0.7, 1.8, 0.08, 0.3, PICNIC_TABLE_COLOR);
-        box_tris(tris, px, gy + 0.3, pz + 0.7, 1.8, 0.08, 0.3, PICNIC_TABLE_COLOR);
-        // Legs
+        mesh::box_tris(tris, px, gy + 0.75, pz, 1.8, 0.08, 0.9, PICNIC_TABLE_COLOR);
+        // Two bench slabs
+        mesh::box_tris(tris, px, gy + 0.3, pz - 0.7, 1.8, 0.06, 0.25, PICNIC_TABLE_COLOR);
+        mesh::box_tris(tris, px, gy + 0.3, pz + 0.7, 1.8, 0.06, 0.25, PICNIC_TABLE_COLOR);
+        // Legs — cylinders
         for lx in [-0.7f32, 0.7] {
-            box_tris(tris, px + lx, gy + 0.375, pz, 0.08, 0.75, 0.08, PICNIC_TABLE_COLOR);
+            mesh::cylinder_tris(tris, px + lx, gy + 0.375, pz, 0.03, 0.75, 4, PICNIC_TABLE_COLOR);
         }
         walls.push(Wall { x: px, z: pz, hw: 0.9, hd: 0.8, height: 0.8 });
     }
 
-    // Billboards (3)
+    // Billboards (3) — cylinder post + beveled panel
     for _ in 0..3 {
         let (bx, bz) = town_pos(rng);
         if on_any_road(bx, bz, net) { continue; }
@@ -1434,35 +1562,35 @@ fn generate_decorations(
         });
         if overlaps { continue; }
         let gy = terrain.height_at(bx, bz);
-        // Post
-        box_tris(tris, bx, gy + 2.5, bz, 0.3, 5.0, 0.3, BILLBOARD_POST_COLOR);
-        // Panel
-        box_tris(tris, bx, gy + 5.5, bz, 3.0, 2.0, 0.2, BILLBOARD_PANEL_COLOR);
+        // Cylinder post
+        mesh::cylinder_tris(tris, bx, gy + 2.5, bz, 0.12, 5.0, 6, BILLBOARD_POST_COLOR);
+        // Beveled panel
+        mesh::beveled_box_tris(tris, bx, gy + 5.5, bz, 3.0, 2.0, 0.15, 0.03, BILLBOARD_PANEL_COLOR);
         walls.push(Wall { x: bx, z: bz, hw: 0.2, hd: 0.2, height: 5.0 });
     }
 
-    // Water towers (2) near dockyard
+    // Water towers (2) — cylinder legs + sphere tank
     for i in 0..2 {
         let wx = -30.0 + i as f32 * 60.0;
         let wz = DOCK_Z_START - 10.0;
         let gy = terrain.height_at(wx, wz);
-        // Base legs (4)
+        // Cylinder legs (4)
         for (lx, lz) in [(-0.5f32, -0.5f32), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)] {
-            box_tris(tris, wx + lx, gy + 1.5, wz + lz, 0.2, 3.0, 0.2, WATER_TOWER_COLOR);
+            mesh::cylinder_tris(tris, wx + lx, gy + 1.5, wz + lz, 0.08, 3.0, 5, WATER_TOWER_COLOR);
         }
-        // Tank
-        octahedron_tris(tris, wx, gy + 4.0, wz, 1.5, WATER_TOWER_COLOR);
+        // Tank — sphere
+        mesh::sphere_tris(tris, wx, gy + 4.0, wz, 1.5, 1, WATER_TOWER_COLOR);
         walls.push(Wall { x: wx, z: wz, hw: 0.8, hd: 0.8, height: 4.0 });
     }
 
-    // Traffic cones (18) near parking lots and construction areas
+    // Traffic cones (18) — proper cones
     for _ in 0..18 {
         let (cx, cz) = town_pos(rng);
         let gy = terrain.height_at(cx, cz);
-        octahedron_tris(tris, cx, gy + 0.2, cz, 0.12, TRAFFIC_CONE_COLOR);
+        mesh::cone_tris(tris, cx, gy + 0.2, cz, 0.1, 0.35, 6, TRAFFIC_CONE_COLOR);
     }
 
-    // Benches (10) along walkways
+    // Benches (10) — slatted seat + back + cylinder legs
     for _ in 0..10 {
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
@@ -1486,10 +1614,20 @@ fn generate_decorations(
         if overlaps { continue; }
 
         let gy = terrain.height_at(bx, bz);
-        // Seat
-        box_tris(tris, bx, gy + 0.25, bz, 1.2, 0.08, 0.4, DECO_BENCH_COLOR);
-        // Back
-        box_tris(tris, bx, gy + 0.5, bz + 0.18, 1.2, 0.35, 0.06, DECO_BENCH_COLOR);
+        // Seat slats (3)
+        for si in 0..3 {
+            let bsz = bz - 0.12 + si as f32 * 0.12;
+            mesh::box_tris(tris, bx, gy + 0.25, bsz, 1.2, 0.04, 0.08, DECO_BENCH_COLOR);
+        }
+        // Back slats (2)
+        for si in 0..2 {
+            let bh = 0.38 + si as f32 * 0.17;
+            mesh::box_tris(tris, bx, gy + bh, bz + 0.2, 1.2, 0.04, 0.04, DECO_BENCH_COLOR);
+        }
+        // Legs (cylinder)
+        for lx in [-0.5f32, 0.5] {
+            mesh::cylinder_tris(tris, bx + lx, gy + 0.125, bz, 0.02, 0.25, 4, 0xFF554422);
+        }
         walls.push(Wall { x: bx, z: bz, hw: 0.6, hd: 0.25, height: 0.6 });
     }
 }
@@ -1555,36 +1693,41 @@ fn generate_suburbs(
                 let hh = rng.range(2.5, 4.0);
                 let color = rng.pick(&SUBURB_HOUSE_COLORS);
 
-                // House body
-                box_tris(tris, hx, gy + hh * 0.5, hz, hw, hh, hd, color);
+                // House body — beveled
+                mesh::beveled_box_tris(tris, hx, gy + hh * 0.5, hz, hw, hh, hd, 0.08, color);
 
-                // Roof (slightly wider, low box)
-                box_tris(tris, hx, gy + hh + 0.3, hz, hw + 0.4, 0.6, hd + 0.4, SUBURB_ROOF_COLOR);
+                // Pitched roof
+                let roof_peak = hh * 0.35 + 0.5;
+                mesh::pitched_roof_tris(tris, hx, gy + hh, hz, hw + 0.4, hd + 0.4, roof_peak, SUBURB_ROOF_COLOR);
 
-                // Door (front face, facing road)
-                let door_x = hx - perp_x * hd * 0.5 * side - perp_x * 0.01 * side;
-                let door_z = hz - perp_z * hd * 0.5 * side - perp_z * 0.01 * side;
-                box_tris(tris, door_x, gy + 0.9, door_z, 0.8, 1.8, 0.05, SUBURB_DOOR_COLOR);
+                // Door recess (front face, facing road)
+                let door_x = hx - perp_x * hd * 0.5 * side;
+                let door_z = hz - perp_z * hd * 0.5 * side;
+                mesh::box_tris(tris, door_x, gy + 0.9, door_z - 0.07 * if side > 0.0 { -1.0 } else { 1.0 },
+                    0.8, 1.8, 0.14, SUBURB_DOOR_COLOR);
 
-                // Windows (2 on front face)
+                // Windows — recessed boxes instead of flat quads
                 let win_color = 0xFF222244;
                 for wi in [-1.0f32, 1.0] {
                     let wx = hx + dir_x * wi * (hw * 0.3);
                     let wz = hz + dir_z * wi * (hw * 0.3);
-                    let fwx = wx - perp_x * hd * 0.5 * side - perp_x * 0.01 * side;
-                    let fwz = wz - perp_z * hd * 0.5 * side - perp_z * 0.01 * side;
-                    box_tris(tris, fwx, gy + hh * 0.6, fwz, 0.7, 0.7, 0.05, win_color);
+                    let fwx = wx - perp_x * hd * 0.5 * side;
+                    let fwz = wz - perp_z * hd * 0.5 * side;
+                    // Recessed window box (depth into wall)
+                    mesh::box_tris(tris, fwx, gy + hh * 0.6, fwz, 0.7, 0.7, 0.12, win_color);
                 }
 
                 buildings.push(Building { x: hx, z: hz, w: hw, d: hd, h: hh, ground_y: gy });
 
-                // Garden fence (2 side walls parallel to road)
+                // Picket fence: cylinder posts with rails
                 let fence_extent = 5.0;
-                for fs in [-1.0f32, 1.0] {
-                    let fx = hx + dir_x * fs * fence_extent;
-                    let fz = hz + dir_z * fs * fence_extent;
+                let num_posts = 6;
+                for fp in 0..num_posts {
+                    let t_fence = (fp as f32 + 0.5) / num_posts as f32 * 2.0 - 1.0;
+                    let fx = hx + dir_x * t_fence * fence_extent;
+                    let fz = hz + dir_z * t_fence * fence_extent;
                     let fgy = terrain.height_at(fx, fz);
-                    box_tris(tris, fx, fgy + 0.4, fz, 0.08, 0.8, 0.08, SUBURB_FENCE_COLOR);
+                    mesh::cylinder_tris(tris, fx, fgy + 0.4, fz, 0.03, 0.8, 4, SUBURB_FENCE_COLOR);
                 }
 
                 // Driveway parking spot (between house and road)
@@ -1775,30 +1918,262 @@ pub fn generate_world(game: &mut GameState) {
         if !placed { continue; } // skip building if couldn't find valid spot
         let ground_y = game.terrain.height_at(x, z);
         let color = rng.pick(&BUILDING_COLORS);
-        box_tris(&mut tris, x, ground_y + h * 0.5, z, w, h, d, color);
-        // Window details
-        let win_color = 0xFF222244;
+
+        // --- ACU-style building with rich facade detail ---
+        let bevel = 0.15_f32.min(w * 0.1).min(d * 0.1);
+        mesh::beveled_box_tris(&mut tris, x, ground_y + h * 0.5, z, w, h, d, bevel, color);
+
+        let win_color = 0xFF1A1A33;
         let win_h = 1.2;
         let win_w = 0.8;
-        let floors = ((h - 1.0) / 3.0) as i32;
+        let recess_depth = 0.15;
+        let floor_height = 3.0;
+        let floors = ((h - 1.0) / floor_height) as i32;
         let cols = ((w - 1.0) / 2.0) as i32;
-        for floor in 0..floors {
-            let wy = ground_y + 2.0 + floor as f32 * 3.0;
+        let is_timber = bi % 4 == 0; // ~25% half-timbered facades
+        let has_shop = bi % 3 != 2 && floors > 1; // ~66% have ground floor shop
+        let has_balcony = bi % 5 == 0 && floors > 1; // ~20% have balconies
+        let shutter_color = SHUTTER_COLORS[bi % SHUTTER_COLORS.len()];
+
+        // Window holes for front/back
+        let mut win_holes: Vec<mesh::WallHole> = Vec::new();
+        let first_window_floor = if has_shop { 1 } else { 0 };
+        for floor in first_window_floor..floors {
+            let wy = 2.0 + floor as f32 * floor_height;
             for col in 0..cols {
-                let wx = x - w * 0.5 + 1.2 + col as f32 * 2.0;
-                let fz = z + d * 0.5 + 0.01;
-                tris.push(WorldTri { v: [[wx, wy, fz], [wx+win_w, wy, fz], [wx+win_w, wy+win_h, fz]], normal: [0.0,0.0,1.0], color: win_color });
-                tris.push(WorldTri { v: [[wx, wy, fz], [wx+win_w, wy+win_h, fz], [wx, wy+win_h, fz]], normal: [0.0,0.0,1.0], color: win_color });
-                let bz = z - d * 0.5 - 0.01;
-                tris.push(WorldTri { v: [[wx+win_w, wy, bz], [wx, wy, bz], [wx, wy+win_h, bz]], normal: [0.0,0.0,-1.0], color: win_color });
-                tris.push(WorldTri { v: [[wx+win_w, wy, bz], [wx, wy+win_h, bz], [wx+win_w, wy+win_h, bz]], normal: [0.0,0.0,-1.0], color: win_color });
+                let wx = 1.2 + col as f32 * 2.0;
+                win_holes.push(mesh::WallHole { x: wx, y: wy, w: win_w, h: win_h });
             }
         }
+
+        let zf = 0.01_f32;
+        // Front face (z+) with recessed windows
+        mesh::wall_with_holes_tris(
+            &mut tris,
+            x - w * 0.5, ground_y, z + d * 0.5 + zf,
+            w, h, &win_holes, recess_depth,
+            color, win_color, 1.0, 1.0, false,
+        );
+        // Back face (z-)
+        mesh::wall_with_holes_tris(
+            &mut tris,
+            x + w * 0.5, ground_y, z - d * 0.5 - zf,
+            w, h, &win_holes, recess_depth,
+            color, win_color, -1.0, -1.0, false,
+        );
+
+        // Side windows
+        let side_cols = ((d - 1.0) / 2.5) as i32;
+        let mut side_holes: Vec<mesh::WallHole> = Vec::new();
+        for floor in first_window_floor..floors {
+            let wy = 2.0 + floor as f32 * floor_height;
+            for col in 0..side_cols {
+                let wz = 1.5 + col as f32 * 2.5;
+                side_holes.push(mesh::WallHole { x: wz, y: wy, w: win_w, h: win_h });
+            }
+        }
+        mesh::wall_with_holes_tris(
+            &mut tris,
+            z - d * 0.5, ground_y, x + w * 0.5 + zf,
+            d, h, &side_holes, recess_depth,
+            color, win_color, -1.0, 1.0, true,
+        );
+        mesh::wall_with_holes_tris(
+            &mut tris,
+            z + d * 0.5, ground_y, x - w * 0.5 - zf,
+            d, h, &side_holes, recess_depth,
+            color, win_color, 1.0, -1.0, true,
+        );
+
+        // --- Window shutters (thin boxes flanking each window on front face) ---
+        let front_z = z + d * 0.5 + 0.02;
+        for floor in first_window_floor..floors {
+            let wy = ground_y + 2.0 + floor as f32 * floor_height;
+            for col in 0..cols {
+                let wx = x - w * 0.5 + 1.2 + col as f32 * 2.0;
+                // Left shutter
+                mesh::box_tris(&mut tris, wx - win_w * 0.5 - 0.08, wy + win_h * 0.5, front_z,
+                    0.12, win_h, 0.04, shutter_color);
+                // Right shutter
+                mesh::box_tris(&mut tris, wx + win_w * 0.5 + win_w + 0.08, wy + win_h * 0.5, front_z,
+                    0.12, win_h, 0.04, shutter_color);
+                // Window sill (small ledge under window)
+                mesh::box_tris(&mut tris, wx + win_w * 0.5, wy - 0.02, front_z + 0.04,
+                    win_w + 0.2, 0.06, 0.08, darken_color(color, 0.8));
+            }
+        }
+
+        // --- Timber framing on ~25% of buildings (half-timbered ACU facade) ---
+        if is_timber {
+            let tw = 0.08; // timber beam thickness
+            let front_tz = z + d * 0.5 + 0.03;
+            let timber_c = TIMBER_COLOR;
+            // Horizontal beams at each floor line
+            for floor in 0..=floors {
+                let by = ground_y + 2.0 + floor as f32 * floor_height - 0.5;
+                mesh::box_tris(&mut tris, x, by, front_tz, w - 0.2, tw, tw, timber_c);
+            }
+            // Vertical beams between windows
+            for col in 0..=cols {
+                let bx = x - w * 0.5 + 0.6 + col as f32 * 2.0;
+                mesh::box_tris(&mut tris, bx, ground_y + h * 0.5, front_tz,
+                    tw, h - 1.0, tw, timber_c);
+            }
+            // Diagonal braces (X-pattern between some windows)
+            if floors > 1 {
+                for col in 0..cols.min(3) {
+                    let bx = x - w * 0.5 + 1.6 + col as f32 * 2.0;
+                    let by = ground_y + 2.0 + floor_height;
+                    // Diagonal beam as a thin rotated box
+                    let diag_len = (1.6_f32 * 1.6 + floor_height * floor_height).sqrt();
+                    let diag_angle = (floor_height).atan2(1.6);
+                    // Approximate with a thin box (slight tilt baked in position)
+                    mesh::box_tris(&mut tris, bx, by + floor_height * 0.5, front_tz,
+                        tw, diag_len * 0.8, tw, timber_c);
+                }
+            }
+        }
+
+        // --- Ground-floor shop front with awning ---
+        if has_shop {
+            let shop_h = 2.5;
+            let shop_front_z = z + d * 0.5 + 0.03;
+            // Shop front panel (darker wood, full width)
+            mesh::box_tris(&mut tris, x, ground_y + shop_h * 0.5, shop_front_z,
+                w - 0.4, shop_h, 0.06, SHOP_FRONT_COLOR);
+            // Shop window (large glass, recessed)
+            let shop_win_w = (w - 2.0).max(1.0);
+            mesh::box_tris(&mut tris, x + 0.5, ground_y + 1.4, shop_front_z - 0.04,
+                shop_win_w * 0.5, 1.2, 0.04, 0xFF445566);
+            // Door opening
+            mesh::box_tris(&mut tris, x - w * 0.25, ground_y + 1.1, shop_front_z - 0.04,
+                0.9, 2.0, 0.06, 0xFF332211);
+            // Awning (angled box protruding outward)
+            let awning_color = AWNING_COLORS[bi % AWNING_COLORS.len()];
+            mesh::box_tris(&mut tris, x, ground_y + shop_h + 0.1, shop_front_z + 0.6,
+                w - 0.2, 0.06, 1.2, awning_color);
+            // Awning underside brace
+            mesh::box_tris(&mut tris, x, ground_y + shop_h + 0.05, shop_front_z + 0.6,
+                w - 0.3, 0.02, 1.1, darken_color(awning_color, 0.6));
+            // Hanging shop sign (on bracket from facade)
+            let sign_color = SIGN_COLORS[bi % SIGN_COLORS.len()];
+            let sign_x = x + w * 0.25;
+            // Iron bracket (horizontal cylinder)
+            mesh::cylinder_between(&mut tris,
+                [sign_x, ground_y + shop_h + 1.5, shop_front_z],
+                [sign_x, ground_y + shop_h + 1.5, shop_front_z + 0.5],
+                0.02, 4, BALCONY_RAIL_COLOR);
+            // Sign board
+            mesh::box_tris(&mut tris, sign_x, ground_y + shop_h + 1.0, shop_front_z + 0.5,
+                0.6, 0.5, 0.04, sign_color);
+        } else {
+            // Simple door for non-shop buildings
+            mesh::box_tris(&mut tris, x, ground_y + 1.1, z + d * 0.5 - recess_depth * 0.5,
+                1.0, 2.2, recess_depth, 0xFF443322);
+        }
+
+        // --- Balconies (on ~20% of buildings, 2nd floor front face) ---
+        if has_balcony {
+            let bal_y = ground_y + 2.0 + floor_height; // 2nd floor
+            let bal_z = z + d * 0.5;
+            let bal_depth = 0.8;
+            let bal_w = w * 0.6;
+            // Platform
+            mesh::box_tris(&mut tris, x, bal_y - 0.04, bal_z + bal_depth * 0.5,
+                bal_w, 0.08, bal_depth, darken_color(color, 0.75));
+            // Railing posts
+            let num_posts = ((bal_w / 0.4) as i32).max(2);
+            for pi in 0..=num_posts {
+                let t = pi as f32 / num_posts as f32;
+                let px = x - bal_w * 0.5 + t * bal_w;
+                mesh::cylinder_tris(&mut tris, px, bal_y + 0.3, bal_z + bal_depth,
+                    0.02, 0.6, 4, BALCONY_RAIL_COLOR);
+            }
+            // Top rail
+            mesh::cylinder_between(&mut tris,
+                [x - bal_w * 0.5, bal_y + 0.6, bal_z + bal_depth],
+                [x + bal_w * 0.5, bal_y + 0.6, bal_z + bal_depth],
+                0.02, 4, BALCONY_RAIL_COLOR);
+            // Front railing bottom
+            mesh::cylinder_between(&mut tris,
+                [x - bal_w * 0.5, bal_y + 0.02, bal_z + bal_depth],
+                [x + bal_w * 0.5, bal_y + 0.02, bal_z + bal_depth],
+                0.015, 4, BALCONY_RAIL_COLOR);
+        }
+
+        // --- Flower boxes under some windows ---
+        if bi % 3 == 0 && floors > 1 {
+            let flower_floor = 1 + (bi % floors.max(1) as usize) as i32;
+            if flower_floor < floors {
+                let fy = ground_y + 2.0 + flower_floor as f32 * floor_height - 0.15;
+                let fz_pos = z + d * 0.5 + 0.12;
+                for col in 0..cols.min(2) {
+                    let fx = x - w * 0.5 + 1.2 + col as f32 * 2.0 + win_w * 0.5;
+                    mesh::box_tris(&mut tris, fx, fy, fz_pos, win_w + 0.1, 0.12, 0.15, FLOWER_BOX_COLOR);
+                    // Flowers
+                    let fc = FLOWER_COLORS[col as usize % FLOWER_COLORS.len()];
+                    mesh::sphere_tris(&mut tris, fx - 0.12, fy + 0.12, fz_pos + 0.02, 0.08, 0, fc);
+                    mesh::sphere_tris(&mut tris, fx + 0.12, fy + 0.12, fz_pos + 0.02, 0.08, 0, fc);
+                }
+            }
+        }
+
+        // --- Roof (3 varieties) ---
+        let roof_type = (bi + (color & 0xFF) as usize) % 3;
+        let roof_color = darken_color(color, 0.55);
+        match roof_type {
+            0 => {
+                // Flat roof with parapet
+                mesh::box_tris(&mut tris, x, ground_y + h + 0.15, z,
+                    w + 0.2, 0.3, d + 0.2, roof_color);
+            }
+            1 => {
+                let peak = h * 0.15 + 1.0;
+                mesh::pitched_roof_tris(&mut tris, x, ground_y + h, z, w + 0.3, d + 0.3, peak, roof_color);
+                // Dormer window on pitched roof
+                if w > 4.0 {
+                    let dorm_y = ground_y + h + peak * 0.35;
+                    let dorm_z = z + d * 0.5 + 0.1;
+                    mesh::box_tris(&mut tris, x, dorm_y, dorm_z, 1.0, 0.8, 0.5, color);
+                    mesh::pitched_roof_tris(&mut tris, x, dorm_y + 0.4, dorm_z, 1.2, 0.7, 0.4, roof_color);
+                    mesh::box_tris(&mut tris, x, dorm_y, dorm_z + 0.26, 0.5, 0.5, 0.04, win_color);
+                }
+            }
+            _ => {
+                let peak = h * 0.12 + 0.8;
+                mesh::hip_roof_tris(&mut tris, x, ground_y + h, z, w + 0.3, d + 0.3, peak, roof_color);
+            }
+        }
+
+        // Cornice with more detail (double ledge)
+        let cornice_color = darken_color(color, 0.8);
+        mesh::box_tris(&mut tris, x, ground_y + h - 0.1, z,
+            w + 0.35, 0.12, d + 0.35, cornice_color);
+        mesh::box_tris(&mut tris, x, ground_y + h - 0.25, z,
+            w + 0.25, 0.08, d + 0.25, cornice_color);
+
+        // Belt course on taller buildings
+        if h > 8.0 {
+            mesh::box_tris(&mut tris, x, ground_y + h * 0.5, z,
+                w + 0.15, 0.15, d + 0.15, cornice_color);
+        }
+
+        // Chimney (40% of buildings)
+        if bi % 5 < 2 && h > 4.0 {
+            let chim_x = x + w * 0.3;
+            let chim_z = z - d * 0.3;
+            mesh::box_tris(&mut tris, chim_x, ground_y + h + 1.2, chim_z,
+                0.4, 2.4, 0.4, darken_color(color, 0.5));
+            // Chimney cap
+            mesh::box_tris(&mut tris, chim_x, ground_y + h + 2.5, chim_z,
+                0.5, 0.1, 0.5, darken_color(color, 0.4));
+        }
+
         game.world.buildings.push(Building { x, z, w, d, h, ground_y });
     }
 
-    // Trees
-    for _ in 0..NUM_TREES {
+    // Trees — cylinder trunk + branch splits + sphere canopy clusters
+    for ti in 0..NUM_TREES {
         let mut x;
         let mut z;
         loop {
@@ -1809,24 +2184,56 @@ pub fn generate_world(game: &mut GameState) {
         }
         let ground_y = game.terrain.height_at(x, z);
         let trunk_h = rng.range(1.5, 3.5);
+        let trunk_r = rng.range(0.12, 0.25);
         let canopy_r = rng.range(1.0, 2.5);
-        box_tris(&mut tris, x, ground_y + trunk_h * 0.5, z, 0.4, trunk_h, 0.4, TRUNK_COLOR);
         let canopy_color = rng.pick(&CANOPY_COLORS);
-        octahedron_tris(&mut tris, x, ground_y + trunk_h + canopy_r * 0.6, z, canopy_r, canopy_color);
-        game.world.trees.push(Tree { x, z, trunk_radius: 0.4 });
+
+        // Cylinder trunk
+        mesh::cylinder_tris(&mut tris, x, ground_y + trunk_h * 0.5, z,
+            trunk_r, trunk_h, 6, TRUNK_COLOR);
+
+        // 2-3 branch forks near top
+        let num_branches = 2 + (ti % 2);
+        let branch_base_y = ground_y + trunk_h * 0.7;
+        for bi in 0..num_branches {
+            let angle = (bi as f32 / num_branches as f32) * std::f32::consts::TAU + (ti as f32 * 1.23);
+            let blen = canopy_r * 0.6;
+            let bx = x + angle.cos() * blen * 0.5;
+            let bz = z + angle.sin() * blen * 0.5;
+            let by = branch_base_y + blen * 0.4;
+            mesh::cylinder_between(&mut tris,
+                [x, branch_base_y, z], [bx, by, bz],
+                trunk_r * 0.5, 4, TRUNK_COLOR);
+        }
+
+        // 3-5 canopy spheres (icosphere subdiv 1 = 80 tris each)
+        let num_canopies = 3 + (ti % 3);
+        let canopy_base_y = ground_y + trunk_h + canopy_r * 0.3;
+        for ci in 0..num_canopies {
+            let angle = (ci as f32 / num_canopies as f32) * std::f32::consts::TAU + (ti as f32 * 0.77);
+            let spread = canopy_r * 0.4;
+            let cx = x + angle.cos() * spread;
+            let cz = z + angle.sin() * spread;
+            let cy = canopy_base_y + (ci as f32 * 0.3);
+            let cr = canopy_r * rng.range(0.35, 0.55);
+            mesh::sphere_tris(&mut tris, cx, cy, cz, cr, 1, canopy_color);
+        }
+
+        game.world.trees.push(Tree { x, z, trunk_radius: trunk_r + 0.1 });
     }
 
-    // Rocks
-    for _ in 0..NUM_ROCKS {
+    // Rocks — perturbed icospheres
+    for ri in 0..NUM_ROCKS {
         let x = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
         let z = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
         let ground_y = game.terrain.height_at(x, z);
         let size = rng.range(0.5, 1.5);
-        octahedron_tris(&mut tris, x, ground_y + size * 0.4, z, size, ROCK_COLOR);
+        mesh::perturbed_sphere_tris(&mut tris, x, ground_y + size * 0.4, z,
+            size, 1, 0.25, ri as u64 * 12345, ROCK_COLOR);
         game.world.rocks.push(Rock { x, z, size });
     }
 
-    // Street lights alongside CarRoad segments
+    // Street lights — cylinder pole + curved arm + glass globe
     let car_segments: Vec<RoadSegment> = game.road_network.segments.iter()
         .filter(|s| s.tier == RoadTier::CarRoad).cloned().collect();
     for _ in 0..NUM_STREET_LIGHTS {
@@ -1836,7 +2243,6 @@ pub fn generate_world(game: &mut GameState) {
         let t = rng.range(0.1, 0.9);
         let sx = seg.x0 + (seg.x1 - seg.x0) * t;
         let sz = seg.z0 + (seg.z1 - seg.z0) * t;
-        // Perpendicular offset to sidewalk edge
         let dx = seg.x1 - seg.x0;
         let dz = seg.z1 - seg.z0;
         let len = (dx * dx + dz * dz).sqrt();
@@ -1848,8 +2254,22 @@ pub fn generate_world(game: &mut GameState) {
         let x = sx + perp_x * offset * side;
         let z = sz + perp_z * offset * side;
         let ground_y = game.terrain.height_at(x, z);
-        box_tris(&mut tris, x, ground_y + 2.5, z, 0.15, 5.0, 0.15, LAMP_POLE_COLOR);
-        octahedron_tris(&mut tris, x, ground_y + 5.2, z, 0.3, LAMP_GLOW_COLOR);
+
+        // Cylinder pole
+        mesh::cylinder_tris(&mut tris, x, ground_y + 2.5, z, 0.06, 5.0, 6, LAMP_POLE_COLOR);
+
+        // Curved arm — short cylinder from pole top toward road
+        let arm_dx = -perp_x * side * 0.8;
+        let arm_dz = -perp_z * side * 0.8;
+        mesh::cylinder_between(&mut tris,
+            [x, ground_y + 5.0, z],
+            [x + arm_dx, ground_y + 5.1, z + arm_dz],
+            0.03, 4, LAMP_POLE_COLOR);
+
+        // Glass globe at arm tip
+        mesh::sphere_tris(&mut tris, x + arm_dx, ground_y + 5.1, z + arm_dz,
+            0.2, 1, LAMP_GLOW_COLOR);
+
         game.world.street_lights.push(StreetLight { x, z });
     }
 
