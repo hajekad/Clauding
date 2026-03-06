@@ -1344,14 +1344,24 @@ fn generate_parking_lots(
             walls.push(Wall { x: fx, z: lot_cz, hw: 0.15, hd: lot_hd, height: fence_h });
         }
 
-        // Corner trees — cylinder trunk + sphere canopy
-        for corner in &[(-1.0f32, -1.0f32), (1.0, -1.0)] {
+        // Corner trees — bark trunk + leaf canopy
+        const LOT_LEAF_COLORS: [u32; 6] = [
+            0xFF2D7A2D, 0xFF338833, 0xFF228822, 0xFF448844, 0xFF2A6B2A, 0xFF3A8A3A,
+        ];
+        for (ci, corner) in [(-1.0f32, -1.0f32), (1.0, -1.0)].iter().enumerate() {
             let tx = lot_cx + corner.0 * (lot_hw - 1.0);
             let tz = lot_cz + corner.1 * (lot_hd - 1.0);
             let tgy = terrain.height_at(tx, tz);
-            mesh::cylinder_tris(tris, tx, tgy + 1.5, tz, 0.12, 3.0, 5, TRUNK_COLOR);
-            let cc = CANOPY_COLORS[rng.next() as usize % 4];
-            mesh::sphere_tris(tris, tx, tgy + 3.5, tz, 1.2, 1, cc);
+            mesh::bark_cylinder_tris(tris, tx, tgy + 1.5, tz, 0.12, 3.0, 8,
+                0.015, (ni * 100 + ci) as u64, TRUNK_COLOR, 0xFF332211);
+            // 2 leaf clusters instead of single sphere
+            for lci in 0..2 {
+                let la = (lci as f32 / 2.0) * std::f32::consts::TAU + ci as f32;
+                let lcx = tx + la.cos() * 0.4;
+                let lcz = tz + la.sin() * 0.4;
+                mesh::leaf_canopy_tris(tris, lcx, tgy + 3.5 + lci as f32 * 0.3, lcz,
+                    0.9, 40, 0.07, (ni * 200 + ci * 10 + lci) as u64, &LOT_LEAF_COLORS);
+            }
             trees.push(Tree { x: tx, z: tz, trunk_radius: 0.3 });
         }
 
@@ -2057,7 +2067,7 @@ fn validate_building_accessibility(world: &WorldData, net: &RoadNetwork) -> Vec<
 
 pub fn generate_world(game: &mut GameState) {
     let mut rng = Rng::new(game.world_seed);
-    let mut tris = Vec::with_capacity(35000);
+    let mut tris = Vec::with_capacity(500_000);
 
     // Generate organic road network
     let net = generate_road_network(&mut rng);
@@ -2427,7 +2437,13 @@ pub fn generate_world(game: &mut GameState) {
         game.world.buildings.push(Building { x, z, w, d, h, ground_y });
     }
 
-    // Trees — cylinder trunk + branch splits + sphere canopy clusters
+    // Trees — bark trunk + branch splits + individual leaf canopies
+    const LEAF_COLORS: [u32; 8] = [
+        0xFF2D7A2D, 0xFF338833, 0xFF228822, 0xFF448844,
+        0xFF2A6B2A, 0xFF3A8A3A, 0xFF1F6F1F, 0xFF359935,
+    ];
+    const BARK_COLOR: u32 = 0xFF443322;
+    const BARK_RIDGE_COLOR: u32 = 0xFF332211;
     for ti in 0..NUM_TREES {
         let mut x;
         let mut z;
@@ -2438,43 +2454,110 @@ pub fn generate_world(game: &mut GameState) {
                 && !on_river(x, z, &game.world.river_segments) { break; }
         }
         let ground_y = game.terrain.height_at(x, z);
-        let trunk_h = rng.range(1.5, 3.5);
-        let trunk_r = rng.range(0.12, 0.25);
-        let canopy_r = rng.range(1.0, 2.5);
-        let canopy_color = rng.pick(&CANOPY_COLORS);
+        let trunk_h = rng.range(2.0, 4.5);
+        let trunk_r = rng.range(0.12, 0.28);
+        let canopy_r = rng.range(1.2, 2.8);
+        let tree_seed = ti as u64 * 7919 + game.world_seed as u64;
 
-        // Cylinder trunk
-        mesh::cylinder_tris(&mut tris, x, ground_y + trunk_h * 0.5, z,
-            trunk_r, trunk_h, 6, TRUNK_COLOR);
+        // Bark trunk with ridges
+        mesh::bark_cylinder_tris(&mut tris, x, ground_y + trunk_h * 0.5, z,
+            trunk_r, trunk_h, 10, trunk_r * 0.15, tree_seed, BARK_COLOR, BARK_RIDGE_COLOR);
 
-        // 2-3 branch forks near top
-        let num_branches = 2 + (ti % 2);
-        let branch_base_y = ground_y + trunk_h * 0.7;
-        for bi in 0..num_branches {
-            let angle = (bi as f32 / num_branches as f32) * std::f32::consts::TAU + (ti as f32 * 1.23);
-            let blen = canopy_r * 0.6;
-            let bx = x + angle.cos() * blen * 0.5;
-            let bz = z + angle.sin() * blen * 0.5;
-            let by = branch_base_y + blen * 0.4;
-            mesh::cylinder_between(&mut tris,
-                [x, branch_base_y, z], [bx, by, bz],
-                trunk_r * 0.5, 4, TRUNK_COLOR);
+        // Exposed root bumps at base (2-3 small mounds)
+        let root_count = 2 + (ti % 2);
+        for ri in 0..root_count {
+            let ra = (ri as f32 / root_count as f32) * std::f32::consts::TAU + (ti as f32 * 2.1);
+            let rx = x + ra.cos() * trunk_r * 1.5;
+            let rz = z + ra.sin() * trunk_r * 1.5;
+            mesh::sphere_tris(&mut tris, rx, ground_y + 0.05, rz, trunk_r * 0.5, 0, BARK_COLOR);
         }
 
-        // 3-5 canopy spheres (icosphere subdiv 1 = 80 tris each)
+        // 2-4 branch forks near top
+        let num_branches = 2 + (ti % 3);
+        let branch_base_y = ground_y + trunk_h * 0.65;
+        for bi in 0..num_branches {
+            let angle = (bi as f32 / num_branches as f32) * std::f32::consts::TAU + (ti as f32 * 1.23);
+            let blen = canopy_r * 0.65;
+            let bx = x + angle.cos() * blen * 0.5;
+            let bz = z + angle.sin() * blen * 0.5;
+            let by = branch_base_y + blen * 0.45;
+            mesh::cylinder_between(&mut tris,
+                [x, branch_base_y, z], [bx, by, bz],
+                trunk_r * 0.45, 5, BARK_COLOR);
+
+            // Sub-branches (smaller twigs from each main branch)
+            if bi < 2 {
+                let sub_angle = angle + 0.6;
+                let sbx = bx + sub_angle.cos() * blen * 0.25;
+                let sbz = bz + sub_angle.sin() * blen * 0.25;
+                let sby = by + blen * 0.2;
+                mesh::cylinder_between(&mut tris,
+                    [bx, by, bz], [sbx, sby, sbz],
+                    trunk_r * 0.2, 3, BARK_COLOR);
+            }
+        }
+
+        // 3-5 leaf canopy clusters (individual leaves instead of solid spheres)
         let num_canopies = 3 + (ti % 3);
-        let canopy_base_y = ground_y + trunk_h + canopy_r * 0.3;
+        let canopy_base_y = ground_y + trunk_h + canopy_r * 0.2;
         for ci in 0..num_canopies {
             let angle = (ci as f32 / num_canopies as f32) * std::f32::consts::TAU + (ti as f32 * 0.77);
-            let spread = canopy_r * 0.4;
-            let cx = x + angle.cos() * spread;
-            let cz = z + angle.sin() * spread;
-            let cy = canopy_base_y + (ci as f32 * 0.3);
+            let spread = canopy_r * 0.35;
+            let clx = x + angle.cos() * spread;
+            let clz = z + angle.sin() * spread;
+            let cly = canopy_base_y + (ci as f32 * 0.25);
             let cr = canopy_r * rng.range(0.35, 0.55);
-            mesh::sphere_tris(&mut tris, cx, cy, cz, cr, 1, canopy_color);
+            let leaves_per_cluster = 50 + (ti * 7 + ci) % 25;
+            let leaf_sz = cr * 0.08;
+            mesh::leaf_canopy_tris(&mut tris, clx, cly, clz, cr,
+                leaves_per_cluster, leaf_sz,
+                tree_seed.wrapping_add(ci as u64 * 3571), &LEAF_COLORS);
         }
 
         game.world.trees.push(Tree { x, z, trunk_radius: trunk_r + 0.1 });
+    }
+
+    // Bushes — scattered around terrain (40-60 bushes)
+    const BUSH_LEAF_COLORS: [u32; 6] = [
+        0xFF2D6B2D, 0xFF336633, 0xFF225522, 0xFF3A7A3A, 0xFF1F5F1F, 0xFF2A6A2A,
+    ];
+    let num_bushes = 50;
+    for bi in 0..num_bushes {
+        let mut bx;
+        let mut bz;
+        loop {
+            bx = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
+            bz = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
+            if !on_any_road(bx, bz, &game.road_network)
+                && !on_river(bx, bz, &game.world.river_segments) { break; }
+        }
+        let gy = game.terrain.height_at(bx, bz);
+        let br = rng.range(0.4, 0.9);
+        let bh = rng.range(0.5, 1.0);
+        mesh::bush_tris(&mut tris, bx, gy, bz, br, bh,
+            bi as u64 * 6131 + game.world_seed as u64, &BUSH_LEAF_COLORS, BARK_COLOR);
+    }
+
+    // Grass patches — scattered across terrain, denser near roads/buildings
+    const GRASS_COLORS: [u32; 6] = [
+        0xFF2A7A2A, 0xFF338833, 0xFF1F6F1F, 0xFF2D6B2D,
+        0xFF44AA44, 0xFF3A8A3A,
+    ];
+    let num_grass_patches = 400;
+    for gi in 0..num_grass_patches {
+        let gx = rng.range(-WORLD_HALF + 2.0, WORLD_HALF - 2.0);
+        let gz = rng.range(-WORLD_HALF + 2.0, WORLD_HALF - 2.0);
+        if on_any_road(gx, gz, &game.road_network)
+            || on_river(gx, gz, &game.world.river_segments) { continue; }
+        let gy = game.terrain.height_at(gx, gz);
+        let patch_r = rng.range(1.0, 3.0);
+        let blade_count = 30 + (gi % 30);
+        let blade_h = rng.range(0.08, 0.25);
+        let blade_w = rng.range(0.015, 0.04);
+        let terrain_ref = &game.terrain;
+        mesh::grass_patch_tris(&mut tris, gx, gy, gz, patch_r, blade_count,
+            blade_h, blade_w, gi as u64 * 4877 + game.world_seed as u64,
+            &GRASS_COLORS, Some(&|x, z| terrain_ref.height_at(x, z)));
     }
 
     // Rocks — perturbed icospheres

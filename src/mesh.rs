@@ -969,6 +969,228 @@ pub fn cornice_tris(
     let _ = hh; // dimensions handled by box_tris
 }
 
+// ── Individual Leaf ──────────────────────────────────────────────────────────
+
+/// Single leaf: flat diamond shape (2 tris). `right`/`up` define the leaf plane.
+/// Leaf is elongated along `up` (1.4x taller than wide).
+fn leaf_tris(
+    tris: &mut Vec<WorldTri>, center: [f32; 3],
+    size: f32, right: [f32; 3], up: [f32; 3], color: u32,
+) {
+    let r = [right[0] * size, right[1] * size, right[2] * size];
+    let u = [up[0] * size * 1.4, up[1] * size * 1.4, up[2] * size * 1.4];
+    let tip = [center[0] + u[0], center[1] + u[1], center[2] + u[2]];
+    let bot = [center[0] - u[0], center[1] - u[1], center[2] - u[2]];
+    let lft = [center[0] - r[0], center[1] - r[1], center[2] - r[2]];
+    let rgt = [center[0] + r[0], center[1] + r[1], center[2] + r[2]];
+    let normal = tri_normal(lft, tip, rgt);
+    tris.push(WorldTri { v: [lft, tip, rgt], normal, color });
+    tris.push(WorldTri { v: [lft, rgt, bot], normal, color });
+}
+
+/// Scatter individual leaves on the surface shell of a sphere to form a canopy cluster.
+/// Leaves face outward with random rotation. `leaf_count` leaves × 2 tris each.
+pub fn leaf_canopy_tris(
+    tris: &mut Vec<WorldTri>,
+    cx: f32, cy: f32, cz: f32,
+    radius: f32, leaf_count: usize, leaf_size: f32,
+    seed: u64, colors: &[u32],
+) {
+    let mut h = seed;
+    let mut next_f = |h: &mut u64| -> f32 {
+        *h = h.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*h >> 16) & 0xFFFF) as f32 / 65535.0
+    };
+
+    for _ in 0..leaf_count {
+        // Uniform sphere surface: random azimuth + acos(uniform) for polar
+        let theta = next_f(&mut h) * std::f32::consts::TAU;
+        let cos_phi = next_f(&mut h) * 2.0 - 1.0;
+        let sin_phi = (1.0 - cos_phi * cos_phi).sqrt();
+        // Shell placement: 0.65r to 1.0r
+        let r_frac = 0.65 + next_f(&mut h) * 0.35;
+
+        let lx = cx + radius * r_frac * sin_phi * theta.cos();
+        let ly = cy + radius * r_frac * cos_phi;
+        let lz = cz + radius * r_frac * sin_phi * theta.sin();
+
+        // Outward direction from center
+        let dx = lx - cx;
+        let dy = ly - cy;
+        let dz = lz - cz;
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        let outward = if len > 0.001 { [dx / len, dy / len, dz / len] } else { [0.0, 1.0, 0.0] };
+
+        // Build tangent frame on leaf surface
+        let world_up = if outward[1].abs() < 0.99 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+        let right_base = normalize3(cross3(outward, world_up));
+        let up_base = cross3(right_base, outward);
+
+        // Random rotation around outward normal
+        let rot = next_f(&mut h) * std::f32::consts::TAU;
+        let (sr, cr) = (rot.sin(), rot.cos());
+        let right = [
+            right_base[0] * cr + up_base[0] * sr,
+            right_base[1] * cr + up_base[1] * sr,
+            right_base[2] * cr + up_base[2] * sr,
+        ];
+        let up = [
+            -right_base[0] * sr + up_base[0] * cr,
+            -right_base[1] * sr + up_base[1] * cr,
+            -right_base[2] * sr + up_base[2] * cr,
+        ];
+
+        let color = colors[((h >> 8) as usize) % colors.len().max(1)];
+        let sz = leaf_size * (0.7 + next_f(&mut h) * 0.6);
+        leaf_tris(tris, [lx, ly, lz], sz, right, up, color);
+    }
+}
+
+// ── Grass ───────────────────────────────────────────────────────────────────
+
+/// Single grass blade: thin triangle leaning slightly. 1 tri.
+/// `lean` in [0..1] controls how much it tilts, `lean_angle` is direction in radians.
+fn grass_blade_tri(
+    tris: &mut Vec<WorldTri>,
+    x: f32, y: f32, z: f32,
+    height: f32, width: f32,
+    lean: f32, lean_angle: f32,
+    color: u32,
+) {
+    let hw = width * 0.5;
+    let (sl, cl) = (lean_angle.sin(), lean_angle.cos());
+    // Base left/right perpendicular to lean direction
+    let base_l = [x - hw * cl, y, z - hw * sl];
+    let base_r = [x + hw * cl, y, z + hw * sl];
+    // Tip leans in lean_angle direction
+    let tip = [
+        x + lean * height * 0.3 * sl,
+        y + height,
+        z - lean * height * 0.3 * cl,
+    ];
+    let normal = tri_normal(base_l, tip, base_r);
+    tris.push(WorldTri { v: [base_l, tip, base_r], normal, color });
+}
+
+/// Generate a patch of grass blades in a circular area. Each blade is 1 tri.
+pub fn grass_patch_tris(
+    tris: &mut Vec<WorldTri>,
+    cx: f32, cy: f32, cz: f32,
+    patch_radius: f32, blade_count: usize,
+    blade_height: f32, blade_width: f32,
+    seed: u64, colors: &[u32],
+    height_fn: Option<&dyn Fn(f32, f32) -> f32>,
+) {
+    let mut h = seed;
+    let mut next_f = |h: &mut u64| -> f32 {
+        *h = h.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*h >> 16) & 0xFFFF) as f32 / 65535.0
+    };
+
+    for _ in 0..blade_count {
+        // Random position in circular patch
+        let angle = next_f(&mut h) * std::f32::consts::TAU;
+        let dist = next_f(&mut h).sqrt() * patch_radius; // sqrt for uniform distribution
+        let bx = cx + angle.cos() * dist;
+        let bz = cz + angle.sin() * dist;
+        let by = if let Some(hf) = height_fn { hf(bx, bz) } else { cy };
+
+        let bh = blade_height * (0.6 + next_f(&mut h) * 0.8);
+        let bw = blade_width * (0.7 + next_f(&mut h) * 0.6);
+        let lean = 0.2 + next_f(&mut h) * 0.5;
+        let lean_dir = next_f(&mut h) * std::f32::consts::TAU;
+        let color = colors[((h >> 10) as usize) % colors.len().max(1)];
+
+        grass_blade_tri(tris, bx, by, bz, bh, bw, lean, lean_dir, color);
+    }
+}
+
+// ── Bark Cylinder ───────────────────────────────────────────────────────────
+
+/// Cylinder with vertical bark ridges. Creates a more organic trunk appearance.
+/// `ridge_count` ridges protrude slightly from the base radius.
+/// Each ridge adds 2 extra tris per segment height. Total ≈ segments × 4 + ridges × segments × 2.
+pub fn bark_cylinder_tris(
+    tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32,
+    r: f32, h: f32, segments: usize, ridge_depth: f32,
+    seed: u64, color: u32, ridge_color: u32,
+) {
+    let hh = h * 0.5;
+    let n = segments.max(6);
+    let step = std::f32::consts::TAU / n as f32;
+
+    // Base cylinder (smooth)
+    let top_center = [cx, cy + hh, cz];
+    let bot_center = [cx, cy - hh, cz];
+
+    // Hash to determine which segments get ridges
+    let mut rh = seed;
+    let mut next_h = |rh: &mut u64| -> f32 {
+        *rh = rh.wrapping_mul(6364136223846793005).wrapping_add(1);
+        ((*rh >> 16) & 0xFFFF) as f32 / 65535.0
+    };
+
+    for i in 0..n {
+        let a0 = i as f32 * step;
+        let a1 = (i + 1) as f32 * step;
+        let (s0, c0) = (a0.sin(), a0.cos());
+        let (s1, c1) = (a1.sin(), a1.cos());
+
+        // Determine if this segment has a ridge
+        let has_ridge = next_h(&mut rh) < 0.4; // ~40% of segments get ridges
+        let r_eff = if has_ridge { r + ridge_depth } else { r };
+        let col = if has_ridge { ridge_color } else { color };
+
+        let bt0 = [cx + r_eff * c0, cy - hh, cz + r_eff * s0];
+        let bt1 = [cx + r * c1, cy - hh, cz + r * s1]; // next segment uses base r
+        let tp0 = [cx + r_eff * c0, cy + hh, cz + r_eff * s0];
+        let tp1 = [cx + r * c1, cy + hh, cz + r * s1];
+
+        push_quad(tris, bt0, tp0, tp1, bt1, col);
+
+        let n_top = [0.0, 1.0, 0.0];
+        tris.push(WorldTri { v: [top_center, tp1, tp0], normal: n_top, color: col });
+        let n_bot = [0.0, -1.0, 0.0];
+        tris.push(WorldTri { v: [bot_center, bt0, bt1], normal: n_bot, color: col });
+    }
+}
+
+// ── Bush ────────────────────────────────────────────────────────────────────
+
+/// Generate a bush: short trunk + dense leaf clusters at low height.
+pub fn bush_tris(
+    tris: &mut Vec<WorldTri>,
+    cx: f32, cy: f32, cz: f32,
+    radius: f32, height: f32,
+    seed: u64, leaf_colors: &[u32], trunk_color: u32,
+) {
+    // Short visible trunk/stem (only bottom portion visible)
+    let trunk_h = height * 0.3;
+    let trunk_r = radius * 0.08;
+    cylinder_tris(tris, cx, cy + trunk_h * 0.5, cz, trunk_r, trunk_h, 5, trunk_color);
+
+    // 2-4 overlapping leaf clusters forming the bush body
+    let cluster_count = 2 + ((seed >> 4) as usize % 3);
+    let mut h = seed;
+    let mut next_f = |h: &mut u64| -> f32 {
+        *h = h.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*h >> 16) & 0xFFFF) as f32 / 65535.0
+    };
+
+    for ci in 0..cluster_count {
+        let angle = (ci as f32 / cluster_count as f32) * std::f32::consts::TAU + next_f(&mut h) * 0.5;
+        let spread = radius * 0.3;
+        let clx = cx + angle.cos() * spread;
+        let clz = cz + angle.sin() * spread;
+        let cly = cy + height * (0.4 + next_f(&mut h) * 0.2);
+        let cr = radius * (0.5 + next_f(&mut h) * 0.3);
+        let leaves_per = 35 + ((h >> 8) as usize % 20);
+        let leaf_sz = radius * 0.08;
+        leaf_canopy_tris(tris, clx, cly, clz, cr, leaves_per, leaf_sz,
+            h.wrapping_add(ci as u64), leaf_colors);
+    }
+}
+
 // ── Helper math ─────────────────────────────────────────────────────────────
 
 fn cross3(a: [f32;3], b: [f32;3]) -> [f32;3] {
