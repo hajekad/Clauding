@@ -874,6 +874,7 @@ type FnCmdDraw = unsafe extern "C" fn(VkCommandBuffer, u32, u32, u32, u32);
 type FnCmdSetViewport = unsafe extern "C" fn(VkCommandBuffer, u32, u32, *const VkViewport);
 type FnCmdSetScissor = unsafe extern "C" fn(VkCommandBuffer, u32, u32, *const VkRect2D);
 type FnCmdCopyImageToBuffer = unsafe extern "C" fn(VkCommandBuffer, VkImage, u32, VkBuffer, u32, *const VkBufferImageCopy);
+type FnDeviceWaitIdle = unsafe extern "C" fn(VkDevice) -> i32;
 
 struct VkFns {
     destroy_instance: FnDestroyInstance,
@@ -934,6 +935,7 @@ struct VkFns {
     cmd_set_viewport: FnCmdSetViewport,
     cmd_set_scissor: FnCmdSetScissor,
     cmd_copy_image_to_buffer: FnCmdCopyImageToBuffer,
+    device_wait_idle: FnDeviceWaitIdle,
 }
 
 // --- GPU buffer ---
@@ -1210,6 +1212,7 @@ impl GpuContext {
             cmd_set_viewport: load_fn(get_proc, instance, c"vkCmdSetViewport"),
             cmd_set_scissor: load_fn(get_proc, instance, c"vkCmdSetScissor"),
             cmd_copy_image_to_buffer: load_fn(get_proc, instance, c"vkCmdCopyImageToBuffer"),
+            device_wait_idle: load_fn(get_proc, instance, c"vkDeviceWaitIdle"),
         };
 
         // Get queue
@@ -2395,6 +2398,7 @@ impl GpuContext {
 impl Drop for GpuContext {
     fn drop(&mut self) {
         unsafe {
+            (self.fns.device_wait_idle)(self.device);
             // Wait for any in-flight graphics work
             (self.fns.wait_for_fences)(self.device, 1, &self.gfx_fences[0], 1, u64::MAX);
             (self.fns.wait_for_fences)(self.device, 1, &self.gfx_fences[1], 1, u64::MAX);

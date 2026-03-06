@@ -275,21 +275,24 @@ fn main() {
 
         // Always render (frozen scene when paused)
         let use_gpu = gpu.as_ref().is_some_and(|g| g.has_graphics());
-        if use_gpu {
-            // GPU render path
-            let ctx = gpu.as_mut().unwrap();
-            ctx.resize_render_target(fb.w as u32, fb.h as u32);
 
-            // Regenerate static verts periodically (lighting changes with time of day)
+        // Regenerate static verts periodically (lighting changes with time of day)
+        if use_gpu {
             static_regen_timer += frame_dt;
             if static_regen_timer >= 10.0 {
                 static_regen_timer = 0.0;
                 let eye = [game.camera.x, game.camera.y, game.camera.z];
                 render::generate_static_gpu_vertices(&game.world, eye, game.time_of_day, &mut gpu_static_verts);
-                ctx.upload_static_vertices(&gpu_static_verts);
+                gpu.as_mut().unwrap().upload_static_vertices(&gpu_static_verts);
             }
+        }
 
-            // Generate only dynamic vertices each frame
+        if use_gpu {
+            // GPU offscreen render path
+            let ctx = gpu.as_mut().unwrap();
+            ctx.resize_render_target(fb.w as u32, fb.h as u32);
+
+            // Generate dynamic vertices
             render::generate_dynamic_gpu_vertices(
                 &game.world, &game.player, &game.camera,
                 game.time_of_day, &mut render_scratch, &mut gpu_dynamic_verts,
@@ -306,21 +309,29 @@ fn main() {
             let clear = render::sky_color_f32(game.time_of_day);
             ctx.render_frame(&gpu_dynamic_verts, &vp, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
 
-            // Particles + HUD still rendered on CPU (overlay on top of GPU output)
+            // CPU overlays on top of GPU output
             fb.zbuf.fill(1.0);
+            particle::sys_render_particles(&mut fb, &particles, &game.camera);
+            hud::sys_hud(&mut fb, &game);
+            menu::sys_menu_render(
+                &mut fb, &game.menu, &game.keybinds,
+                game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
+            );
+
+            window.present(&fb.pixels);
         } else {
-            // CPU fallback
+            // CPU software rasterizer (fallback)
             fb.clear(render::sky_color(game.time_of_day));
             render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut render_scratch);
+
+            particle::sys_render_particles(&mut fb, &particles, &game.camera);
+            hud::sys_hud(&mut fb, &game);
+            menu::sys_menu_render(
+                &mut fb, &game.menu, &game.keybinds,
+                game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
+            );
+
+            window.present(&fb.pixels);
         }
-
-        particle::sys_render_particles(&mut fb, &particles, &game.camera);
-        hud::sys_hud(&mut fb, &game);
-        menu::sys_menu_render(
-            &mut fb, &game.menu, &game.keybinds,
-            game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
-        );
-
-        window.present(&fb.pixels);
     }
 }

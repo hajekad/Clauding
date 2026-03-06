@@ -730,7 +730,6 @@ impl WaylandWindow {
 
     pub fn width(&self) -> usize { self.state.width }
     pub fn height(&self) -> usize { self.state.height }
-
     pub fn poll_events(&mut self, keys: &mut [bool; 256], should_quit: &mut bool, mouse_dx: &mut f32, mouse_dy: &mut f32) {
         unsafe {
             let s = &mut *self.state;
