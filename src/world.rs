@@ -1630,6 +1630,169 @@ fn generate_decorations(
         }
         walls.push(Wall { x: bx, z: bz, hw: 0.6, hd: 0.25, height: 0.6 });
     }
+
+    // --- ACU-style street clutter ---
+
+    // Wooden barrels (30) — cylinder with iron rim bands
+    for _ in 0..30 {
+        let (bx, bz) = town_pos(rng);
+        if on_any_road(bx, bz, net) { continue; }
+        let overlaps = buildings.iter().any(|b| {
+            (bx - b.x).abs() < b.w * 0.5 + 0.5 && (bz - b.z).abs() < b.d * 0.5 + 0.5
+        });
+        if overlaps { continue; }
+        let gy = terrain.height_at(bx, bz);
+        let barrel_h = rng.range(0.6, 0.9);
+        let barrel_r = rng.range(0.2, 0.3);
+        mesh::cylinder_tris(tris, bx, gy + barrel_h * 0.5, bz, barrel_r, barrel_h, 8, 0xFF664422);
+        mesh::cylinder_tris(tris, bx, gy + barrel_h * 0.15, bz, barrel_r + 0.01, 0.04, 8, 0xFF444444);
+        mesh::cylinder_tris(tris, bx, gy + barrel_h * 0.85, bz, barrel_r + 0.01, 0.04, 8, 0xFF444444);
+        mesh::cylinder_tris(tris, bx, gy + barrel_h + 0.01, bz, barrel_r - 0.02, 0.02, 8, 0xFF775533);
+    }
+
+    // Wooden crates (25) — with cross-braces
+    for _ in 0..25 {
+        let (cx, cz) = town_pos(rng);
+        if on_any_road(cx, cz, net) { continue; }
+        let overlaps = buildings.iter().any(|b| {
+            (cx - b.x).abs() < b.w * 0.5 + 0.5 && (cz - b.z).abs() < b.d * 0.5 + 0.5
+        });
+        if overlaps { continue; }
+        let gy = terrain.height_at(cx, cz);
+        let crate_s = rng.range(0.3, 0.5);
+        mesh::box_tris(tris, cx, gy + crate_s * 0.5, cz, crate_s, crate_s, crate_s, 0xFF886644);
+        mesh::box_tris(tris, cx, gy + crate_s * 0.5, cz + crate_s * 0.5 + 0.01,
+            crate_s * 0.8, 0.03, 0.02, 0xFF553311);
+        if rng.next() % 3 == 0 {
+            let s2 = crate_s * 0.85;
+            mesh::box_tris(tris, cx + 0.05, gy + crate_s + s2 * 0.5, cz - 0.03,
+                s2, s2, s2, 0xFF775533);
+        }
+    }
+
+    // Sacks/grain bags (20)
+    for _ in 0..20 {
+        let (sx, sz) = town_pos(rng);
+        if on_any_road(sx, sz, net) { continue; }
+        let overlaps = buildings.iter().any(|b| {
+            (sx - b.x).abs() < b.w * 0.5 + 0.5 && (sz - b.z).abs() < b.d * 0.5 + 0.5
+        });
+        if overlaps { continue; }
+        let gy = terrain.height_at(sx, sz);
+        let sack_r = rng.range(0.15, 0.25);
+        mesh::perturbed_sphere_tris(tris, sx, gy + sack_r * 0.7, sz,
+            sack_r, 0, 0.15, rng.next() as u64, 0xFF998866);
+    }
+
+    // Wooden planks/debris on streets (15 clusters)
+    for _ in 0..15 {
+        if car_segs.is_empty() { break; }
+        let seg = car_segs[rng.next() as usize % car_segs.len()];
+        let t = rng.range(0.2, 0.8);
+        let px = seg.x0 + (seg.x1 - seg.x0) * t;
+        let pz = seg.z0 + (seg.z1 - seg.z0) * t;
+        let gy = terrain.height_at(px, pz);
+        let num_planks = 2 + (rng.next() % 3) as i32;
+        for _ in 0..num_planks {
+            let ox = rng.range(-1.5, 1.5);
+            let oz = rng.range(-1.5, 1.5);
+            mesh::box_tris(tris, px + ox, gy + 0.02, pz + oz,
+                rng.range(0.6, 1.5), 0.03, 0.12, 0xFF775533);
+        }
+    }
+
+    // Hanging bunting/pennant flags between buildings (8)
+    for _ in 0..8 {
+        if buildings.len() < 2 { break; }
+        let b1_idx = rng.next() as usize % buildings.len();
+        let b1 = &buildings[b1_idx];
+        let mut best_dist = f32::MAX;
+        let mut b2_idx = 0;
+        for (i, b2) in buildings.iter().enumerate() {
+            if i == b1_idx { continue; }
+            let ddx = b1.x - b2.x;
+            let ddz = b1.z - b2.z;
+            let dist = (ddx * ddx + ddz * ddz).sqrt();
+            if dist < best_dist && dist < 15.0 && dist > 4.0 {
+                best_dist = dist;
+                b2_idx = i;
+            }
+        }
+        if best_dist > 15.0 { continue; }
+        let b2 = &buildings[b2_idx];
+        let flag_y = b1.ground_y.max(b2.ground_y) + 4.0;
+        let bunting_color = AWNING_COLORS[rng.next() as usize % AWNING_COLORS.len()];
+        let num_flags = ((best_dist / 1.2) as i32).max(3).min(10);
+        for fi in 0..num_flags {
+            let ft = (fi as f32 + 0.5) / num_flags as f32;
+            let fx = b1.x + (b2.x - b1.x) * ft;
+            let fz = b1.z + (b2.z - b1.z) * ft;
+            let sag = (ft - 0.5).abs() * 2.0 - 1.0;
+            mesh::box_tris(tris, fx, flag_y + sag * 0.5, fz, 0.3, 0.25, 0.02, bunting_color);
+        }
+        mesh::cylinder_between(tris,
+            [b1.x, flag_y, b1.z], [b2.x, flag_y, b2.z],
+            0.01, 4, 0xFF443322);
+    }
+
+    // Hanging laundry lines (5)
+    for _ in 0..5 {
+        if buildings.len() < 2 { break; }
+        let b1_idx = rng.next() as usize % buildings.len();
+        let b1 = &buildings[b1_idx];
+        let mut best_dist = f32::MAX;
+        let mut b2_idx = 0;
+        for (i, b2) in buildings.iter().enumerate() {
+            if i == b1_idx { continue; }
+            let ddx = b1.x - b2.x;
+            let ddz = b1.z - b2.z;
+            let dist = (ddx * ddx + ddz * ddz).sqrt();
+            if dist < best_dist && dist < 10.0 && dist > 3.0 {
+                best_dist = dist;
+                b2_idx = i;
+            }
+        }
+        if best_dist > 10.0 { continue; }
+        let b2 = &buildings[b2_idx];
+        let line_y = b1.ground_y.max(b2.ground_y) + 5.5;
+        mesh::cylinder_between(tris,
+            [b1.x, line_y, b1.z], [b2.x, line_y, b2.z],
+            0.008, 4, 0xFF886655);
+        let num_clothes = ((best_dist / 1.5) as i32).max(2).min(5);
+        for ci in 0..num_clothes {
+            let ct = (ci as f32 + 0.5) / num_clothes as f32;
+            let clx = b1.x + (b2.x - b1.x) * ct;
+            let clz = b1.z + (b2.z - b1.z) * ct;
+            let cloth_color = match rng.next() % 4 {
+                0 => 0xFFCCCCCC, 1 => 0xFF8888AA, 2 => 0xFFAA8866, _ => 0xFFBBBB99,
+            };
+            mesh::box_tris(tris, clx, line_y - 0.3, clz, 0.3, 0.4, 0.02, cloth_color);
+        }
+    }
+
+    // Wooden handcarts (3)
+    for _ in 0..3 {
+        let cx = rng.range(-30.0, 30.0);
+        let cz = rng.range(-30.0, 30.0);
+        if on_any_road(cx, cz, net) { continue; }
+        let overlaps = buildings.iter().any(|b| {
+            (cx - b.x).abs() < b.w * 0.5 + 1.5 && (cz - b.z).abs() < b.d * 0.5 + 1.5
+        });
+        if overlaps { continue; }
+        let gy = terrain.height_at(cx, cz);
+        mesh::box_tris(tris, cx, gy + 0.5, cz, 1.8, 0.08, 1.0, 0xFF775533);
+        mesh::box_tris(tris, cx, gy + 0.65, cz - 0.48, 1.8, 0.22, 0.04, 0xFF664422);
+        mesh::box_tris(tris, cx, gy + 0.65, cz + 0.48, 1.8, 0.22, 0.04, 0xFF664422);
+        for wside in [-0.55f32, 0.55] {
+            mesh::cylinder_tris(tris, cx - 0.6, gy + 0.3, cz + wside, 0.3, 0.06, 8, 0xFF443322);
+        }
+        mesh::cylinder_between(tris,
+            [cx + 0.9, gy + 0.55, cz - 0.3], [cx + 1.6, gy + 0.8, cz - 0.3],
+            0.025, 4, 0xFF664422);
+        mesh::cylinder_between(tris,
+            [cx + 0.9, gy + 0.55, cz + 0.3], [cx + 1.6, gy + 0.8, cz + 0.3],
+            0.025, 4, 0xFF664422);
+    }
 }
 
 // Suburban colors
@@ -1688,46 +1851,138 @@ fn generate_suburbs(
                 if overlaps { continue; }
 
                 let gy = terrain.height_at(hx, hz);
-                let hw = rng.range(4.0, 6.0);
-                let hd = rng.range(4.0, 6.0);
-                let hh = rng.range(2.5, 4.0);
+                let hw = rng.range(4.0, 7.0);
+                let hd = rng.range(4.0, 7.0);
+                let hh = rng.range(3.0, 5.0);
                 let color = rng.pick(&SUBURB_HOUSE_COLORS);
+                let shutter_c = SHUTTER_COLORS[k as usize % SHUTTER_COLORS.len()];
 
                 // House body — beveled
                 mesh::beveled_box_tris(tris, hx, gy + hh * 0.5, hz, hw, hh, hd, 0.08, color);
 
-                // Pitched roof
-                let roof_peak = hh * 0.35 + 0.5;
-                mesh::pitched_roof_tris(tris, hx, gy + hh, hz, hw + 0.4, hd + 0.4, roof_peak, SUBURB_ROOF_COLOR);
+                // Pitched roof with overhang
+                let roof_peak = hh * 0.35 + 0.6;
+                mesh::pitched_roof_tris(tris, hx, gy + hh, hz, hw + 0.6, hd + 0.6, roof_peak, SUBURB_ROOF_COLOR);
 
-                // Door recess (front face, facing road)
-                let door_x = hx - perp_x * hd * 0.5 * side;
-                let door_z = hz - perp_z * hd * 0.5 * side;
-                mesh::box_tris(tris, door_x, gy + 0.9, door_z - 0.07 * if side > 0.0 { -1.0 } else { 1.0 },
-                    0.8, 1.8, 0.14, SUBURB_DOOR_COLOR);
+                // Chimney on roof
+                let chim_ox = dir_x * hw * 0.2;
+                let chim_oz = dir_z * hw * 0.2;
+                mesh::box_tris(tris, hx + chim_ox, gy + hh + roof_peak * 0.6, hz + chim_oz,
+                    0.35, roof_peak * 0.8 + 0.5, 0.35, darken_color(color, 0.45));
+                mesh::box_tris(tris, hx + chim_ox, gy + hh + roof_peak * 0.6 + roof_peak * 0.4 + 0.3, hz + chim_oz,
+                    0.45, 0.08, 0.45, darken_color(color, 0.35));
 
-                // Windows — recessed boxes instead of flat quads
-                let win_color = 0xFF222244;
+                // Front face direction (toward road)
+                let face_nx = -perp_x * side;
+                let face_nz = -perp_z * side;
+
+                // Door with frame and step
+                let door_x = hx + face_nx * hd * 0.5;
+                let door_z = hz + face_nz * hd * 0.5;
+                let door_depth = 0.12;
+                // Door frame (slightly larger than door)
+                mesh::box_tris(tris, door_x, gy + 1.05, door_z - face_nx * door_depth * 0.3,
+                    1.1, 2.3, door_depth * 0.6, darken_color(color, 0.7));
+                // Door itself
+                mesh::box_tris(tris, door_x, gy + 0.95, door_z - face_nx * door_depth * 0.5,
+                    0.85, 1.9, door_depth, SUBURB_DOOR_COLOR);
+                // Doorstep
+                mesh::box_tris(tris, door_x + face_nz * 0.0, gy + 0.06, door_z + face_nx * 0.3,
+                    1.2, 0.12, 0.5, darken_color(color, 0.6));
+
+                // Front windows with shutters and sills
+                let win_color = 0xFF1A1A33;
                 for wi in [-1.0f32, 1.0] {
                     let wx = hx + dir_x * wi * (hw * 0.3);
                     let wz = hz + dir_z * wi * (hw * 0.3);
-                    let fwx = wx - perp_x * hd * 0.5 * side;
-                    let fwz = wz - perp_z * hd * 0.5 * side;
-                    // Recessed window box (depth into wall)
-                    mesh::box_tris(tris, fwx, gy + hh * 0.6, fwz, 0.7, 0.7, 0.12, win_color);
+                    let fwx = wx + face_nx * hd * 0.5;
+                    let fwz = wz + face_nz * hd * 0.5;
+                    // Window recess
+                    mesh::box_tris(tris, fwx, gy + hh * 0.55, fwz, 0.7, 0.8, 0.12, win_color);
+                    // Window sill
+                    let sill_ox = face_nx * 0.06;
+                    let sill_oz = face_nz * 0.06;
+                    mesh::box_tris(tris, fwx + sill_ox, gy + hh * 0.55 - 0.45, fwz + sill_oz,
+                        0.85, 0.06, 0.08, darken_color(color, 0.7));
+                    // Left shutter
+                    let ls_ox = -dir_x * 0.45 + face_nx * 0.02;
+                    let ls_oz = -dir_z * 0.45 + face_nz * 0.02;
+                    mesh::box_tris(tris, fwx + ls_ox, gy + hh * 0.55, fwz + ls_oz,
+                        0.14, 0.8, 0.04, shutter_c);
+                    // Right shutter
+                    let rs_ox = dir_x * 0.45 + face_nx * 0.02;
+                    let rs_oz = dir_z * 0.45 + face_nz * 0.02;
+                    mesh::box_tris(tris, fwx + rs_ox, gy + hh * 0.55, fwz + rs_oz,
+                        0.14, 0.8, 0.04, shutter_c);
+                }
+
+                // Upper floor window (gable window in roof face)
+                let gable_x = hx + face_nx * hd * 0.5;
+                let gable_z = hz + face_nz * hd * 0.5;
+                mesh::box_tris(tris, gable_x, gy + hh + roof_peak * 0.2, gable_z,
+                    0.5, 0.5, 0.06, win_color);
+
+                // Side windows (one per side)
+                for si in [-1.0f32, 1.0] {
+                    let swx = hx + dir_x * si * hw * 0.5;
+                    let swz = hz + dir_z * si * hw * 0.5;
+                    mesh::box_tris(tris, swx, gy + hh * 0.55, swz, 0.12, 0.6, 0.5, win_color);
+                }
+
+                // Porch overhang (small roof over door)
+                let porch_x = door_x + face_nx * 0.5;
+                let porch_z = door_z + face_nz * 0.5;
+                mesh::box_tris(tris, porch_x, gy + 2.15, porch_z,
+                    1.4, 0.06, 0.8, SUBURB_ROOF_COLOR);
+                // Porch support posts
+                for ps in [-0.55f32, 0.55] {
+                    let ppx = porch_x + dir_x * ps;
+                    let ppz = porch_z + dir_z * ps;
+                    mesh::cylinder_tris(tris, ppx, gy + 1.05, ppz, 0.04, 2.1, 4, darken_color(color, 0.6));
+                }
+
+                // Foundation / base course
+                mesh::box_tris(tris, hx, gy + 0.1, hz,
+                    hw + 0.1, 0.2, hd + 0.1, darken_color(color, 0.5));
+
+                // Flower box under one front window
+                if k % 2 == 0 {
+                    let fbx = hx + dir_x * (hw * 0.3) + face_nx * (hd * 0.5 + 0.1);
+                    let fbz = hz + dir_z * (hw * 0.3) + face_nz * (hd * 0.5 + 0.1);
+                    mesh::box_tris(tris, fbx, gy + hh * 0.55 - 0.5, fbz,
+                        0.7, 0.12, 0.15, FLOWER_BOX_COLOR);
+                    let fc = FLOWER_COLORS[k as usize % FLOWER_COLORS.len()];
+                    mesh::sphere_tris(tris, fbx, gy + hh * 0.55 - 0.35, fbz, 0.08, 0, fc);
                 }
 
                 buildings.push(Building { x: hx, z: hz, w: hw, d: hd, h: hh, ground_y: gy });
 
-                // Picket fence: cylinder posts with rails
-                let fence_extent = 5.0;
-                let num_posts = 6;
+                // Picket fence with proper posts + rails + gate
+                let fence_extent = 5.5;
+                let fence_h = 0.9;
+                let num_posts = 10;
                 for fp in 0..num_posts {
                     let t_fence = (fp as f32 + 0.5) / num_posts as f32 * 2.0 - 1.0;
+                    // Skip posts near driveway
+                    if t_fence.abs() < 0.15 { continue; }
                     let fx = hx + dir_x * t_fence * fence_extent;
                     let fz = hz + dir_z * t_fence * fence_extent;
                     let fgy = terrain.height_at(fx, fz);
-                    mesh::cylinder_tris(tris, fx, fgy + 0.4, fz, 0.03, 0.8, 4, SUBURB_FENCE_COLOR);
+                    // Post (thicker, taller)
+                    mesh::cylinder_tris(tris, fx, fgy + fence_h * 0.5, fz, 0.035, fence_h, 4, SUBURB_FENCE_COLOR);
+                    // Pointed cap
+                    mesh::cone_tris(tris, fx, fgy + fence_h + 0.04, fz, 0.04, 0.08, 4, SUBURB_FENCE_COLOR);
+                }
+                // Horizontal rails (top and mid)
+                for ri in [0.7f32, 0.35] {
+                    let r1x = hx + dir_x * (-fence_extent);
+                    let r1z = hz + dir_z * (-fence_extent);
+                    let r2x = hx + dir_x * fence_extent;
+                    let r2z = hz + dir_z * fence_extent;
+                    let rgy = terrain.height_at(hx, hz);
+                    mesh::cylinder_between(tris,
+                        [r1x, rgy + ri, r1z], [r2x, rgy + ri, r2z],
+                        0.02, 4, SUBURB_FENCE_COLOR);
                 }
 
                 // Driveway parking spot (between house and road)
