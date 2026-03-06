@@ -37,6 +37,12 @@ impl Framebuffer {
             self.pixels[idx] = color;
         }
     }
+
+    /// Write pixel without depth test (for overlays on GPU-rendered frames)
+    #[inline(always)]
+    pub fn put_pixel_overlay(&mut self, x: usize, y: usize, color: u32) {
+        self.pixels[y * self.w + x] = color;
+    }
 }
 
 // Screen-space triangle: 3 vertices (x, y, z_ndc) + flat color

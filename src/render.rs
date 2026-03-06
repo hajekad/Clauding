@@ -1,6 +1,7 @@
 // sys_render: transform world + player geometry to screen, rasterize
 // Near-plane clipping, backface/distance culling, day/night lighting
 
+use crate::gpu::GpuVertex;
 use crate::math::*;
 use crate::raster::*;
 use crate::state::*;
@@ -550,4 +551,122 @@ fn push_box(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, w: f32, h: f32,
         tris.push(WorldTri { v: [c[idx[0]],c[idx[1]],c[idx[2]]], normal, color });
         tris.push(WorldTri { v: [c[idx[0]],c[idx[2]],c[idx[3]]], normal, color });
     }
+}
+
+// --- GPU vertex generation (for Vulkan graphics pipeline) ---
+
+/// Convert WorldTri slice to GpuVertex buffer with lighting + fog + distance cull
+fn tris_to_gpu_verts(tris: &[WorldTri], cam_pos: Vec3, tc: &TimeColors, out: &mut Vec<GpuVertex>) {
+    let fog_dist_sq = FOG_DIST * FOG_DIST;
+    let inv_fog_dist_sq = 1.0 / fog_dist_sq;
+
+    out.reserve(tris.len() * 3);
+
+    for tri in tris {
+        let cx = (tri.v[0][0] + tri.v[1][0] + tri.v[2][0]) * 0.333;
+        let cy = (tri.v[0][1] + tri.v[1][1] + tri.v[2][1]) * 0.333;
+        let cz = (tri.v[0][2] + tri.v[1][2] + tri.v[2][2]) * 0.333;
+        let dx = cam_pos[0] - cx;
+        let dy = cam_pos[1] - cy;
+        let dz = cam_pos[2] - cz;
+        let dist_sq = dx*dx + dy*dy + dz*dz;
+        if dist_sq > fog_dist_sq { continue; }
+
+        let sun_lit = v3_dot(tri.normal, tc.light_dir).max(0.0) * tc.sun_strength;
+        let intensity = sun_lit + tc.ambient;
+        // fog*fog = dist_sq / fog_dist_sq — avoids sqrt entirely
+        let fog_sq = (dist_sq * inv_fog_dist_sq).min(1.0);
+        let color = shade_and_fog_sq(tri.color, intensity, fog_sq, tc);
+
+        for i in 0..3 {
+            out.push(GpuVertex {
+                pos: tri.v[i],
+                color_packed: color,
+                normal: tri.normal,
+            });
+        }
+    }
+}
+
+/// Like shade_and_fog but takes fog_sq (= fog*fog) directly, avoiding sqrt
+#[inline(always)]
+fn shade_and_fog_sq(color: u32, intensity: f32, fog_sq: f32, tc: &TimeColors) -> u32 {
+    let r = ((color >> 16) & 0xFF) as f32;
+    let g = ((color >> 8) & 0xFF) as f32;
+    let b = (color & 0xFF) as f32;
+    let i = intensity.clamp(0.1, 1.3);
+    let mix = fog_sq; // already squared
+    let inv = 1.0 - mix;
+    let ro = ((r * i * inv + tc.fog_r * mix) as u32).min(255);
+    let go = ((g * i * inv + tc.fog_g * mix) as u32).min(255);
+    let bo = ((b * i * inv + tc.fog_b * mix) as u32).min(255);
+    0xFF000000 | (ro << 16) | (go << 8) | bo
+}
+
+/// Generate GPU vertices for static world geometry (call once, or when lighting changes significantly)
+pub fn generate_static_gpu_vertices(
+    world: &WorldData, cam_pos: Vec3, hour: f32, out: &mut Vec<GpuVertex>,
+) {
+    let tc = time_colors(hour);
+    out.clear();
+    tris_to_gpu_verts(&world.static_tris, cam_pos, &tc, out);
+}
+
+/// Generate GPU vertices for dynamic entities only (call each frame)
+pub fn generate_dynamic_gpu_vertices(
+    world: &WorldData, player: &Player, cam: &Camera,
+    hour: f32, scratch: &mut Vec<WorldTri>, out: &mut Vec<GpuVertex>,
+) {
+    let tc = time_colors(hour);
+    let eye = v3(cam.x, cam.y, cam.z);
+    let fog_dist_sq = FOG_DIST * FOG_DIST;
+
+    out.clear();
+    scratch.clear();
+
+    // Pre-cull entities by distance before generating mesh
+    for (vi, v) in world.vehicles.iter().enumerate() {
+        let dx = eye[0] - v.x;
+        let dz = eye[2] - v.z;
+        if dx*dx + dz*dz > fog_dist_sq { continue; }
+        let show_interior = player.in_vehicle == Some(vi);
+        gen_vehicle_mesh(v, scratch, show_interior);
+    }
+    for npc in &world.npcs {
+        if npc.state == NpcState::Sleeping { continue; }
+        if npc.in_vehicle { continue; }
+        let dx = eye[0] - npc.x;
+        let dz = eye[2] - npc.z;
+        if dx*dx + dz*dz > fog_dist_sq { continue; }
+        gen_npc_mesh(npc, scratch);
+    }
+    for item in &world.items {
+        if !item.active && !item.falling { continue; }
+        let dx = eye[0] - item.x;
+        let dz = eye[2] - item.z;
+        if dx*dx + dz*dz > fog_dist_sq { continue; }
+        gen_item_mesh(item, scratch);
+    }
+    for bin in &world.trash_bins {
+        if bin.carried_by.is_some() { continue; }
+        let dx = eye[0] - bin.x;
+        let dz = eye[2] - bin.z;
+        if dx*dx + dz*dz > fog_dist_sq { continue; }
+        gen_trash_bin_mesh(bin, scratch);
+    }
+    if player.in_vehicle.is_none() {
+        gen_player_mesh(player, scratch);
+    }
+    tris_to_gpu_verts(scratch, eye, &tc, out);
+}
+
+/// Get sky color as float RGBA for GPU clear
+pub fn sky_color_f32(hour: f32) -> [f32; 4] {
+    let c = time_colors(hour).sky;
+    [
+        ((c >> 16) & 0xFF) as f32 / 255.0,
+        ((c >> 8) & 0xFF) as f32 / 255.0,
+        (c & 0xFF) as f32 / 255.0,
+        1.0,
+    ]
 }

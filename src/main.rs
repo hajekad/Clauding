@@ -1,4 +1,4 @@
-use clauding::{state, world, neat, npc, vehicle, player, camera, hud, particle, raster, render, menu, input, combat, collision, player_jobs, telemetry, gpu, platform};
+use clauding::{state, world, neat, npc, vehicle, player, camera, hud, particle, raster, render, menu, input, combat, collision, player_jobs, telemetry, gpu, platform, math};
 
 use std::time::Instant;
 
@@ -11,6 +11,37 @@ fn bytemuck_cast_mut(data: &mut [f32]) -> &mut [u8] {
 
 const FIXED_DT: f32 = 1.0 / 60.0;
 const MAX_ACCUMULATOR: f32 = 0.25; // cap to prevent death spiral
+
+/// Frame time ring buffer for percentile analysis
+struct FrameStats {
+    times: Vec<f32>,      // frame times in seconds
+    head: usize,
+    count: usize,
+    report_timer: f32,
+}
+impl FrameStats {
+    fn new(capacity: usize) -> Self {
+        FrameStats { times: vec![0.0; capacity], head: 0, count: 0, report_timer: 0.0 }
+    }
+    fn push(&mut self, dt: f32) {
+        self.times[self.head] = dt;
+        self.head = (self.head + 1) % self.times.len();
+        if self.count < self.times.len() { self.count += 1; }
+    }
+    fn percentile_fps(&self, pct: f32) -> f32 {
+        if self.count < 10 { return 0.0; }
+        let mut sorted: Vec<f32> = self.times[..self.count].to_vec();
+        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)); // descending (worst first)
+        let idx = ((self.count as f32 * pct / 100.0) as usize).min(self.count - 1);
+        let worst_dt = sorted[idx];
+        if worst_dt > 0.0 { 1.0 / worst_dt } else { 0.0 }
+    }
+    fn avg_fps(&self) -> f32 {
+        if self.count < 2 { return 0.0; }
+        let sum: f32 = self.times[..self.count].iter().sum();
+        self.count as f32 / sum
+    }
+}
 
 fn main() {
     // Init GPU compute
@@ -57,14 +88,35 @@ fn main() {
         .map(|g| neat::NeatBrain::compile(g))
         .collect();
 
+    // Init GPU graphics pipeline
+    if let Some(ref mut ctx) = gpu {
+        ctx.init_graphics(w as u32, h as u32);
+        if ctx.has_graphics() {
+            eprintln!("GPU graphics pipeline ready ({}x{})", w, h);
+        }
+    }
+
     let mut fb = raster::Framebuffer::new(w, h);
     let mut particles = particle::ParticleSystem::new(&mut gpu, world_seed.wrapping_add(0xBEEF));
 
     let mut render_scratch: Vec<state::WorldTri> = Vec::with_capacity(4096);
+    let mut gpu_static_verts: Vec<gpu::GpuVertex> = Vec::with_capacity(512 * 1024);
+    let mut gpu_dynamic_verts: Vec<gpu::GpuVertex> = Vec::with_capacity(64 * 1024);
+    let mut static_regen_timer: f32 = 0.0;
+
+    // Pre-generate and upload static GPU vertices
+    if gpu.as_ref().is_some_and(|g| g.has_graphics()) {
+        let eye = [game.camera.x, game.camera.y, game.camera.z];
+        render::generate_static_gpu_vertices(&game.world, eye, game.time_of_day, &mut gpu_static_verts);
+        gpu.as_mut().unwrap().upload_static_vertices(&gpu_static_verts);
+        eprintln!("Static GPU verts: {} ({:.1}MB)", gpu_static_verts.len(),
+            gpu_static_verts.len() as f64 * 28.0 / 1_000_000.0);
+    }
     let mut last_frame = Instant::now();
     let mut accumulator: f32 = 0.0;
     let mut prev_time_of_day: f32 = game.time_of_day;
     let _ = prev_time_of_day; // suppress initial assignment warning
+    let mut frame_stats = FrameStats::new(1000); // last 1000 frames
 
     loop {
         // Save previous keys before polling
@@ -89,6 +141,18 @@ fn main() {
         let frame_dt = now.duration_since(last_frame).as_secs_f32();
         if frame_dt < state::FRAME_TIME_MIN { continue; }
         last_frame = now;
+
+        // Track frame times for percentile analysis
+        frame_stats.push(frame_dt);
+        frame_stats.report_timer += frame_dt;
+        if frame_stats.report_timer >= 5.0 {
+            frame_stats.report_timer = 0.0;
+            eprintln!("FPS avg={:.0} 1%low={:.0} 0.1%low={:.0} | tris={}+{} | {}x{}",
+                frame_stats.avg_fps(), frame_stats.percentile_fps(1.0),
+                frame_stats.percentile_fps(0.1),
+                game.world.static_tris.len(), render_scratch.len(),
+                fb.w, fb.h);
+        }
 
         let nw = window.width();
         let nh = window.height();
@@ -210,12 +274,48 @@ fn main() {
         }
 
         // Always render (frozen scene when paused)
-        fb.clear(render::sky_color(game.time_of_day));
-        render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut render_scratch);
+        let use_gpu = gpu.as_ref().is_some_and(|g| g.has_graphics());
+        if use_gpu {
+            // GPU render path
+            let ctx = gpu.as_mut().unwrap();
+            ctx.resize_render_target(fb.w as u32, fb.h as u32);
+
+            // Regenerate static verts periodically (lighting changes with time of day)
+            static_regen_timer += frame_dt;
+            if static_regen_timer >= 10.0 {
+                static_regen_timer = 0.0;
+                let eye = [game.camera.x, game.camera.y, game.camera.z];
+                render::generate_static_gpu_vertices(&game.world, eye, game.time_of_day, &mut gpu_static_verts);
+                ctx.upload_static_vertices(&gpu_static_verts);
+            }
+
+            // Generate only dynamic vertices each frame
+            render::generate_dynamic_gpu_vertices(
+                &game.world, &game.player, &game.camera,
+                game.time_of_day, &mut render_scratch, &mut gpu_dynamic_verts,
+            );
+
+            // Build VP matrix (Vulkan depth [0,1] + Y-flip)
+            let aspect = fb.w as f32 / fb.h as f32;
+            let eye = [game.camera.x, game.camera.y, game.camera.z];
+            let target = [game.camera.tx, game.camera.ty, game.camera.tz];
+            let view = math::m4_look_at(eye, target, [0.0, 1.0, 0.0]);
+            let proj = math::m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.1, 500.0);
+            let vp = math::m4_mul(&proj, &view);
+
+            let clear = render::sky_color_f32(game.time_of_day);
+            ctx.render_frame(&gpu_dynamic_verts, &vp, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
+
+            // Particles + HUD still rendered on CPU (overlay on top of GPU output)
+            fb.zbuf.fill(1.0);
+        } else {
+            // CPU fallback
+            fb.clear(render::sky_color(game.time_of_day));
+            render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut render_scratch);
+        }
+
         particle::sys_render_particles(&mut fb, &particles, &game.camera);
         hud::sys_hud(&mut fb, &game);
-
-        // Menu overlay on top
         menu::sys_menu_render(
             &mut fb, &game.menu, &game.keybinds,
             game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,

@@ -49,6 +49,16 @@ pub fn m4_look_at(eye: Vec3, target: Vec3, up: Vec3) -> Mat4 {
      -v3_dot(s, eye), -v3_dot(u, eye), v3_dot(f, eye), 1.0]
 }
 
+/// Perspective matrix for Vulkan: depth [0,1], Y-flip
+pub fn m4_perspective_vk(fovy: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
+    let f = 1.0 / (fovy * 0.5).tan();
+    let nf = 1.0 / (near - far);
+    [f/aspect, 0.0, 0.0,          0.0,
+     0.0,     -f,   0.0,          0.0,
+     0.0,      0.0, far*nf,      -1.0,
+     0.0,      0.0, far*near*nf,  0.0]
+}
+
 pub fn m4_transform_no_div(m: &Mat4, p: Vec3) -> [f32; 4] {
     [
         m[0]*p[0] + m[4]*p[1] + m[8]*p[2]  + m[12],

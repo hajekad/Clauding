@@ -7,6 +7,7 @@ pub mod render;
 pub mod platform;
 pub mod gpu;
 pub mod gpu_kernels;
+pub mod gpu_shaders;
 pub mod world;
 pub mod player;
 pub mod vehicle;
