@@ -29,6 +29,42 @@ const STEERING_COLOR: u32 = 0xFF222222;
 // Carried item colors
 const BAG_COLOR: u32 = 0xFF886644;
 
+// ACU-style NPC appearance palettes
+const SKIN_TONES: [u32; 5] = [0xFFDEB887, 0xFFD2A87A, 0xFFC89B6E, 0xFFE8C9A0, 0xFFBB9060];
+const HAIR_COLORS: [u32; 6] = [0xFF332211, 0xFF443322, 0xFF221100, 0xFF554433, 0xFF664422, 0xFF887755];
+const HAT_COLORS: [u32; 5] = [0xFF333333, 0xFF554433, 0xFF222222, 0xFF443344, 0xFF665544];
+const COAT_COLORS: [u32; 8] = [
+    0xFF443322, 0xFF333355, 0xFF554433, 0xFF444444,
+    0xFF553333, 0xFF335544, 0xFF555544, 0xFF443355,
+];
+const BOOT_COLOR: u32 = 0xFF332211;
+const STOCKING_COLOR: u32 = 0xFFCCBBAA;
+const SHIRT_WHITE: u32 = 0xFFDDCCBB;
+const BUCKLE_COLOR: u32 = 0xFFCCBB88;
+
+/// Derive NPC appearance from a seed. No struct storage needed.
+struct NpcAppearance {
+    skin: u32,
+    hair: u32,
+    hat_type: u8,   // 0=none, 1=tricorn, 2=top_hat, 3=cap, 4=bonnet, 5=wide_brim
+    hat_col: u32,
+    coat_col: u32,
+    has_coat: bool,
+    is_female: bool,
+}
+
+fn npc_appearance(seed: u32) -> NpcAppearance {
+    NpcAppearance {
+        skin: SKIN_TONES[(seed / 3) as usize % SKIN_TONES.len()],
+        hair: HAIR_COLORS[(seed / 5) as usize % HAIR_COLORS.len()],
+        hat_type: (seed / 7 % 6) as u8,
+        hat_col: HAT_COLORS[(seed / 11) as usize % HAT_COLORS.len()],
+        coat_col: COAT_COLORS[(seed / 13) as usize % COAT_COLORS.len()],
+        has_coat: seed % 4 != 0,
+        is_female: seed % 5 == 0,
+    }
+}
+
 // Sky/fog/light colors for time of day
 struct TimeColors {
     sky: u32,
@@ -246,70 +282,460 @@ fn shade_and_fog(color: u32, intensity: f32, fog: f32, tc: &TimeColors) -> u32 {
 
 // --- Mesh generators (push into shared scratch buffer) ---
 
+/// Generate a detailed ACU-style character body in local space (origin at feet).
+/// Shared between NPC and player rendering.
+///
+/// Body proportions (1.78m total):
+///   Shoes   0.00-0.06    Calves  0.06-0.40   Knees ~0.40
+///   Thighs  0.40-0.80    Hips    0.80-0.88   Waist  0.88
+///   Torso   0.88-1.40    Shoulders ~1.42     Neck   1.42-1.52
+///   Head    1.52-1.90    Hat crown ~2.0
+fn gen_character_body(
+    tris: &mut Vec<WorldTri>,
+    swing: f32,          // walk animation phase sine (-0.4..0.4)
+    app: &NpcAppearance,
+    shirt_col: u32,
+    pants_col: u32,
+    attack_phase: f32,
+    carrying_item: bool,
+    carrying_bin: bool,
+    sitting: bool,
+    is_job_hat: Option<u32>, // job-specific hat color override
+) {
+    let skin = app.skin;
+    let hair = app.hair;
+    let coat = app.coat_col;
+    let arm_outer = if app.has_coat { coat } else { shirt_col };
+
+    if sitting {
+        gen_seated_body(tris, app, shirt_col, pants_col, is_job_hat);
+        return;
+    }
+
+    // ═══════════════════════ HEAD ═══════════════════════
+    // Shaped head using lathe (forehead, cheek, jaw, chin)
+    let head_profile: [[f32; 2]; 7] = [
+        [0.0, -0.20], [0.10, -0.17], [0.15, -0.10], [0.18, 0.0],
+        [0.17, 0.10], [0.13, 0.18], [0.0, 0.22],
+    ];
+    mesh::lathe_tris(tris, 0.0, 1.70, 0.0, &head_profile, 8, skin);
+
+    // Brow ridge — subtle protrusion above eyes
+    push_box(tris, 0.0, 1.76, -0.15, 0.18, 0.02, 0.04, darken(skin, 0.92));
+
+    // Eye sockets — dark recesses
+    push_box(tris, -0.065, 1.735, -0.155, 0.05, 0.025, 0.02, darken(skin, 0.75));
+    push_box(tris, 0.065, 1.735, -0.155, 0.05, 0.025, 0.02, darken(skin, 0.75));
+    // Eyeballs — white
+    mesh::sphere_tris(tris, -0.065, 1.735, -0.145, 0.022, 0, 0xFFEEDDCC);
+    mesh::sphere_tris(tris, 0.065, 1.735, -0.145, 0.022, 0, 0xFFEEDDCC);
+    // Pupils — dark
+    mesh::sphere_tris(tris, -0.065, 1.735, -0.165, 0.014, 0, 0xFF221100);
+    mesh::sphere_tris(tris, 0.065, 1.735, -0.165, 0.014, 0, 0xFF221100);
+    // Eyelids — skin-colored arcs over eyes
+    push_box(tris, -0.065, 1.75, -0.16, 0.048, 0.008, 0.025, skin);
+    push_box(tris, 0.065, 1.75, -0.16, 0.048, 0.008, 0.025, skin);
+
+    // Nose — bridge + tip + nostrils
+    push_box(tris, 0.0, 1.72, -0.17, 0.025, 0.05, 0.03, skin); // bridge
+    mesh::sphere_tris(tris, 0.0, 1.695, -0.19, 0.025, 0, darken(skin, 0.95)); // tip
+    // Nostrils — two tiny dark dots
+    mesh::sphere_tris(tris, -0.012, 1.69, -0.19, 0.008, 0, darken(skin, 0.7));
+    mesh::sphere_tris(tris, 0.012, 1.69, -0.19, 0.008, 0, darken(skin, 0.7));
+
+    // Mouth — thin dark line
+    push_box(tris, 0.0, 1.665, -0.17, 0.06, 0.008, 0.01, darken(skin, 0.7));
+    // Lower lip — subtle
+    push_box(tris, 0.0, 1.658, -0.165, 0.04, 0.006, 0.015, darken(skin, 0.88));
+
+    // Chin — slight protrusion
+    mesh::sphere_tris(tris, 0.0, 1.64, -0.14, 0.03, 0, skin);
+
+    // Ears — shaped with inner cavity suggestion
+    for &ex in &[-0.175f32, 0.175] {
+        mesh::sphere_tris(tris, ex, 1.73, 0.0, 0.035, 0, skin);
+        mesh::sphere_tris(tris, ex, 1.73, 0.0, 0.02, 0, darken(skin, 0.8)); // inner
+    }
+
+    // Jaw line — subtle ridge from ears to chin
+    push_box(tris, -0.1, 1.655, -0.06, 0.06, 0.015, 0.1, darken(skin, 0.95));
+    push_box(tris, 0.1, 1.655, -0.06, 0.06, 0.015, 0.1, darken(skin, 0.95));
+
+    // ═══════════════════════ HAIR / HAT ═══════════════════════
+    let hat = if let Some(jc) = is_job_hat {
+        // Job-specific hat overrides
+        gen_job_hat(tris, jc);
+        true
+    } else {
+        gen_hat(tris, app.hat_type, app.hat_col, hair)
+    };
+
+    // Hair visible below/around hat
+    if hat {
+        // Nape hair
+        mesh::sphere_tris(tris, 0.0, 1.65, 0.1, 0.1, 0, hair);
+        // Sideburns
+        push_box(tris, -0.155, 1.71, -0.02, 0.02, 0.06, 0.04, hair);
+        push_box(tris, 0.155, 1.71, -0.02, 0.02, 0.06, 0.04, hair);
+    } else {
+        // Full hair — top, sides, back
+        mesh::sphere_tris(tris, 0.0, 1.85, 0.02, 0.155, 1, hair);
+        push_box(tris, -0.13, 1.74, 0.0, 0.04, 0.1, 0.12, hair);
+        push_box(tris, 0.13, 1.74, 0.0, 0.04, 0.1, 0.12, hair);
+        mesh::sphere_tris(tris, 0.0, 1.7, 0.12, 0.12, 0, hair); // back
+    }
+
+    // ═══════════════════════ NECK ═══════════════════════
+    mesh::cylinder_tris(tris, 0.0, 1.49, 0.0, 0.055, 0.1, 5, skin);
+    // Adam's apple / throat detail
+    mesh::sphere_tris(tris, 0.0, 1.48, -0.055, 0.015, 0, skin);
+
+    // ═══════════════════════ TORSO ═══════════════════════
+    // Undershirt (white/cream, visible at collar and cuffs)
+    mesh::cylinder_tris(tris, 0.0, 1.15, 0.0, 0.17, 0.5, 7, SHIRT_WHITE);
+    // Shirt collar — V-neck fold
+    push_box(tris, -0.04, 1.42, -0.12, 0.06, 0.04, 0.06, SHIRT_WHITE);
+    push_box(tris, 0.04, 1.42, -0.12, 0.06, 0.04, 0.06, SHIRT_WHITE);
+
+    // Waistcoat / vest over shirt
+    mesh::beveled_box_tris(tris, 0.0, 1.15, 0.0, 0.38, 0.48, 0.26, 0.02, shirt_col);
+    // Waistcoat buttons (4 down center)
+    for bi in 0..4 {
+        let by = 1.32 - bi as f32 * 0.08;
+        mesh::sphere_tris(tris, 0.0, by, -0.14, 0.01, 0, BUCKLE_COLOR);
+    }
+    // Waistcoat pocket flaps
+    push_box(tris, -0.1, 1.08, -0.14, 0.06, 0.015, 0.02, darken(shirt_col, 0.85));
+    push_box(tris, 0.1, 1.08, -0.14, 0.06, 0.015, 0.02, darken(shirt_col, 0.85));
+
+    if app.has_coat {
+        // ═══════════ LONG COAT ═══════════
+        // Shoulders — wider than body
+        mesh::beveled_box_tris(tris, 0.0, 1.35, 0.0, 0.52, 0.2, 0.32, 0.03, coat);
+
+        // Coat body — upper half
+        mesh::beveled_box_tris(tris, 0.0, 1.1, 0.0, 0.48, 0.52, 0.3, 0.03, coat);
+
+        // Coat collar (raised, folded)
+        push_box(tris, 0.0, 1.44, 0.0, 0.4, 0.06, 0.3, darken(coat, 0.8));
+        // Lapels (triangular fold at chest)
+        push_box(tris, -0.09, 1.32, -0.16, 0.08, 0.16, 0.02, darken(coat, 0.85));
+        push_box(tris, 0.09, 1.32, -0.16, 0.08, 0.16, 0.02, darken(coat, 0.85));
+
+        // Coat buttons (brass, 3 down front)
+        for bi in 0..3 {
+            let by = 1.28 - bi as f32 * 0.1;
+            mesh::sphere_tris(tris, 0.0, by, -0.165, 0.012, 0, 0xFFBBAA66);
+        }
+
+        // Button holes (tiny dark marks opposite buttons)
+        for bi in 0..3 {
+            let by = 1.28 - bi as f32 * 0.1;
+            push_box(tris, -0.025, by, -0.166, 0.015, 0.005, 0.005, darken(coat, 0.6));
+        }
+
+        // Coat pocket flaps
+        push_box(tris, -0.13, 1.0, -0.16, 0.08, 0.02, 0.02, darken(coat, 0.85));
+        push_box(tris, 0.13, 1.0, -0.16, 0.08, 0.02, 0.02, darken(coat, 0.85));
+
+        // Back seam (center line down back)
+        push_box(tris, 0.0, 1.1, 0.16, 0.01, 0.5, 0.005, darken(coat, 0.75));
+
+        // Coat tails — split at back, sway with walk
+        let tail_sway = swing * 0.12;
+        // Left tail
+        push_box(tris, -0.09, 0.58, 0.1 + tail_sway, 0.15, 0.52, 0.1, coat);
+        // Right tail
+        push_box(tris, 0.09, 0.58, 0.1 - tail_sway, 0.15, 0.52, 0.1, coat);
+        // Tail inner lining (slightly different color)
+        push_box(tris, -0.09, 0.58, 0.05 + tail_sway, 0.13, 0.48, 0.01, darken(coat, 1.15));
+        push_box(tris, 0.09, 0.58, 0.05 - tail_sway, 0.13, 0.48, 0.01, darken(coat, 1.15));
+
+        // Front coat skirts (shorter, to mid-thigh)
+        push_box(tris, -0.1, 0.68, -0.1, 0.13, 0.34, 0.08, coat);
+        push_box(tris, 0.1, 0.68, -0.1, 0.13, 0.34, 0.08, coat);
+
+        // Shoulder epaulettes (subtle ridge)
+        push_box(tris, -0.27, 1.42, 0.0, 0.06, 0.02, 0.08, darken(coat, 0.8));
+        push_box(tris, 0.27, 1.42, 0.0, 0.06, 0.02, 0.08, darken(coat, 0.8));
+    }
+
+    // ═══════════════════════ BELT / WAIST ═══════════════════════
+    mesh::cylinder_tris(tris, 0.0, 0.87, 0.0, 0.19, 0.06, 6, pants_col);
+    // Leather belt
+    mesh::cylinder_tris(tris, 0.0, 0.87, 0.0, 0.205, 0.025, 8, 0xFF443322);
+    // Belt buckle — rectangular brass
+    push_box(tris, 0.0, 0.87, -0.21, 0.03, 0.02, 0.01, BUCKLE_COLOR);
+    // Belt pouch (small on right hip)
+    push_box(tris, 0.18, 0.85, 0.0, 0.05, 0.06, 0.04, 0xFF553322);
+    // Pouch flap
+    push_box(tris, 0.18, 0.885, 0.0, 0.05, 0.01, 0.045, 0xFF442211);
+
+    // ═══════════════════════ LEGS ═══════════════════════
+    // Animated walk: swing controls hip angle, knee bends on trailing leg
+    let l_fwd = -swing * 0.35;   // left leg z-offset
+    let r_fwd = swing * 0.35;    // right leg z-offset
+    // Knee bend: trailing leg bends more (back-swing)
+    let l_knee = if swing > 0.0 { swing * 0.12 } else { 0.0 };
+    let r_knee = if swing < 0.0 { (-swing) * 0.12 } else { 0.0 };
+
+    // Thighs (breeches — knee-length fitted pants)
+    mesh::cylinder_tris(tris, -0.1, 0.6, l_fwd, 0.075, 0.38, 6, pants_col);
+    mesh::cylinder_tris(tris, 0.1, 0.6, r_fwd, 0.075, 0.38, 6, pants_col);
+    // Breeches knee buttons (period detail)
+    mesh::sphere_tris(tris, -0.14, 0.42, l_fwd, 0.01, 0, BUCKLE_COLOR);
+    mesh::sphere_tris(tris, 0.14, 0.42, r_fwd, 0.01, 0, BUCKLE_COLOR);
+
+    // Knee joint (slightly wider)
+    mesh::sphere_tris(tris, -0.1, 0.4, l_fwd * 0.8, 0.06, 0, pants_col);
+    mesh::sphere_tris(tris, 0.1, 0.4, r_fwd * 0.8, 0.06, 0, pants_col);
+
+    // Calves (stockings — lighter color, fitted)
+    let l_calf_z = l_fwd * 0.5 - l_knee;
+    let r_calf_z = r_fwd * 0.5 - r_knee;
+    mesh::cylinder_tris(tris, -0.1, 0.22, l_calf_z, 0.055, 0.32, 5, STOCKING_COLOR);
+    mesh::cylinder_tris(tris, 0.1, 0.22, r_calf_z, 0.055, 0.32, 5, STOCKING_COLOR);
+
+    // Stocking tops (garter line — darker ring)
+    mesh::cylinder_tris(tris, -0.1, 0.37, l_calf_z + l_knee * 0.3, 0.058, 0.015, 4, darken(STOCKING_COLOR, 0.8));
+    mesh::cylinder_tris(tris, 0.1, 0.37, r_calf_z + r_knee * 0.3, 0.058, 0.015, 4, darken(STOCKING_COLOR, 0.8));
+
+    // Shoes — beveled boxes with buckle
+    let l_shoe_z = l_calf_z - 0.04;
+    let r_shoe_z = r_calf_z - 0.04;
+    mesh::beveled_box_tris(tris, -0.1, 0.035, l_shoe_z, 0.08, 0.06, 0.14, 0.01, BOOT_COLOR);
+    mesh::beveled_box_tris(tris, 0.1, 0.035, r_shoe_z, 0.08, 0.06, 0.14, 0.01, BOOT_COLOR);
+    // Shoe heels (slightly raised back)
+    push_box(tris, -0.1, 0.02, l_shoe_z + 0.05, 0.065, 0.03, 0.03, darken(BOOT_COLOR, 0.8));
+    push_box(tris, 0.1, 0.02, r_shoe_z + 0.05, 0.065, 0.03, 0.03, darken(BOOT_COLOR, 0.8));
+    // Shoe tongue / top flap
+    push_box(tris, -0.1, 0.065, l_shoe_z - 0.02, 0.04, 0.02, 0.04, darken(BOOT_COLOR, 1.1));
+    push_box(tris, 0.1, 0.065, r_shoe_z - 0.02, 0.04, 0.02, 0.04, darken(BOOT_COLOR, 1.1));
+    // Shoe buckles
+    mesh::sphere_tris(tris, -0.1, 0.05, l_shoe_z - 0.06, 0.015, 0, BUCKLE_COLOR);
+    mesh::sphere_tris(tris, 0.1, 0.05, r_shoe_z - 0.06, 0.015, 0, BUCKLE_COLOR);
+
+    // ═══════════════════════ ARMS ═══════════════════════
+    if attack_phase > 0.0 {
+        gen_attack_arms(tris, attack_phase, arm_outer, skin, app.has_coat, coat, swing);
+    } else if carrying_item {
+        gen_carry_arms(tris, arm_outer, skin, app.has_coat, coat);
+        mesh::beveled_box_tris(tris, 0.0, 0.88, -0.48, 0.28, 0.28, 0.18, 0.02, BAG_COLOR);
+        // Bag strap
+        push_box(tris, 0.0, 1.1, -0.35, 0.02, 0.4, 0.02, 0xFF553322);
+    } else if carrying_bin {
+        gen_carry_arms(tris, arm_outer, skin, app.has_coat, coat);
+        mesh::cylinder_tris(tris, 0.0, 0.78, -0.52, 0.2, 0.55, 6, BIN_COLOR);
+    } else {
+        gen_swing_arms(tris, swing, arm_outer, skin, app.has_coat, coat);
+    }
+}
+
+fn gen_hat(tris: &mut Vec<WorldTri>, hat_type: u8, hat_col: u32, hair: u32) -> bool {
+    match hat_type {
+        1 => {
+            // Tricorn hat
+            // Crown — tapered cylinder
+            mesh::cylinder_tris(tris, 0.0, 1.93, 0.0, 0.14, 0.1, 6, hat_col);
+            // Brim — wide disc, turned up on 3 sides
+            mesh::cylinder_tris(tris, 0.0, 1.88, 0.0, 0.22, 0.018, 8, hat_col);
+            // Three upturned brim segments
+            push_box(tris, 0.0, 1.91, -0.16, 0.14, 0.04, 0.06, darken(hat_col, 0.88));
+            push_box(tris, -0.14, 1.91, 0.08, 0.06, 0.04, 0.12, darken(hat_col, 0.88));
+            push_box(tris, 0.14, 1.91, 0.08, 0.06, 0.04, 0.12, darken(hat_col, 0.88));
+            // Cockade / ribbon at front
+            mesh::sphere_tris(tris, 0.0, 1.93, -0.18, 0.02, 0, 0xFF888866);
+            true
+        }
+        2 => {
+            // Top hat — tall cylinder + brim
+            mesh::cylinder_tris(tris, 0.0, 2.02, 0.0, 0.11, 0.22, 7, hat_col);
+            mesh::cylinder_tris(tris, 0.0, 1.9, 0.0, 0.17, 0.02, 8, hat_col);
+            // Hat band
+            mesh::cylinder_tris(tris, 0.0, 1.92, 0.0, 0.115, 0.02, 7, darken(hat_col, 0.7));
+            true
+        }
+        3 => {
+            // Worker's cap / beret
+            mesh::sphere_tris(tris, 0.0, 1.9, -0.02, 0.15, 1, hat_col);
+            // Visor
+            push_box(tris, 0.0, 1.86, -0.16, 0.12, 0.01, 0.06, darken(hat_col, 0.85));
+            true
+        }
+        4 => {
+            // Bonnet — rounded with ribbon tie
+            mesh::sphere_tris(tris, 0.0, 1.88, 0.03, 0.16, 1, hat_col);
+            // Bonnet brim framing face
+            push_box(tris, 0.0, 1.85, -0.14, 0.2, 0.06, 0.02, darken(hat_col, 0.9));
+            // Ribbon under chin
+            push_box(tris, -0.07, 1.6, -0.07, 0.015, 0.2, 0.01, 0xFFDDCCBB);
+            push_box(tris, 0.07, 1.6, -0.07, 0.015, 0.2, 0.01, 0xFFDDCCBB);
+            true
+        }
+        5 => {
+            // Wide-brim hat
+            mesh::cylinder_tris(tris, 0.0, 1.94, 0.0, 0.12, 0.1, 6, hat_col);
+            mesh::cylinder_tris(tris, 0.0, 1.88, 0.0, 0.24, 0.02, 10, hat_col);
+            // Hat band
+            mesh::cylinder_tris(tris, 0.0, 1.9, 0.0, 0.125, 0.02, 6, darken(hat_col, 0.7));
+            true
+        }
+        _ => false, // no hat — caller renders full hair
+    }
+}
+
+fn gen_job_hat(tris: &mut Vec<WorldTri>, color: u32) {
+    // Simple job-specific headwear (police, fire, construction, etc.)
+    mesh::cylinder_tris(tris, 0.0, 1.93, 0.0, 0.17, 0.08, 6, color);
+    // Visor/brim
+    push_box(tris, 0.0, 1.88, -0.12, 0.14, 0.012, 0.06, darken(color, 0.8));
+    // Badge
+    mesh::sphere_tris(tris, 0.0, 1.91, -0.17, 0.015, 0, BUCKLE_COLOR);
+}
+
+fn gen_swing_arms(
+    tris: &mut Vec<WorldTri>, swing: f32,
+    arm_outer: u32, skin: u32, has_coat: bool, coat: u32,
+) {
+    // Upper arms (sleeve)
+    mesh::cylinder_tris(tris, -0.27, 1.25, swing * 0.2, 0.055, 0.3, 5, arm_outer);
+    mesh::cylinder_tris(tris, 0.27, 1.25, -swing * 0.2, 0.055, 0.3, 5, arm_outer);
+
+    // Elbows (joint spheres)
+    let l_elbow_z = swing * 0.2;
+    let r_elbow_z = -swing * 0.2;
+    mesh::sphere_tris(tris, -0.27, 1.1, l_elbow_z, 0.04, 0, arm_outer);
+    mesh::sphere_tris(tris, 0.27, 1.1, r_elbow_z, 0.04, 0, arm_outer);
+
+    // Forearms (skin visible below sleeve)
+    let l_bend = 0.04 + swing.abs() * 0.08;
+    let r_bend = 0.04 + swing.abs() * 0.08;
+    mesh::cylinder_tris(tris, -0.28, 0.95, l_elbow_z - l_bend, 0.04, 0.26, 4, skin);
+    mesh::cylinder_tris(tris, 0.28, 0.95, r_elbow_z - r_bend, 0.04, 0.26, 4, skin);
+
+    // Shirt cuffs (white ruffled edge at wrist)
+    mesh::cylinder_tris(tris, -0.28, 0.84, l_elbow_z - l_bend, 0.045, 0.025, 4, SHIRT_WHITE);
+    mesh::cylinder_tris(tris, 0.28, 0.84, r_elbow_z - r_bend, 0.045, 0.025, 4, SHIRT_WHITE);
+
+    if has_coat {
+        // Coat sleeve cuffs (folded back, wider)
+        mesh::cylinder_tris(tris, -0.27, 1.0, l_elbow_z * 0.7, 0.06, 0.06, 4, darken(coat, 0.8));
+        mesh::cylinder_tris(tris, 0.27, 1.0, r_elbow_z * 0.7, 0.06, 0.06, 4, darken(coat, 0.8));
+        // Cuff buttons
+        mesh::sphere_tris(tris, -0.31, 1.0, l_elbow_z * 0.7, 0.008, 0, BUCKLE_COLOR);
+        mesh::sphere_tris(tris, 0.31, 1.0, r_elbow_z * 0.7, 0.008, 0, BUCKLE_COLOR);
+    }
+
+    // Hands — flattened boxes with thumb suggestion
+    let lhz = l_elbow_z - l_bend;
+    let rhz = r_elbow_z - r_bend;
+    push_box(tris, -0.28, 0.82, lhz, 0.04, 0.05, 0.055, skin);
+    push_box(tris, 0.28, 0.82, rhz, 0.04, 0.05, 0.055, skin);
+    // Thumb (small offset box)
+    push_box(tris, -0.25, 0.83, lhz - 0.02, 0.015, 0.025, 0.025, skin);
+    push_box(tris, 0.25, 0.83, rhz - 0.02, 0.015, 0.025, 0.025, skin);
+    // Finger creases (subtle dark lines)
+    push_box(tris, -0.28, 0.81, lhz - 0.02, 0.035, 0.003, 0.003, darken(skin, 0.8));
+    push_box(tris, 0.28, 0.81, rhz - 0.02, 0.035, 0.003, 0.003, darken(skin, 0.8));
+}
+
+fn gen_attack_arms(
+    tris: &mut Vec<WorldTri>, attack_phase: f32,
+    arm_outer: u32, skin: u32, has_coat: bool, coat: u32, swing: f32,
+) {
+    let t = (attack_phase / ATTACK_ANIM_DURATION).clamp(0.0, 1.0);
+    let extend = 1.0 - (1.0 - t) * (1.0 - t);
+
+    // Right arm — punching forward
+    mesh::cylinder_tris(tris, 0.3, 1.25, -0.1 - extend * 0.2, 0.055, 0.3, 5, arm_outer);
+    mesh::cylinder_tris(tris, 0.3, 1.1, -0.3 - extend * 0.35, 0.045, 0.28, 4, skin);
+    // Fist (clenched)
+    mesh::sphere_tris(tris, 0.3, 1.05, -0.45 - extend * 0.35, 0.055, 0, skin);
+
+    // Left arm — guard position
+    mesh::cylinder_tris(tris, -0.27, 1.25, 0.05, 0.055, 0.3, 5, arm_outer);
+    mesh::cylinder_tris(tris, -0.28, 1.0, -0.1, 0.04, 0.26, 4, skin);
+    push_box(tris, -0.28, 0.88, -0.12, 0.04, 0.05, 0.055, skin);
+}
+
+fn gen_carry_arms(
+    tris: &mut Vec<WorldTri>,
+    arm_outer: u32, skin: u32, has_coat: bool, coat: u32,
+) {
+    // Both arms forward, holding object
+    mesh::cylinder_tris(tris, -0.24, 1.2, -0.2, 0.055, 0.3, 5, arm_outer);
+    mesh::cylinder_tris(tris, 0.24, 1.2, -0.2, 0.055, 0.3, 5, arm_outer);
+    mesh::cylinder_tris(tris, -0.26, 1.0, -0.35, 0.04, 0.26, 4, skin);
+    mesh::cylinder_tris(tris, 0.26, 1.0, -0.35, 0.04, 0.26, 4, skin);
+    push_box(tris, -0.26, 0.88, -0.42, 0.04, 0.05, 0.05, skin);
+    push_box(tris, 0.26, 0.88, -0.42, 0.04, 0.05, 0.05, skin);
+}
+
+fn gen_seated_body(
+    tris: &mut Vec<WorldTri>,
+    app: &NpcAppearance, shirt_col: u32, pants_col: u32,
+    is_job_hat: Option<u32>,
+) {
+    let skin = app.skin;
+    let coat = app.coat_col;
+    let arm_outer = if app.has_coat { coat } else { shirt_col };
+
+    // Head (same detail as standing)
+    let head_profile: [[f32; 2]; 7] = [
+        [0.0, -0.20], [0.10, -0.17], [0.15, -0.10], [0.18, 0.0],
+        [0.17, 0.10], [0.13, 0.18], [0.0, 0.22],
+    ];
+    mesh::lathe_tris(tris, 0.0, 1.3, 0.0, &head_profile, 8, skin);
+    // Eyes
+    mesh::sphere_tris(tris, -0.065, 1.335, -0.165, 0.014, 0, 0xFF221100);
+    mesh::sphere_tris(tris, 0.065, 1.335, -0.165, 0.014, 0, 0xFF221100);
+    // Nose
+    mesh::sphere_tris(tris, 0.0, 1.295, -0.19, 0.025, 0, skin);
+    // Neck
+    mesh::cylinder_tris(tris, 0.0, 1.09, 0.0, 0.055, 0.1, 5, skin);
+    // Torso
+    mesh::cylinder_tris(tris, 0.0, 0.75, 0.0, 0.17, 0.5, 6, SHIRT_WHITE);
+    mesh::beveled_box_tris(tris, 0.0, 0.75, 0.0, 0.38, 0.48, 0.26, 0.02, shirt_col);
+    if app.has_coat {
+        mesh::beveled_box_tris(tris, 0.0, 0.75, 0.0, 0.48, 0.52, 0.3, 0.03, coat);
+    }
+    // Seated thighs (horizontal)
+    mesh::cylinder_tris(tris, -0.12, 0.42, -0.2, 0.07, 0.35, 5, pants_col);
+    mesh::cylinder_tris(tris, 0.12, 0.42, -0.2, 0.07, 0.35, 5, pants_col);
+    // Shins (hanging down)
+    mesh::cylinder_tris(tris, -0.12, 0.15, -0.38, 0.055, 0.3, 4, STOCKING_COLOR);
+    mesh::cylinder_tris(tris, 0.12, 0.15, -0.38, 0.055, 0.3, 4, STOCKING_COLOR);
+    // Shoes
+    mesh::beveled_box_tris(tris, -0.12, 0.02, -0.42, 0.07, 0.05, 0.12, 0.01, BOOT_COLOR);
+    mesh::beveled_box_tris(tris, 0.12, 0.02, -0.42, 0.07, 0.05, 0.12, 0.01, BOOT_COLOR);
+    // Arms resting
+    mesh::cylinder_tris(tris, -0.3, 0.65, -0.12, 0.055, 0.4, 4, arm_outer);
+    mesh::cylinder_tris(tris, 0.3, 0.65, -0.12, 0.055, 0.4, 4, arm_outer);
+    mesh::cylinder_tris(tris, -0.3, 0.48, -0.25, 0.04, 0.26, 4, skin);
+    mesh::cylinder_tris(tris, 0.3, 0.48, -0.25, 0.04, 0.26, 4, skin);
+}
+
 pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
     let shirt = if player.hit_flash > 0.0 { 0xFFFF4444 } else { SHIRT_COLOR };
+    let app = NpcAppearance {
+        skin: SKIN_COLOR, hair: 0xFF332211,
+        hat_type: 0, hat_col: 0, coat_col: 0xFF334466,
+        has_coat: true, is_female: false,
+    };
 
-    if player.sitting {
-        // Seated pose — cylinder torso, sphere head
-        mesh::cylinder_tris(tris, 0.0, 0.65, 0.0, 0.2, 0.7, 6, shirt);
-        mesh::sphere_tris(tris, 0.0, 1.35, 0.0, 0.2, 1, SKIN_COLOR);
-        // Eyes
-        mesh::sphere_tris(tris, -0.08, 1.4, -0.17, 0.03, 0, 0xFF222222);
-        mesh::sphere_tris(tris, 0.08, 1.4, -0.17, 0.03, 0, 0xFF222222);
-        // Thighs — horizontal cylinders
-        mesh::cylinder_tris(tris, -0.12, 0.32, -0.25, 0.07, 0.45, 4, PANTS_COLOR);
-        mesh::cylinder_tris(tris, 0.12, 0.32, -0.25, 0.07, 0.45, 4, PANTS_COLOR);
-        // Shins
-        mesh::cylinder_tris(tris, -0.12, 0.08, -0.45, 0.07, 0.30, 4, PANTS_COLOR);
-        mesh::cylinder_tris(tris, 0.12, 0.08, -0.45, 0.07, 0.30, 4, PANTS_COLOR);
-        // Arms
-        mesh::cylinder_tris(tris, -0.32, 0.55, -0.15, 0.06, 0.45, 4, SKIN_COLOR);
-        mesh::cylinder_tris(tris, 0.32, 0.55, -0.15, 0.06, 0.45, 4, SKIN_COLOR);
-    } else {
-        let phase = player.walk_phase;
-        let swing = phase.sin() * 0.4;
-
-        // Torso — cylinder
-        mesh::cylinder_tris(tris, 0.0, 1.05, 0.0, 0.2, 0.7, 6, shirt);
-        // Hips
-        mesh::cylinder_tris(tris, 0.0, 0.65, 0.0, 0.18, 0.15, 5, PANTS_COLOR);
-        // Head — sphere with face
-        mesh::sphere_tris(tris, 0.0, 1.75, 0.0, 0.2, 1, SKIN_COLOR);
-        mesh::sphere_tris(tris, -0.08, 1.8, -0.17, 0.03, 0, 0xFF222222); // eyes
-        mesh::sphere_tris(tris, 0.08, 1.8, -0.17, 0.03, 0, 0xFF222222);
-        mesh::sphere_tris(tris, 0.0, 1.73, -0.2, 0.025, 0, SKIN_COLOR); // nose
-
-        // Legs — cylinders with swing
-        mesh::cylinder_tris(tris, -0.1, 0.35, -swing * 0.35, 0.07, 0.65, 5, PANTS_COLOR);
-        mesh::cylinder_tris(tris, 0.1, 0.35, swing * 0.35, 0.07, 0.65, 5, PANTS_COLOR);
-        // Shoes
-        mesh::sphere_tris(tris, -0.1, 0.05, -swing * 0.35, 0.08, 0, 0xFF333333);
-        mesh::sphere_tris(tris, 0.1, 0.05, swing * 0.35, 0.08, 0, 0xFF333333);
-
-        if player.attack_phase > 0.0 {
-            let t = (player.attack_phase / ATTACK_ANIM_DURATION).clamp(0.0, 1.0);
-            let extend = 1.0 - (1.0 - t) * (1.0 - t);
-            let right_z = -0.15 - extend * 0.8;
-            let left_z = 0.15 + extend * 0.2;
-            mesh::cylinder_tris(tris, -0.35, 1.05, left_z, 0.06, 0.55, 4, SKIN_COLOR);
-            mesh::cylinder_tris(tris, 0.35, 1.05, right_z, 0.06, 0.55, 4, SKIN_COLOR);
-            mesh::sphere_tris(tris, 0.35, 1.05, right_z - 0.3, 0.07, 0, SKIN_COLOR);
-        } else if player.carrying_item {
-            mesh::cylinder_tris(tris, -0.25, 1.0, -0.35, 0.06, 0.5, 4, SKIN_COLOR);
-            mesh::cylinder_tris(tris, 0.25, 1.0, -0.35, 0.06, 0.5, 4, SKIN_COLOR);
-            mesh::beveled_box_tris(tris, 0.0, 0.9, -0.5, 0.3, 0.3, 0.2, 0.03, BAG_COLOR);
-        } else if player.carrying_bin.is_some() {
-            mesh::cylinder_tris(tris, -0.25, 1.0, -0.4, 0.06, 0.5, 4, SKIN_COLOR);
-            mesh::cylinder_tris(tris, 0.25, 1.0, -0.4, 0.06, 0.5, 4, SKIN_COLOR);
-            mesh::cylinder_tris(tris, 0.0, 0.8, -0.55, 0.2, 0.6, 6, BIN_COLOR);
-        } else {
-            mesh::cylinder_tris(tris, -0.3, 1.05, swing * 0.25, 0.06, 0.55, 4, SKIN_COLOR);
-            mesh::cylinder_tris(tris, 0.3, 1.05, -swing * 0.25, 0.06, 0.55, 4, SKIN_COLOR);
-            mesh::sphere_tris(tris, -0.3, 0.8, swing * 0.25, 0.06, 0, SKIN_COLOR);
-            mesh::sphere_tris(tris, 0.3, 0.8, -swing * 0.25, 0.06, 0, SKIN_COLOR);
-        }
-    }
+    gen_character_body(
+        tris,
+        player.walk_phase.sin() * 0.4,
+        &app,
+        shirt,
+        PANTS_COLOR,
+        player.attack_phase,
+        player.carrying_item,
+        player.carrying_bin.is_some(),
+        player.sitting,
+        None,
+    );
 
     let (sin_r, cos_r) = player.rot_y.sin_cos();
     for tri in &mut tris[base..] {
@@ -331,57 +757,149 @@ pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bo
     let base = tris.len();
     let color = v.color;
     let cabin_color = darken(color, VEHICLE_BODY_COLOR_DARKEN);
+    let trim_color = darken(color, 0.5);
+    let undercarriage = 0xFF333333_u32;
 
-    // Beveled main body
+    // Main body — beveled box chassis
     mesh::beveled_box_tris(tris, 0.0, 0.45, 0.0, 1.8, 0.6, 3.6, 0.08, color);
 
-    // Beveled cabin
-    mesh::beveled_box_tris(tris, 0.0, 0.95, 0.2, 1.5, 0.5, 1.8, 0.06, cabin_color);
+    // Undercarriage pan (visible from below)
+    push_box(tris, 0.0, 0.12, 0.0, 1.6, 0.04, 3.4, undercarriage);
 
-    // Sloped hood (front end slopes down)
-    push_box(tris, 0.0, 0.55, -1.5, 1.6, 0.15, 0.5, darken(color, 0.85));
-
-    // Sloped trunk (rear end)
-    push_box(tris, 0.0, 0.6, 1.55, 1.6, 0.1, 0.4, darken(color, 0.85));
-
-    // Windshields — recessed into body (not flush)
-    push_box(tris, 0.0, 0.95, -0.7, 1.3, 0.35, 0.08, WINDSHIELD_COLOR);  // front
-    push_box(tris, 0.0, 0.95, 1.15, 1.3, 0.35, 0.08, WINDSHIELD_COLOR);  // rear
-
-    // Side windows
-    push_box(tris, -0.76, 0.95, 0.2, 0.04, 0.35, 1.2, WINDSHIELD_COLOR);
-    push_box(tris, 0.76, 0.95, 0.2, 0.04, 0.35, 1.2, WINDSHIELD_COLOR);
-
-    // Cylinder wheels (6 segments for speed)
-    let wheel_r = 0.2;
-    let wheel_w = 0.18;
-    for (wx, wz) in [(-0.85f32, -1.1f32), (0.85, -1.1), (-0.85, 1.1), (0.85, 1.1)] {
-        // Tire — horizontal cylinder (rotated 90° around Z)
-        mesh::cylinder_tris(tris, wx, 0.2, wz, wheel_r, wheel_w, 6, TIRE_COLOR);
-        // Hub cap
-        mesh::cylinder_tris(tris, wx, 0.2, wz, wheel_r * 0.5, wheel_w + 0.02, 4, 0xFF888888);
+    // Wheel wells — dark recesses (4 arches)
+    for &(wx, wz) in &[(-0.88f32, -1.1f32), (0.88, -1.1), (-0.88, 1.1), (0.88, 1.1)] {
+        push_box(tris, wx, 0.3, wz, 0.12, 0.35, 0.5, undercarriage);
     }
 
-    // Headlights
-    mesh::sphere_tris(tris, -0.6, 0.45, -1.81, 0.12, 0, 0xFFFFEE88);
-    mesh::sphere_tris(tris, 0.6, 0.45, -1.81, 0.12, 0, 0xFFFFEE88);
+    // Cabin — beveled with slightly tapered sides
+    mesh::beveled_box_tris(tris, 0.0, 0.95, 0.2, 1.5, 0.5, 1.8, 0.06, cabin_color);
 
-    // Tail lights
-    mesh::sphere_tris(tris, -0.6, 0.45, 1.81, 0.1, 0, 0xFFFF2222);
-    mesh::sphere_tris(tris, 0.6, 0.45, 1.81, 0.1, 0, 0xFFFF2222);
+    // A-pillars (front windshield frame)
+    push_box(tris, -0.68, 0.95, -0.65, 0.06, 0.45, 0.06, trim_color);
+    push_box(tris, 0.68, 0.95, -0.65, 0.06, 0.45, 0.06, trim_color);
+    // B-pillars (between front/rear doors)
+    push_box(tris, -0.72, 0.95, 0.2, 0.06, 0.45, 0.06, trim_color);
+    push_box(tris, 0.72, 0.95, 0.2, 0.06, 0.45, 0.06, trim_color);
+    // C-pillars (rear)
+    push_box(tris, -0.68, 0.95, 1.05, 0.06, 0.45, 0.06, trim_color);
+    push_box(tris, 0.68, 0.95, 1.05, 0.06, 0.45, 0.06, trim_color);
 
-    // Bumpers
-    mesh::box_tris(tris, 0.0, 0.25, -1.85, 1.7, 0.15, 0.08, 0xFF444444);
-    mesh::box_tris(tris, 0.0, 0.25, 1.85, 1.7, 0.15, 0.08, 0xFF444444);
+    // Roof rack rails (thin bars on top)
+    push_box(tris, -0.55, 1.22, 0.2, 0.03, 0.02, 1.4, trim_color);
+    push_box(tris, 0.55, 1.22, 0.2, 0.03, 0.02, 1.4, trim_color);
+
+    // Sloped hood (front slopes down with crease)
+    push_box(tris, 0.0, 0.58, -1.5, 1.6, 0.18, 0.5, darken(color, 0.88));
+    // Hood crease line
+    push_box(tris, 0.0, 0.68, -1.4, 0.03, 0.01, 0.7, darken(color, 0.7));
+
+    // Sloped trunk
+    push_box(tris, 0.0, 0.6, 1.55, 1.6, 0.12, 0.4, darken(color, 0.88));
+
+    // Front grille — dark slotted area
+    push_box(tris, 0.0, 0.38, -1.82, 0.8, 0.18, 0.04, 0xFF222222);
+    // Grille slats (3 horizontal bars)
+    for i in 0..3 {
+        let gy = 0.32 + i as f32 * 0.07;
+        push_box(tris, 0.0, gy, -1.83, 0.7, 0.015, 0.02, 0xFF888888);
+    }
+
+    // Windshields
+    push_box(tris, 0.0, 0.95, -0.7, 1.3, 0.35, 0.06, WINDSHIELD_COLOR);
+    push_box(tris, 0.0, 0.95, 1.15, 1.3, 0.35, 0.06, WINDSHIELD_COLOR);
+
+    // Side windows (front pair + rear pair)
+    push_box(tris, -0.76, 0.95, -0.2, 0.04, 0.3, 0.6, WINDSHIELD_COLOR);
+    push_box(tris, 0.76, 0.95, -0.2, 0.04, 0.3, 0.6, WINDSHIELD_COLOR);
+    push_box(tris, -0.76, 0.95, 0.6, 0.04, 0.3, 0.5, WINDSHIELD_COLOR);
+    push_box(tris, 0.76, 0.95, 0.6, 0.04, 0.3, 0.5, WINDSHIELD_COLOR);
+
+    // Door handles (4 small cylinders on sides)
+    for &(dx, dz) in &[(-0.91f32, -0.1f32), (0.91, -0.1), (-0.91, 0.65), (0.91, 0.65)] {
+        mesh::cylinder_tris(tris, dx, 0.65, dz, 0.015, 0.08, 3, 0xFF888888);
+    }
+
+    // Side mirrors
+    push_box(tris, -0.95, 0.85, -0.55, 0.08, 0.08, 0.12, trim_color);
+    push_box(tris, 0.95, 0.85, -0.55, 0.08, 0.08, 0.12, trim_color);
+    // Mirror glass face
+    push_box(tris, -1.0, 0.85, -0.55, 0.02, 0.06, 0.1, 0xFF667788);
+    push_box(tris, 1.0, 0.85, -0.55, 0.02, 0.06, 0.1, 0xFF667788);
+
+    // Wheels — cylinder tire + hub + spokes
+    let wheel_r = 0.22;
+    let wheel_w = 0.18;
+    for &(wx, wz) in &[(-0.85f32, -1.1f32), (0.85, -1.1), (-0.85, 1.1), (0.85, 1.1)] {
+        // Tire — outer ring
+        mesh::cylinder_tris(tris, wx, 0.22, wz, wheel_r, wheel_w, 8, TIRE_COLOR);
+        // Hub cap (metallic center)
+        mesh::cylinder_tris(tris, wx, 0.22, wz, wheel_r * 0.45, wheel_w + 0.02, 6, 0xFF999999);
+        // Hub center bolt
+        mesh::cylinder_tris(tris, wx, 0.22, wz, wheel_r * 0.12, wheel_w + 0.04, 4, 0xFFAAAAAA);
+        // Brake disc visible behind spokes
+        mesh::cylinder_tris(tris, wx, 0.22, wz, wheel_r * 0.7, 0.04, 6, 0xFF666666);
+    }
+
+    // Headlights (recessed with bezel)
+    for &hx in &[-0.6f32, 0.6] {
+        push_box(tris, hx, 0.45, -1.81, 0.3, 0.14, 0.04, 0xFF333333); // housing
+        mesh::sphere_tris(tris, hx, 0.45, -1.83, 0.1, 0, 0xFFFFEE88); // bulb
+    }
+    // Turn signal indicators (small amber lights)
+    push_box(tris, -0.85, 0.45, -1.79, 0.08, 0.05, 0.03, 0xFFFFAA22);
+    push_box(tris, 0.85, 0.45, -1.79, 0.08, 0.05, 0.03, 0xFFFFAA22);
+
+    // Tail lights (larger, with reflector housing)
+    for &tx in &[-0.6f32, 0.6] {
+        push_box(tris, tx, 0.45, 1.81, 0.28, 0.12, 0.04, 0xFF441111); // housing
+        mesh::sphere_tris(tris, tx, 0.45, 1.83, 0.08, 0, 0xFFFF2222); // bulb
+    }
+    // Reverse lights (small white)
+    push_box(tris, -0.25, 0.38, 1.82, 0.08, 0.06, 0.03, 0xFFDDDDDD);
+    push_box(tris, 0.25, 0.38, 1.82, 0.08, 0.06, 0.03, 0xFFDDDDDD);
+
+    // Bumpers (front + rear, with curve suggestion)
+    mesh::beveled_box_tris(tris, 0.0, 0.22, -1.85, 1.7, 0.14, 0.1, 0.03, 0xFF444444);
+    mesh::beveled_box_tris(tris, 0.0, 0.22, 1.85, 1.7, 0.14, 0.1, 0.03, 0xFF444444);
+
+    // License plate area (rear)
+    push_box(tris, 0.0, 0.35, 1.84, 0.35, 0.08, 0.02, 0xFFDDDDDD);
+    // License plate frame
+    push_box(tris, 0.0, 0.35, 1.85, 0.38, 0.01, 0.01, 0xFF333333);
+
+    // Exhaust pipe (rear undercarriage)
+    mesh::cylinder_tris(tris, -0.4, 0.14, 1.8, 0.03, 0.15, 4, 0xFF555555);
+
+    // Antenna (thin cylinder on rear roof)
+    mesh::cylinder_tris(tris, 0.3, 1.35, 0.8, 0.008, 0.3, 3, 0xFF222222);
 
     // Interior details (only for player's vehicle)
     if show_interior {
-        push_box(tris, 0.0, 0.75, -0.6, 1.3, 0.15, 0.4, DASHBOARD_COLOR);
-        push_box(tris, -0.3, 0.85, -0.45, 0.25, 0.25, 0.05, STEERING_COLOR);
-        push_box(tris, -0.35, 0.55, 0.0, 0.5, 0.15, 0.5, SEAT_COLOR);
-        push_box(tris, -0.35, 0.85, 0.2, 0.5, 0.45, 0.1, SEAT_COLOR);
-        push_box(tris, 0.35, 0.55, 0.0, 0.5, 0.15, 0.5, SEAT_COLOR);
-        push_box(tris, 0.35, 0.85, 0.2, 0.5, 0.45, 0.1, SEAT_COLOR);
+        // Dashboard
+        mesh::beveled_box_tris(tris, 0.0, 0.78, -0.6, 1.3, 0.12, 0.35, 0.02, DASHBOARD_COLOR);
+        // Instrument cluster (lighter area)
+        push_box(tris, -0.3, 0.82, -0.72, 0.35, 0.08, 0.02, 0xFF222233);
+        // Steering wheel (ring + column)
+        mesh::cylinder_tris(tris, -0.3, 0.88, -0.45, 0.12, 0.02, 8, STEERING_COLOR);
+        mesh::cylinder_tris(tris, -0.3, 0.82, -0.52, 0.025, 0.12, 4, STEERING_COLOR);
+        // Center console
+        push_box(tris, 0.0, 0.6, 0.0, 0.25, 0.2, 0.8, darken(DASHBOARD_COLOR, 0.8));
+        // Gear shift knob
+        mesh::sphere_tris(tris, 0.0, 0.72, -0.1, 0.03, 0, 0xFF222222);
+        // Front seats (driver + passenger)
+        for &sx in &[-0.35f32, 0.35] {
+            // Seat base
+            mesh::beveled_box_tris(tris, sx, 0.58, 0.0, 0.45, 0.12, 0.45, 0.02, SEAT_COLOR);
+            // Seat back
+            mesh::beveled_box_tris(tris, sx, 0.88, 0.22, 0.45, 0.45, 0.08, 0.02, SEAT_COLOR);
+            // Headrest
+            push_box(tris, sx, 1.12, 0.22, 0.2, 0.12, 0.06, SEAT_COLOR);
+        }
+        // Rear seat
+        mesh::beveled_box_tris(tris, 0.0, 0.55, 0.6, 1.1, 0.1, 0.4, 0.02, SEAT_COLOR);
+        mesh::beveled_box_tris(tris, 0.0, 0.82, 0.78, 1.1, 0.35, 0.06, 0.02, SEAT_COLOR);
+        // Rearview mirror
+        push_box(tris, 0.0, 1.1, -0.45, 0.2, 0.06, 0.02, 0xFF667788);
     }
 
     let (sin_r, cos_r) = v.rot_y.sin_cos();
@@ -413,46 +931,46 @@ fn job_shirt_color(npc: &Npc) -> u32 {
 
 pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
     let shirt = if npc.hit_flash > 0.0 { 0xFFFF4444 } else { job_shirt_color(npc) };
+    let app = npc_appearance(npc.brain_idx as u32);
 
     // Ragdoll rendering: sphere joints + cylinder limb segments
     if npc.ragdoll_active {
         let p = &npc.ragdoll_points;
-        // hips=0, chest=1, head=2, l_hand=3, r_hand=4, l_foot=5, r_foot=6
-        // Torso: cylinder between hips and chest
-        mesh::cylinder_between(tris, p[0], p[1], 0.2, 5, shirt);
-        // Head: sphere at p[2]
-        mesh::sphere_tris(tris, p[2][0], p[2][1], p[2][2], 0.18, 1, SKIN_COLOR);
-        // Neck: cylinder from chest to head
-        mesh::cylinder_between(tris, p[1], p[2], 0.06, 4, SKIN_COLOR);
-        // Arms: cylinder from chest to hands
-        mesh::cylinder_between(tris, p[1], p[3], 0.06, 4, SKIN_COLOR);
-        mesh::cylinder_between(tris, p[1], p[4], 0.06, 4, SKIN_COLOR);
-        // Hands: small spheres
-        mesh::sphere_tris(tris, p[3][0], p[3][1], p[3][2], 0.07, 0, SKIN_COLOR);
-        mesh::sphere_tris(tris, p[4][0], p[4][1], p[4][2], 0.07, 0, SKIN_COLOR);
-        // Legs: cylinder from hips to feet
-        mesh::cylinder_between(tris, p[0], p[5], 0.08, 4, npc.pants_color);
-        mesh::cylinder_between(tris, p[0], p[6], 0.08, 4, npc.pants_color);
-        // Feet: small spheres
-        mesh::sphere_tris(tris, p[5][0], p[5][1], p[5][2], 0.08, 0, npc.pants_color);
-        mesh::sphere_tris(tris, p[6][0], p[6][1], p[6][2], 0.08, 0, npc.pants_color);
+        let arm_col = if app.has_coat { app.coat_col } else { shirt };
+        // Torso with coat color
+        mesh::cylinder_between(tris, p[0], p[1], 0.2, 6, arm_col);
+        // Head
+        mesh::lathe_tris(tris, p[2][0], p[2][1], p[2][2],
+            &[[0.0, -0.15], [0.12, -0.08], [0.16, 0.02], [0.12, 0.12], [0.0, 0.16]], 6, app.skin);
+        // Neck
+        mesh::cylinder_between(tris, p[1], p[2], 0.05, 4, app.skin);
+        // Arms
+        mesh::cylinder_between(tris, p[1], p[3], 0.05, 4, arm_col);
+        mesh::cylinder_between(tris, p[1], p[4], 0.05, 4, arm_col);
+        push_box(tris, p[3][0], p[3][1], p[3][2], 0.05, 0.04, 0.05, app.skin);
+        push_box(tris, p[4][0], p[4][1], p[4][2], 0.05, 0.04, 0.05, app.skin);
+        // Legs
+        mesh::cylinder_between(tris, p[0], p[5], 0.07, 5, npc.pants_color);
+        mesh::cylinder_between(tris, p[0], p[6], 0.07, 5, npc.pants_color);
+        mesh::beveled_box_tris(tris, p[5][0], p[5][1], p[5][2], 0.07, 0.05, 0.12, 0.01, BOOT_COLOR);
+        mesh::beveled_box_tris(tris, p[6][0], p[6][1], p[6][2], 0.07, 0.05, 0.12, 0.01, BOOT_COLOR);
         return;
     }
 
     let base = tris.len();
 
-    // KO pose: body flat on ground
+    // KO pose — body flat on ground
     if npc.state == NpcState::KnockedOut {
-        // Torso — flat cylinder
-        mesh::cylinder_tris(tris, 0.0, 0.15, 0.0, 0.2, 0.7, 5, shirt);
-        // Head — sphere
-        mesh::sphere_tris(tris, 0.0, 0.15, -0.55, 0.18, 1, SKIN_COLOR);
-        // Arms — cylinders
-        mesh::cylinder_tris(tris, -0.5, 0.1, 0.2, 0.06, 0.6, 4, SKIN_COLOR);
-        mesh::cylinder_tris(tris, 0.5, 0.1, -0.1, 0.06, 0.6, 4, SKIN_COLOR);
-        // Legs — cylinders
-        mesh::cylinder_tris(tris, -0.15, 0.1, 0.5, 0.08, 0.65, 4, npc.pants_color);
-        mesh::cylinder_tris(tris, 0.15, 0.1, 0.5, 0.08, 0.65, 4, npc.pants_color);
+        let arm_col = if app.has_coat { app.coat_col } else { shirt };
+        mesh::cylinder_tris(tris, 0.0, 0.15, 0.0, 0.19, 0.65, 6, arm_col);
+        mesh::lathe_tris(tris, 0.0, 0.15, -0.52,
+            &[[0.0, -0.15], [0.12, -0.08], [0.16, 0.02], [0.12, 0.12], [0.0, 0.16]], 6, app.skin);
+        mesh::cylinder_tris(tris, -0.45, 0.1, 0.15, 0.05, 0.55, 4, app.skin);
+        mesh::cylinder_tris(tris, 0.45, 0.1, -0.08, 0.05, 0.55, 4, app.skin);
+        mesh::cylinder_tris(tris, -0.14, 0.1, 0.45, 0.065, 0.6, 5, npc.pants_color);
+        mesh::cylinder_tris(tris, 0.14, 0.1, 0.45, 0.065, 0.6, 5, npc.pants_color);
+        mesh::beveled_box_tris(tris, -0.14, 0.03, 0.72, 0.07, 0.05, 0.12, 0.01, BOOT_COLOR);
+        mesh::beveled_box_tris(tris, 0.14, 0.03, 0.72, 0.07, 0.05, 0.12, 0.01, BOOT_COLOR);
 
         let (sin_r, cos_r) = npc.rot_y.sin_cos();
         for tri in &mut tris[base..] {
@@ -471,68 +989,33 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         return;
     }
 
-    let swing = npc.walk_phase.sin() * 0.4;
+    // Job-specific hat color
+    let job_hat = match npc.job {
+        NpcJob::PolicePatrol => Some(0xFF2233AA),
+        NpcJob::Firefighter => Some(0xFFCC3322),
+        NpcJob::Paramedic => Some(0xFFDDDDDD),
+        NpcJob::ConstructionWorker => Some(0xFFDDAA22),
+        NpcJob::MailCarrier => Some(0xFF3344CC),
+        _ => None,
+    };
 
-    // Torso — cylinder
-    mesh::cylinder_tris(tris, 0.0, 1.05, 0.0, 0.2, 0.7, 6, shirt);
-    // Hips — cylinder
-    mesh::cylinder_tris(tris, 0.0, 0.65, 0.0, 0.18, 0.15, 5, npc.pants_color);
+    gen_character_body(
+        tris,
+        npc.walk_phase.sin() * 0.4,
+        &app,
+        shirt,
+        npc.pants_color,
+        npc.attack_phase,
+        npc.carrying_item,
+        npc.carrying_bin.is_some(),
+        false,
+        job_hat,
+    );
 
-    // Head — sphere with face features
-    mesh::sphere_tris(tris, 0.0, 1.75, 0.0, 0.2, 1, SKIN_COLOR);
-    // Eyes — tiny spheres
-    mesh::sphere_tris(tris, -0.08, 1.8, -0.17, 0.03, 0, 0xFF222222);
-    mesh::sphere_tris(tris, 0.08, 1.8, -0.17, 0.03, 0, 0xFF222222);
-    // Nose — tiny sphere
-    mesh::sphere_tris(tris, 0.0, 1.73, -0.2, 0.025, 0, SKIN_COLOR);
-
-    // Job accessories (hats/helmets)
-    match npc.job {
-        NpcJob::PolicePatrol => mesh::cylinder_tris(tris, 0.0, 1.95, 0.0, 0.2, 0.1, 6, 0xFF2222CC),
-        NpcJob::Firefighter => mesh::sphere_tris(tris, 0.0, 1.97, 0.0, 0.22, 0, 0xFFCC2222),
-        NpcJob::Paramedic => mesh::cylinder_tris(tris, 0.0, 1.95, 0.0, 0.19, 0.08, 6, 0xFFFFFFFF),
-        NpcJob::ConstructionWorker => mesh::sphere_tris(tris, 0.0, 1.97, 0.0, 0.22, 0, 0xFFDDAA22),
-        NpcJob::MailCarrier => mesh::cylinder_tris(tris, 0.0, 1.95, 0.0, 0.19, 0.08, 6, 0xFF3344CC),
-        _ => {}
-    }
-
-    // Speech bubble
+    // Speech bubble (floating above head)
     if npc.interacting_with.is_some() {
-        mesh::sphere_tris(tris, 0.0, 2.2, -0.2, 0.15, 0, 0xFFFFFFFF);
-    }
-
-    // Legs — cylinders with swing animation
-    mesh::cylinder_tris(tris, -0.1, 0.35, -swing * 0.35, 0.07, 0.65, 5, npc.pants_color);
-    mesh::cylinder_tris(tris, 0.1, 0.35, swing * 0.35, 0.07, 0.65, 5, npc.pants_color);
-    // Shoes — small spheres at feet
-    mesh::sphere_tris(tris, -0.1, 0.05, -swing * 0.35, 0.08, 0, 0xFF333333);
-    mesh::sphere_tris(tris, 0.1, 0.05, swing * 0.35, 0.08, 0, 0xFF333333);
-
-    if npc.attack_phase > 0.0 {
-        let t = (npc.attack_phase / ATTACK_ANIM_DURATION).clamp(0.0, 1.0);
-        let extend = 1.0 - (1.0 - t) * (1.0 - t);
-        let right_z = -0.15 - extend * 0.8;
-        let left_z = 0.15 + extend * 0.2;
-        // Arms — cylinders
-        mesh::cylinder_tris(tris, -0.35, 1.05, left_z, 0.06, 0.55, 4, SKIN_COLOR);
-        mesh::cylinder_tris(tris, 0.35, 1.05, right_z, 0.06, 0.55, 4, SKIN_COLOR);
-        // Fists
-        mesh::sphere_tris(tris, 0.35, 1.05, right_z - 0.3, 0.07, 0, SKIN_COLOR);
-    } else if npc.carrying_item {
-        mesh::cylinder_tris(tris, -0.25, 1.0, -0.35, 0.06, 0.5, 4, SKIN_COLOR);
-        mesh::cylinder_tris(tris, 0.25, 1.0, -0.35, 0.06, 0.5, 4, SKIN_COLOR);
-        mesh::beveled_box_tris(tris, 0.0, 0.9, -0.5, 0.3, 0.3, 0.2, 0.03, BAG_COLOR);
-    } else if npc.carrying_bin.is_some() {
-        mesh::cylinder_tris(tris, -0.25, 1.0, -0.4, 0.06, 0.5, 4, SKIN_COLOR);
-        mesh::cylinder_tris(tris, 0.25, 1.0, -0.4, 0.06, 0.5, 4, SKIN_COLOR);
-        mesh::cylinder_tris(tris, 0.0, 0.8, -0.55, 0.2, 0.6, 6, BIN_COLOR);
-    } else {
-        // Normal arm swing — cylinders
-        mesh::cylinder_tris(tris, -0.3, 1.05, swing * 0.25, 0.06, 0.55, 4, SKIN_COLOR);
-        mesh::cylinder_tris(tris, 0.3, 1.05, -swing * 0.25, 0.06, 0.55, 4, SKIN_COLOR);
-        // Hands — spheres
-        mesh::sphere_tris(tris, -0.3, 0.8, swing * 0.25, 0.06, 0, SKIN_COLOR);
-        mesh::sphere_tris(tris, 0.3, 0.8, -swing * 0.25, 0.06, 0, SKIN_COLOR);
+        mesh::sphere_tris(tris, 0.0, 2.15, -0.15, 0.12, 0, 0xFFFFFFFF);
+        mesh::sphere_tris(tris, 0.0, 2.0, -0.1, 0.04, 0, 0xFFFFFFFF);
     }
 
     let (sin_r, cos_r) = npc.rot_y.sin_cos();
