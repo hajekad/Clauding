@@ -1209,3 +1209,174 @@ fn add3(a: [f32;3], b: [f32;3]) -> [f32;3] {
 fn sub3(a: [f32;3], b: [f32;3]) -> [f32;3] {
     [a[0]-b[0], a[1]-b[1], a[2]-b[2]]
 }
+
+fn scale3(v: [f32;3], s: f32) -> [f32;3] {
+    [v[0]*s, v[1]*s, v[2]*s]
+}
+
+// ── Tapered Cylinder ────────────────────────────────────────────────────────
+
+/// Cylinder with different top/bottom radii (for limbs, tapered shapes).
+/// Y-axis aligned: bottom at cy - h/2, top at cy + h/2.
+pub fn tapered_cylinder_tris(
+    tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32,
+    r_bot: f32, r_top: f32, h: f32, segments: usize, color: u32,
+) {
+    let hh = h * 0.5;
+    let n = segments.max(3);
+    let step = std::f32::consts::TAU / n as f32;
+    let top_c = [cx, cy + hh, cz];
+    let bot_c = [cx, cy - hh, cz];
+
+    for i in 0..n {
+        let a0 = i as f32 * step;
+        let a1 = (i + 1) as f32 * step;
+        let (s0, c0) = (a0.sin(), a0.cos());
+        let (s1, c1) = (a1.sin(), a1.cos());
+
+        let bt0 = [cx + r_bot*c0, cy - hh, cz + r_bot*s0];
+        let bt1 = [cx + r_bot*c1, cy - hh, cz + r_bot*s1];
+        let tp0 = [cx + r_top*c0, cy + hh, cz + r_top*s0];
+        let tp1 = [cx + r_top*c1, cy + hh, cz + r_top*s1];
+
+        push_quad(tris, bt0, tp0, tp1, bt1, color);
+
+        if r_top > 0.001 {
+            tris.push(WorldTri { v: [top_c, tp1, tp0], normal: [0.0, 1.0, 0.0], color });
+        }
+        tris.push(WorldTri { v: [bot_c, bt0, bt1], normal: [0.0, -1.0, 0.0], color });
+    }
+}
+
+// ── Ellipsoid ───────────────────────────────────────────────────────────────
+
+/// Axis-aligned ellipsoid (stretched sphere). rx/ry/rz are the three radii.
+/// Uses icosphere subdivision then scales.
+pub fn ellipsoid_tris(
+    tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32,
+    rx: f32, ry: f32, rz: f32, subdivisions: u32, color: u32,
+) {
+    // Generate unit icosphere vertices, then scale
+    let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
+    let a = 1.0;
+    let b = 1.0 / phi;
+    let base_verts: [[f32;3]; 12] = [
+        [-b, a, 0.0],[b, a, 0.0],[-b,-a, 0.0],[b,-a, 0.0],
+        [0.0,-b, a],[0.0, b, a],[0.0,-b,-a],[0.0, b,-a],
+        [a, 0.0,-b],[a, 0.0, b],[-a, 0.0,-b],[-a, 0.0, b],
+    ];
+    let base_tris: [[usize;3]; 20] = [
+        [0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],
+        [1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],
+        [3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],
+        [4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1],
+    ];
+
+    let mut verts: Vec<[f32;3]> = base_verts.to_vec();
+    let mut faces: Vec<[usize;3]> = base_tris.to_vec();
+
+    for _ in 0..subdivisions {
+        let mut new_faces = Vec::with_capacity(faces.len() * 4);
+        let mut midpoint_cache = std::collections::HashMap::new();
+        for face in &faces {
+            let mut mids = [0usize; 3];
+            for e in 0..3 {
+                let (a_idx, b_idx) = (face[e], face[(e+1)%3]);
+                let key = if a_idx < b_idx { (a_idx, b_idx) } else { (b_idx, a_idx) };
+                mids[e] = *midpoint_cache.entry(key).or_insert_with(|| {
+                    let va = verts[a_idx];
+                    let vb = verts[b_idx];
+                    let mid = normalize3([(va[0]+vb[0])*0.5, (va[1]+vb[1])*0.5, (va[2]+vb[2])*0.5]);
+                    verts.push(mid);
+                    verts.len() - 1
+                });
+            }
+            new_faces.push([face[0], mids[0], mids[2]]);
+            new_faces.push([mids[0], face[1], mids[1]]);
+            new_faces.push([mids[2], mids[1], face[2]]);
+            new_faces.push([mids[0], mids[1], mids[2]]);
+        }
+        faces = new_faces;
+    }
+
+    // Scale vertices by ellipsoid radii and offset
+    for face in &faces {
+        let mut tv = [[0.0f32;3]; 3];
+        for (i, &vi) in face.iter().enumerate() {
+            let v = verts[vi];
+            tv[i] = [cx + v[0]*rx, cy + v[1]*ry, cz + v[2]*rz];
+        }
+        let normal = tri_normal(tv[0], tv[1], tv[2]);
+        tris.push(WorldTri { v: tv, normal, color });
+    }
+}
+
+// ── Oriented tapered cylinder ───────────────────────────────────────────────
+
+/// Tapered cylinder between two arbitrary points with different radii at each end.
+pub fn tapered_cylinder_between(
+    tris: &mut Vec<WorldTri>, p0: [f32;3], p1: [f32;3],
+    r0: f32, r1: f32, segments: usize, color: u32,
+) {
+    let dx = p1[0]-p0[0]; let dy = p1[1]-p0[1]; let dz = p1[2]-p0[2];
+    let h = (dx*dx+dy*dy+dz*dz).sqrt();
+    if h < 1e-6 { return; }
+    let dir = [dx/h, dy/h, dz/h];
+    let up = if dir[1].abs() < 0.99 { [0.0,1.0,0.0] } else { [1.0,0.0,0.0] };
+    let right = normalize3(cross3(dir, up));
+    let fwd = cross3(right, dir);
+    let n = segments.max(3);
+    let step = std::f32::consts::TAU / n as f32;
+    let mid = [(p0[0]+p1[0])*0.5, (p0[1]+p1[1])*0.5, (p0[2]+p1[2])*0.5];
+
+    for i in 0..n {
+        let a0 = i as f32 * step;
+        let a1 = (i+1) as f32 * step;
+        let (s0,c0) = (a0.sin(), a0.cos());
+        let (s1,c1) = (a1.sin(), a1.cos());
+        let bot0 = [p0[0]+r0*(right[0]*c0+fwd[0]*s0), p0[1]+r0*(right[1]*c0+fwd[1]*s0), p0[2]+r0*(right[2]*c0+fwd[2]*s0)];
+        let bot1 = [p0[0]+r0*(right[0]*c1+fwd[0]*s1), p0[1]+r0*(right[1]*c1+fwd[1]*s1), p0[2]+r0*(right[2]*c1+fwd[2]*s1)];
+        let top0 = [p1[0]+r1*(right[0]*c0+fwd[0]*s0), p1[1]+r1*(right[1]*c0+fwd[1]*s0), p1[2]+r1*(right[2]*c0+fwd[2]*s0)];
+        let top1 = [p1[0]+r1*(right[0]*c1+fwd[0]*s1), p1[1]+r1*(right[1]*c1+fwd[1]*s1), p1[2]+r1*(right[2]*c1+fwd[2]*s1)];
+        push_quad(tris, bot0, top0, top1, bot1, color);
+        if r1 > 0.001 {
+            tris.push(WorldTri { v: [p1, top1, top0], normal: dir, color });
+        }
+        let neg_dir = [-dir[0],-dir[1],-dir[2]];
+        tris.push(WorldTri { v: [p0, bot0, bot1], normal: neg_dir, color });
+    }
+}
+
+// ── Ring torus segment ──────────────────────────────────────────────────────
+
+/// Partial torus/ring — useful for collar rims, boot cuffs, belt buckles.
+/// Creates a ring of tube_segments around a circle of ring_segments at (cx,cy,cz).
+pub fn ring_tris(
+    tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32,
+    ring_r: f32, tube_r: f32, ring_segments: usize, tube_segments: usize, color: u32,
+) {
+    let rn = ring_segments.max(3);
+    let tn = tube_segments.max(3);
+    let rs = std::f32::consts::TAU / rn as f32;
+    let ts = std::f32::consts::TAU / tn as f32;
+
+    for i in 0..rn {
+        let ra0 = i as f32 * rs;
+        let ra1 = (i+1) as f32 * rs;
+        for j in 0..tn {
+            let ta0 = j as f32 * ts;
+            let ta1 = (j+1) as f32 * ts;
+
+            let point = |ra: f32, ta: f32| -> [f32;3] {
+                let r = ring_r + tube_r * ta.cos();
+                [cx + r * ra.cos(), cy + tube_r * ta.sin(), cz + r * ra.sin()]
+            };
+
+            let p00 = point(ra0, ta0);
+            let p10 = point(ra1, ta0);
+            let p11 = point(ra1, ta1);
+            let p01 = point(ra0, ta1);
+            push_quad(tris, p00, p10, p11, p01, color);
+        }
+    }
+}
