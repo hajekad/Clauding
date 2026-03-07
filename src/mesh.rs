@@ -2,6 +2,27 @@
 // raised strip, wave surface, extrude profile, lathe. All push WorldTri into a Vec.
 
 use crate::state::WorldTri;
+use std::cell::Cell;
+
+thread_local! {
+    static EXTRA_SUBDIVISIONS: Cell<u32> = const { Cell::new(0) };
+    static SEGMENT_MULTIPLIER: Cell<u32> = const { Cell::new(1) };
+}
+
+/// Set mesh quality multipliers. extra_subdivs is added to icosphere subdivision count,
+/// segment_mult multiplies parametric segment counts. Defaults: (0, 1) = no change.
+pub fn set_mesh_quality(extra_subdivs: u32, segment_mult: u32) {
+    EXTRA_SUBDIVISIONS.with(|c| c.set(extra_subdivs));
+    SEGMENT_MULTIPLIER.with(|c| c.set(segment_mult));
+}
+
+fn quality_subdivisions(base: u32) -> u32 {
+    base + EXTRA_SUBDIVISIONS.with(|c| c.get())
+}
+
+fn quality_segments(base: usize) -> usize {
+    base * SEGMENT_MULTIPLIER.with(|c| c.get()) as usize
+}
 
 /// Compute normalized cross product of triangle edges (CCW winding)
 fn tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
@@ -29,7 +50,7 @@ pub fn cylinder_tris(
     r: f32, h: f32, segments: usize, color: u32,
 ) {
     let hh = h * 0.5;
-    let n = segments.max(3);
+    let n = quality_segments(segments).max(3);
     let step = std::f32::consts::TAU / n as f32;
 
     let top_center = [cx, cy + hh, cz];
@@ -79,7 +100,7 @@ pub fn cylinder_between(
     let right = normalize3(cross3(dir, up));
     let fwd = cross3(right, dir);
 
-    let n = segments.max(3);
+    let n = quality_segments(segments).max(3);
     let step = std::f32::consts::TAU / n as f32;
     let center0 = p0;
     let center1 = p1;
@@ -118,7 +139,7 @@ pub fn cone_tris(
     r: f32, h: f32, segments: usize, color: u32,
 ) {
     let hh = h * 0.5;
-    let n = segments.max(3);
+    let n = quality_segments(segments).max(3);
     let step = std::f32::consts::TAU / n as f32;
 
     let apex = [cx, cy + hh, cz];
@@ -176,7 +197,7 @@ pub fn sphere_tris(
     ];
 
     // Subdivide
-    for _ in 0..subdivisions {
+    for _ in 0..quality_subdivisions(subdivisions) {
         let mut new_faces = Vec::with_capacity(faces.len() * 4);
         let mut midpoint_cache: Vec<(usize, usize, usize)> = Vec::new();
 
@@ -241,7 +262,7 @@ pub fn perturbed_sphere_tris(
         [3,9,4], [3,4,2], [3,2,6], [3,6,8], [3,8,9],
         [4,9,5], [2,4,11], [6,2,10], [8,6,7], [9,8,1],
     ];
-    for _ in 0..subdivisions {
+    for _ in 0..quality_subdivisions(subdivisions) {
         let mut new_faces = Vec::with_capacity(faces.len() * 4);
         let mut midpoint_cache: Vec<(usize, usize, usize)> = Vec::new();
         let get_mid = |a_idx: usize, b_idx: usize, verts: &mut Vec<[f32;3]>, cache: &mut Vec<(usize, usize, usize)>| -> usize {
@@ -814,7 +835,7 @@ pub fn lathe_tris(
     segments: usize, color: u32,
 ) {
     if profile.len() < 2 { return; }
-    let n = segments.max(3);
+    let n = quality_segments(segments).max(3);
     let step = std::f32::consts::TAU / n as f32;
 
     // Generate rings of vertices
@@ -1223,7 +1244,7 @@ pub fn tapered_cylinder_tris(
     r_bot: f32, r_top: f32, h: f32, segments: usize, color: u32,
 ) {
     let hh = h * 0.5;
-    let n = segments.max(3);
+    let n = quality_segments(segments).max(3);
     let step = std::f32::consts::TAU / n as f32;
     let top_c = [cx, cy + hh, cz];
     let bot_c = [cx, cy - hh, cz];
@@ -1275,7 +1296,7 @@ pub fn ellipsoid_tris(
     let mut verts: Vec<[f32;3]> = base_verts.to_vec();
     let mut faces: Vec<[usize;3]> = base_tris.to_vec();
 
-    for _ in 0..subdivisions {
+    for _ in 0..quality_subdivisions(subdivisions) {
         let mut new_faces = Vec::with_capacity(faces.len() * 4);
         let mut midpoint_cache = std::collections::HashMap::new();
         for face in &faces {
@@ -1325,7 +1346,7 @@ pub fn tapered_cylinder_between(
     let up = if dir[1].abs() < 0.99 { [0.0,1.0,0.0] } else { [1.0,0.0,0.0] };
     let right = normalize3(cross3(dir, up));
     let fwd = cross3(right, dir);
-    let n = segments.max(3);
+    let n = quality_segments(segments).max(3);
     let step = std::f32::consts::TAU / n as f32;
     let mid = [(p0[0]+p1[0])*0.5, (p0[1]+p1[1])*0.5, (p0[2]+p1[2])*0.5];
 

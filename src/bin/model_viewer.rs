@@ -69,6 +69,205 @@ fn clip_to_screen(c: [f32; 4], w: f32, h: f32) -> [f32; 3] {
     ]
 }
 
+// ── Smooth shading pipeline ────────────────────────────────────────────────
+
+/// Compute per-vertex smooth normals by averaging face normals at coincident vertices.
+/// Returns one [[f32;3]; 3] per tri — the smooth normal for each of its 3 vertices.
+/// Uses spatial hashing with a crease angle threshold (70°) to preserve hard edges
+/// where surfaces meet at sharp angles (e.g. overlapping body parts).
+fn compute_smooth_normals(tris: &[state::WorldTri]) -> Vec<[[f32; 3]; 3]> {
+    use std::collections::HashMap;
+
+    // Quantize position to spatial hash key
+    let quantize = |p: [f32; 3]| -> [i32; 3] {
+        [(p[0] * 10000.0).round() as i32,
+         (p[1] * 10000.0).round() as i32,
+         (p[2] * 10000.0).round() as i32]
+    };
+
+    // Build map: quantized position → list of (face_index, vertex_in_face, face_normal)
+    let mut pos_map: HashMap<[i32; 3], Vec<(usize, [f32; 3])>> = HashMap::new();
+    for (fi, tri) in tris.iter().enumerate() {
+        for vi in 0..3 {
+            let key = quantize(tri.v[vi]);
+            pos_map.entry(key).or_default().push((fi, tri.normal));
+        }
+    }
+
+    let crease_cos = 70.0_f32.to_radians().cos(); // ~0.342
+
+    let mut result = vec![[[0.0f32; 3]; 3]; tris.len()];
+    for (fi, tri) in tris.iter().enumerate() {
+        for vi in 0..3 {
+            let key = quantize(tri.v[vi]);
+            let face_n = tri.normal;
+            let mut sum = [0.0f32; 3];
+
+            if let Some(neighbors) = pos_map.get(&key) {
+                for &(_, n) in neighbors {
+                    // Dot product with this face's normal — only average if within crease angle
+                    let dot = face_n[0] * n[0] + face_n[1] * n[1] + face_n[2] * n[2];
+                    if dot >= crease_cos {
+                        sum[0] += n[0];
+                        sum[1] += n[1];
+                        sum[2] += n[2];
+                    }
+                }
+            }
+
+            // Normalize
+            let len = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
+            if len > 1e-10 {
+                result[fi][vi] = [sum[0] / len, sum[1] / len, sum[2] / len];
+            } else {
+                result[fi][vi] = face_n;
+            }
+        }
+    }
+
+    result
+}
+
+/// 3-light sculpture rig: key, fill, rim + ambient/hemisphere.
+/// Returns intensity in [0.15, 1.0].
+fn compute_lighting(normal: [f32; 3]) -> f32 {
+    // Key light: warm, upper-right-front
+    let key_dir: [f32; 3] = [0.4, 0.8, -0.5];
+    let key_len = (key_dir[0]*key_dir[0] + key_dir[1]*key_dir[1] + key_dir[2]*key_dir[2]).sqrt();
+    let key_n = [key_dir[0]/key_len, key_dir[1]/key_len, key_dir[2]/key_len];
+    let key_dot = (normal[0]*key_n[0] + normal[1]*key_n[1] + normal[2]*key_n[2]).max(0.0);
+    let key = key_dot * 0.55;
+
+    // Fill light: softer, left
+    let fill_dir: [f32; 3] = [-0.5, 0.3, -0.2];
+    let fill_len = (fill_dir[0]*fill_dir[0] + fill_dir[1]*fill_dir[1] + fill_dir[2]*fill_dir[2]).sqrt();
+    let fill_n = [fill_dir[0]/fill_len, fill_dir[1]/fill_len, fill_dir[2]/fill_len];
+    let fill_dot = (normal[0]*fill_n[0] + normal[1]*fill_n[1] + normal[2]*fill_n[2]).max(0.0);
+    let fill = fill_dot * 0.25;
+
+    // Rim light: backlight, fresnel-weighted
+    let rim_dir: [f32; 3] = [0.0, 0.2, 0.8];
+    let rim_len = (rim_dir[0]*rim_dir[0] + rim_dir[1]*rim_dir[1] + rim_dir[2]*rim_dir[2]).sqrt();
+    let rim_n = [rim_dir[0]/rim_len, rim_dir[1]/rim_len, rim_dir[2]/rim_len];
+    let rim_dot = (normal[0]*rim_n[0] + normal[1]*rim_n[1] + normal[2]*rim_n[2]).max(0.0);
+    let rim = rim_dot * 0.15;
+
+    // Ambient + hemisphere (slight upward boost)
+    let ambient = 0.15 + normal[1].max(0.0) * 0.05;
+
+    (key + fill + rim + ambient).clamp(0.15, 1.0)
+}
+
+/// Apply lighting intensity to a base color, returning ARGB u32
+fn apply_intensity(color: u32, intensity: f32) -> u32 {
+    let r = ((color >> 16) & 0xFF) as f32;
+    let g = ((color >> 8) & 0xFF) as f32;
+    let b = (color & 0xFF) as f32;
+    let ro = (r * intensity).min(255.0) as u32;
+    let go = (g * intensity).min(255.0) as u32;
+    let bo = (b * intensity).min(255.0) as u32;
+    0xFF000000 | (ro << 16) | (go << 8) | bo
+}
+
+/// Render smooth-shaded model with per-vertex normals and 3-light rig
+fn render_model_smooth(
+    fb: &mut raster::Framebuffer,
+    tris: &[state::WorldTri],
+    vertex_normals: &[[[f32; 3]; 3]],
+    eye: [f32; 3],
+    target: [f32; 3],
+) {
+    let aspect = fb.w as f32 / fb.h as f32;
+    let view = math::m4_look_at(eye, target, [0.0, 1.0, 0.0]);
+    let proj = math::m4_perspective(60.0_f32.to_radians(), aspect, 0.01, 100.0);
+    let vp = math::m4_mul(&proj, &view);
+    let fw = fb.w as f32;
+    let fh = fb.h as f32;
+
+    for (fi, tri) in tris.iter().enumerate() {
+        // Compute per-vertex lit colors
+        let vn = &vertex_normals[fi];
+        let colors = [
+            apply_intensity(tri.color, compute_lighting(vn[0])),
+            apply_intensity(tri.color, compute_lighting(vn[1])),
+            apply_intensity(tri.color, compute_lighting(vn[2])),
+        ];
+
+        let c0 = math::m4_transform_no_div(&vp, tri.v[0]);
+        let c1 = math::m4_transform_no_div(&vp, tri.v[1]);
+        let c2 = math::m4_transform_no_div(&vp, tri.v[2]);
+
+        let near_w = 0.01;
+        if c0[3] < near_w || c1[3] < near_w || c2[3] < near_w { continue; }
+
+        let s0 = clip_to_screen(c0, fw, fh);
+        let s1 = clip_to_screen(c1, fw, fh);
+        let s2 = clip_to_screen(c2, fw, fh);
+
+        if s0[0].max(s1[0]).max(s2[0]) < 0.0 { continue; }
+        if s0[0].min(s1[0]).min(s2[0]) >= fw { continue; }
+        if s0[1].max(s1[1]).max(s2[1]) < 0.0 { continue; }
+        if s0[1].min(s1[1]).min(s2[1]) >= fh { continue; }
+
+        raster::draw_triangle_smooth(fb, &raster::ScreenTriSmooth {
+            v: [s0, s1, s2],
+            colors,
+        });
+    }
+}
+
+/// 8K smooth-shaded sheet: same layout as render_8k_sheet but uses smooth rendering
+fn render_8k_sheet_smooth(
+    tris: &[state::WorldTri],
+    vertex_normals: &[[[f32; 3]; 3]],
+    views: &[([f32; 3], [f32; 3], &str)],
+    sheet_label: &str,
+) -> (Vec<u32>, usize, usize) {
+    let panel_w: usize = 1920;
+    let panel_h: usize = 4320;
+    let n = views.len();
+    let sheet_w = panel_w * n;
+    let sheet_h = panel_h;
+
+    let mut view_fb = raster::Framebuffer::new(panel_w, panel_h);
+    let mut composite = vec![0xFF3A4455u32; sheet_w * sheet_h];
+
+    let tri_label = format!("tris: {}", tris.len());
+    for (view_idx, (eye, target, view_name)) in views.iter().enumerate() {
+        view_fb.clear(0xFF445566);
+        render_model_smooth(&mut view_fb, tris, vertex_normals, *eye, *target);
+
+        // Bold labels at 3x scale for 8K
+        for dy in 0..3_usize {
+            for dx in 0..3_usize {
+                draw_label_scaled(&mut view_fb, 16 + dx, 16 + dy, view_name, 3);
+                draw_label_scaled(&mut view_fb, 16 + dx, 52 + dy, &tri_label, 3);
+            }
+        }
+
+        let qx = view_idx * panel_w;
+        for y in 0..panel_h {
+            for x in 0..panel_w {
+                composite[y * sheet_w + (qx + x)] = view_fb.pixels[y * panel_w + x];
+            }
+        }
+    }
+
+    // Panel separators (3px white)
+    for pi in 1..n {
+        let sx = pi * panel_w;
+        for y in 0..sheet_h {
+            for dx in 0..3_usize {
+                if sx + dx < sheet_w { composite[y * sheet_w + sx + dx] = 0xFFFFFFFF; }
+                if sx >= dx + 1 { composite[y * sheet_w + sx - 1 - dx] = 0xFFFFFFFF; }
+            }
+        }
+    }
+
+    eprintln!("Rendered 8K smooth: {} ({} tris, {}x{})", sheet_label, tris.len(), sheet_w, sheet_h);
+    (composite, sheet_w, sheet_h)
+}
+
 /// Render model from 4 views and composite into a 2x2 grid
 fn render_model_sheet(
     tris: &[state::WorldTri],
@@ -120,6 +319,98 @@ fn render_model_sheet(
 
     eprintln!("Rendered: {} ({} tris)", label, tris.len());
     composite
+}
+
+/// 8K multi-view render: 4 panels side by side, each 1920x4320 (portrait)
+/// views: array of (eye_position, label)
+fn render_8k_sheet(
+    tris: &[state::WorldTri],
+    views: &[([f32; 3], [f32; 3], &str)], // (eye, target, label)
+    sheet_label: &str,
+) -> (Vec<u32>, usize, usize) {
+    let panel_w: usize = 1920;
+    let panel_h: usize = 4320;
+    let n = views.len();
+    let sheet_w = panel_w * n;
+    let sheet_h = panel_h;
+
+    let mut view_fb = raster::Framebuffer::new(panel_w, panel_h);
+    let mut composite = vec![0xFF3A4455u32; sheet_w * sheet_h];
+
+    let tri_label = format!("tris: {}", tris.len());
+    for (view_idx, (eye, target, view_name)) in views.iter().enumerate() {
+        view_fb.clear(0xFF445566);
+        render_model(&mut view_fb, tris, *eye, *target);
+
+        // Bold labels at 3x scale for 8K
+        for dy in 0..3_usize {
+            for dx in 0..3_usize {
+                draw_label_scaled(&mut view_fb, 16 + dx, 16 + dy, view_name, 3);
+                draw_label_scaled(&mut view_fb, 16 + dx, 52 + dy, &tri_label, 3);
+            }
+        }
+
+        let qx = view_idx * panel_w;
+        for y in 0..panel_h {
+            for x in 0..panel_w {
+                composite[y * sheet_w + (qx + x)] = view_fb.pixels[y * panel_w + x];
+            }
+        }
+    }
+
+    // Panel separators (3px white)
+    for pi in 1..n {
+        let sx = pi * panel_w;
+        for y in 0..sheet_h {
+            for dx in 0..3_usize {
+                if sx + dx < sheet_w { composite[y * sheet_w + sx + dx] = 0xFFFFFFFF; }
+                if sx >= dx + 1 { composite[y * sheet_w + sx - 1 - dx] = 0xFFFFFFFF; }
+            }
+        }
+    }
+
+    eprintln!("Rendered 8K: {} ({} tris, {}x{})", sheet_label, tris.len(), sheet_w, sheet_h);
+    (composite, sheet_w, sheet_h)
+}
+
+/// Draw text at integer scale factor (for high-res displays)
+fn draw_label_scaled(fb: &mut raster::Framebuffer, x: usize, y: usize, text: &str, scale: usize) {
+    let mut cx = x;
+    for ch in text.bytes() {
+        draw_char_scaled(fb, cx, y, ch, 0xFFFFFFFF, scale);
+        cx += 6 * scale;
+    }
+}
+
+fn draw_char_scaled(fb: &mut raster::Framebuffer, x: usize, y: usize, ch: u8, color: u32, scale: usize) {
+    let glyph = match ch {
+        b'A'..=b'Z' => FONT_UPPER[(ch - b'A') as usize],
+        b'a'..=b'z' => FONT_UPPER[(ch - b'a') as usize],
+        b'0'..=b'9' => FONT_DIGIT[(ch - b'0') as usize],
+        b' ' => [0; 7],
+        b':' => [0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000],
+        b'(' => [0b00100, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b00100],
+        b')' => [0b01000, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01000],
+        b'+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
+        b'-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+        b'/' => [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+        _ => [0b11111; 7],
+    };
+    for row in 0..7 {
+        for col in 0..5 {
+            if glyph[row] & (1 << (4 - col)) != 0 {
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        let px = x + col * scale + sx;
+                        let py = y + row * scale + sy;
+                        if px < fb.w && py < fb.h {
+                            fb.pixels[py * fb.w + px] = color;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Minimal pixel font for labels (5x7 glyphs, ASCII subset)
@@ -756,12 +1047,51 @@ fn main() {
     let _ = std::fs::create_dir_all("debug");
     let mut tris: Vec<state::WorldTri> = Vec::with_capacity(8192);
 
-    // ── Dynamic entities ──
+    // ── Player: 8K smooth-shaded close-up inspection (3 sheets) ──
     let player = make_player();
     tris.clear();
+    mesh::set_mesh_quality(2, 3); // high tessellation for smooth surfaces
     render::gen_player_mesh(&player, &mut tris);
-    let img = render_model_sheet(&tris, 0.7, 3.5, "Player");
-    save_png(&img, IMG_W, IMG_H, "debug/model_player.png");
+    mesh::set_mesh_quality(0, 1); // reset to defaults
+    let vertex_normals = compute_smooth_normals(&tris);
+    eprintln!("Player mesh: {} tris, smooth normals computed", tris.len());
+
+    let cy = 0.90; // hip-level center
+    let d = 2.2;   // camera distance
+
+    // Sheet 1: Flat (eye-level) — front, right side, back, left side
+    let flat_views: Vec<([f32; 3], [f32; 3], &str)> = vec![
+        ([0.0, cy, -d],  [0.0, cy, 0.0], "Front"),
+        ([d, cy, 0.0],   [0.0, cy, 0.0], "Right"),
+        ([0.0, cy, d],   [0.0, cy, 0.0], "Back"),
+        ([-d, cy, 0.0],  [0.0, cy, 0.0], "Left"),
+    ];
+    let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vertex_normals, &flat_views, "Player Flat");
+    save_png(&img, iw, ih, "debug/model_player_flat.png");
+
+    // Sheet 2: Diagonal (3/4 elevated ~35°) — front-right, back-right, back-left, front-left
+    let elev = 0.7; // camera raised above center
+    let dd = d * 0.707; // diagonal distance component (d/sqrt(2))
+    let diag_views: Vec<([f32; 3], [f32; 3], &str)> = vec![
+        ([dd, cy + elev, -dd],  [0.0, cy, 0.0], "3/4 Front-R"),
+        ([dd, cy + elev, dd],   [0.0, cy, 0.0], "3/4 Back-R"),
+        ([-dd, cy + elev, dd],  [0.0, cy, 0.0], "3/4 Back-L"),
+        ([-dd, cy + elev, -dd], [0.0, cy, 0.0], "3/4 Front-L"),
+    ];
+    let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vertex_normals, &diag_views, "Player Diagonal");
+    save_png(&img, iw, ih, "debug/model_player_diagonal.png");
+
+    // Sheet 3: Vertical (overhead ~65°) — 4 cardinal directions looking down
+    let high = 1.8; // camera well above
+    let vd = 1.2;   // closer horizontal distance (steep angle)
+    let vert_views: Vec<([f32; 3], [f32; 3], &str)> = vec![
+        ([0.0, cy + high, -vd],  [0.0, cy, 0.0], "Top Front"),
+        ([vd, cy + high, 0.0],   [0.0, cy, 0.0], "Top Right"),
+        ([0.0, cy + high, vd],   [0.0, cy, 0.0], "Top Back"),
+        ([-vd, cy + high, 0.0],  [0.0, cy, 0.0], "Top Left"),
+    ];
+    let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vertex_normals, &vert_views, "Player Vertical");
+    save_png(&img, iw, ih, "debug/model_player_vertical.png");
 
     let vehicle = make_vehicle(0xFFCC3333);
     tris.clear();
