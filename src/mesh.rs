@@ -1401,3 +1401,68 @@ pub fn ring_tris(
         }
     }
 }
+
+// ── Loft (cross-section skinning) ─────────────────────────────────────────
+
+/// Loft: create a smooth surface by connecting cross-section rings at different Y heights.
+/// Each ring has N (x, z) points forming a closed contour (counterclockwise from above).
+/// All rings must have the same point count. Rings listed bottom to top.
+/// Top and bottom are capped with triangle fans.
+pub fn loft_y_tris(
+    tris: &mut Vec<WorldTri>,
+    rings: &[(f32, Vec<[f32; 2]>, u32)], // (y_height, [(x, z)], color)
+) {
+    if rings.len() < 2 { return; }
+    let n = rings[0].1.len();
+
+    // Connect adjacent rings with quads
+    for hi in 0..rings.len() - 1 {
+        let y0 = rings[hi].0;
+        let pts0 = &rings[hi].1;
+        let col = rings[hi].2;
+        let y1 = rings[hi + 1].0;
+        let pts1 = &rings[hi + 1].1;
+
+        for pi in 0..n {
+            let pn = (pi + 1) % n;
+            let a = [pts0[pi][0], y0, pts0[pi][1]];
+            let b = [pts1[pi][0], y1, pts1[pi][1]];
+            let c = [pts1[pn][0], y1, pts1[pn][1]];
+            let d = [pts0[pn][0], y0, pts0[pn][1]];
+            push_quad(tris, a, b, c, d, col);
+        }
+    }
+
+    // Bottom cap (triangle fan)
+    {
+        let yb = rings[0].0;
+        let bpts = &rings[0].1;
+        let bcol = rings[0].2;
+        let bcx: f32 = bpts.iter().map(|p| p[0]).sum::<f32>() / n as f32;
+        let bcz: f32 = bpts.iter().map(|p| p[1]).sum::<f32>() / n as f32;
+        let bc = [bcx, yb, bcz];
+        for pi in 0..n {
+            let pn = (pi + 1) % n;
+            let a = [bpts[pi][0], yb, bpts[pi][1]];
+            let b = [bpts[pn][0], yb, bpts[pn][1]];
+            tris.push(WorldTri { v: [bc, b, a], normal: [0.0, -1.0, 0.0], color: bcol });
+        }
+    }
+
+    // Top cap (triangle fan)
+    {
+        let last = rings.last().unwrap();
+        let yt = last.0;
+        let tpts = &last.1;
+        let tcol = last.2;
+        let tcx: f32 = tpts.iter().map(|p| p[0]).sum::<f32>() / n as f32;
+        let tcz: f32 = tpts.iter().map(|p| p[1]).sum::<f32>() / n as f32;
+        let tc = [tcx, yt, tcz];
+        for pi in 0..n {
+            let pn = (pi + 1) % n;
+            let a = [tpts[pi][0], yt, tpts[pi][1]];
+            let b = [tpts[pn][0], yt, tpts[pn][1]];
+            tris.push(WorldTri { v: [tc, a, b], normal: [0.0, 1.0, 0.0], color: tcol });
+        }
+    }
+}
