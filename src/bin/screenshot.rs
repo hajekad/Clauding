@@ -8,7 +8,7 @@
 //   cargo run --release --bin screenshot -- --grid           # 4x4 grid of viewpoints
 //   cargo run --release --bin screenshot -- --pos 0 2 0 --look 0 2 -10  # street level
 //
-// Output: /tmp/clauding_screenshot*.png
+// Output: debug/screenshot*.png
 
 use clauding::{state, world, render, raster, math, gpu, neat};
 
@@ -141,6 +141,7 @@ fn render_screenshot(
 }
 
 fn main() {
+    let _ = std::fs::create_dir_all("debug");
     let args: Vec<String> = std::env::args().collect();
 
     // Parse mode
@@ -267,7 +268,7 @@ fn main() {
 
             let cam = CameraSpec { pos, look };
             render_screenshot(&mut ctx, &game, &cam, time_of_day, &mut fb, &mut dynamic_verts, &mut render_scratch);
-            save_png(&fb.pixels, W, H, "/tmp/clauding_screenshot.png");
+            save_png(&fb.pixels, W, H, "debug/screenshot.png");
         }
         "orbit" => {
             for i in 0..orbit_count {
@@ -282,7 +283,7 @@ fn main() {
 
                 let cam = CameraSpec { pos, look };
                 render_screenshot(&mut ctx, &game, &cam, time_of_day, &mut fb, &mut dynamic_verts, &mut render_scratch);
-                save_png(&fb.pixels, W, H, &format!("/tmp/clauding_screenshot_{:02}.png", i));
+                save_png(&fb.pixels, W, H, &format!("debug/screenshot_{:02}.png", i));
             }
         }
         "grid" => {
@@ -318,7 +319,7 @@ fn main() {
 
                 let cam = CameraSpec { pos: *pos, look: *look };
                 render_screenshot(&mut ctx, &game, &cam, t, &mut fb, &mut dynamic_verts, &mut render_scratch);
-                save_png(&fb.pixels, W, H, &format!("/tmp/clauding_screenshot_{}.png", name));
+                save_png(&fb.pixels, W, H, &format!("debug/screenshot_{}.png", name));
             }
         }
         _ => {
@@ -334,7 +335,7 @@ fn main() {
 
                 let cam = CameraSpec { pos: *pos, look: *look };
                 render_screenshot(&mut ctx, &game, &cam, time_of_day, &mut fb, &mut dynamic_verts, &mut render_scratch);
-                save_png(&fb.pixels, W, H, &format!("/tmp/clauding_screenshot_{}.png", name));
+                save_png(&fb.pixels, W, H, &format!("debug/screenshot_{}.png", name));
             }
         }
     }

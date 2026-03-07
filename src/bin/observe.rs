@@ -8,6 +8,7 @@ use std::fmt::Write;
 const FIXED_DT: f32 = 1.0 / 30.0; // moderate timestep for accuracy
 
 fn main() {
+    let _ = std::fs::create_dir_all("debug");
     let args: Vec<String> = std::env::args().collect();
     let seed: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(42);
     let max_days: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2);
@@ -284,7 +285,7 @@ fn main() {
     let _ = writeln!(out, "\n--- VEHICLE ACTIVITY ---");
     let _ = writeln!(out, "  Active (AI/occupied): {}  Moving: {}  Parked: {}", active_vehicles, moving_vehicles, parked_vehicles);
 
-    let path = "/tmp/clauding_observe.txt";
+    let path = "debug/observe.txt";
     std::fs::write(path, &out).unwrap();
     eprintln!("Wrote {} bytes to {}", out.len(), path);
 }

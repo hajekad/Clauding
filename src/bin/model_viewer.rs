@@ -1,6 +1,6 @@
 // Model viewer: renders each entity type from 4 orthographic views
 // Usage: cargo run --bin model_viewer
-// Output: /tmp/clauding_models_*.png
+// Output: debug/model_*.png
 
 use clauding::{state, render, raster, math, mesh};
 use clauding::rng::Rng;
@@ -753,6 +753,7 @@ fn gen_warehouse(tris: &mut Vec<state::WorldTri>) {
 }
 
 fn main() {
+    let _ = std::fs::create_dir_all("debug");
     let mut tris: Vec<state::WorldTri> = Vec::with_capacity(8192);
 
     // ── Dynamic entities ──
@@ -760,144 +761,144 @@ fn main() {
     tris.clear();
     render::gen_player_mesh(&player, &mut tris);
     let img = render_model_sheet(&tris, 0.7, 3.5, "Player");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_player.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_player.png");
 
     let vehicle = make_vehicle(0xFFCC3333);
     tris.clear();
     render::gen_vehicle_mesh(&vehicle, &mut tris, false);
     let img = render_model_sheet(&tris, 0.7, 7.0, "Vehicle");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_vehicle.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_vehicle.png");
 
     let vehicle_interior = make_vehicle(0xFF3333CC);
     tris.clear();
     render::gen_vehicle_mesh(&vehicle_interior, &mut tris, true);
     let img = render_model_sheet(&tris, 0.7, 7.0, "Vehicle Interior");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_vehicle_int.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_vehicle_int.png");
 
     let npc = make_npc(state::NpcJob::Collector);
     tris.clear();
     render::gen_npc_mesh(&npc, &mut tris);
     let img = render_model_sheet(&tris, 0.7, 3.5, "NPC Collector");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_npc.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_npc.png");
 
     let bin = make_trash_bin();
     tris.clear();
     render::gen_trash_bin_mesh(&bin, &mut tris);
     let img = render_model_sheet(&tris, 0.4, 2.5, "Trash Bin");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_trashbin.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_trashbin.png");
 
     // ── World objects ──
     tris.clear(); gen_building(&mut tris);
     let img = render_model_sheet(&tris, 5.0, 20.0, "Building Pitched");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_building.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_building.png");
 
     tris.clear(); gen_building_flat_roof(&mut tris);
     let img = render_model_sheet(&tris, 4.0, 18.0, "Building Flat");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_building_flat.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_building_flat.png");
 
     tris.clear(); gen_building_hip_roof(&mut tris);
     let img = render_model_sheet(&tris, 6.0, 22.0, "Building Hip");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_building_hip.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_building_hip.png");
 
     tris.clear(); gen_bridge(&mut tris);
     let img = render_model_sheet(&tris, 2.0, 28.0, "Bridge");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_bridge.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_bridge.png");
 
     tris.clear(); gen_suburb_house(&mut tris);
     let img = render_model_sheet(&tris, 1.5, 12.0, "Suburb House");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_suburb.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_suburb.png");
 
     tris.clear(); gen_market_stall(&mut tris);
     let img = render_model_sheet(&tris, 1.5, 8.0, "Market Stall");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_stall.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_stall.png");
 
     tris.clear(); gen_bus_stop(&mut tris);
     let img = render_model_sheet(&tris, 1.5, 8.0, "Bus Stop");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_busstop.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_busstop.png");
 
     tris.clear(); gen_vending_machine(&mut tris);
     let img = render_model_sheet(&tris, 0.75, 3.5, "Vending Machine");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_vending.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_vending.png");
 
     tris.clear(); gen_phone_booth(&mut tris);
     let img = render_model_sheet(&tris, 1.1, 5.0, "Phone Booth");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_phonebooth.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_phonebooth.png");
 
     tris.clear(); gen_fire_hydrant(&mut tris);
     let img = render_model_sheet(&tris, 0.3, 1.5, "Fire Hydrant");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_hydrant.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_hydrant.png");
 
     tris.clear(); gen_picnic_table(&mut tris);
     let img = render_model_sheet(&tris, 0.5, 4.0, "Picnic Table");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_picnic.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_picnic.png");
 
     tris.clear(); gen_water_tower(&mut tris);
     let img = render_model_sheet(&tris, 3.0, 12.0, "Water Tower");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_watertower.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_watertower.png");
 
     tris.clear(); gen_billboard(&mut tris);
     let img = render_model_sheet(&tris, 3.0, 12.0, "Billboard");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_billboard.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_billboard.png");
 
     tris.clear(); gen_tree(&mut tris);
     let img = render_model_sheet(&tris, 2.0, 8.0, "Tree");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_tree.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_tree.png");
 
     tris.clear(); gen_wave_surface(&mut tris);
     let img = render_model_sheet(&tris, 0.5, 14.0, "Wave Surface");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_wave.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_wave.png");
 
     tris.clear(); gen_dumpster(&mut tris);
     let img = render_model_sheet(&tris, 0.5, 3.5, "Dumpster");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_dumpster.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_dumpster.png");
 
     tris.clear(); gen_street_light(&mut tris);
     let img = render_model_sheet(&tris, 2.0, 8.0, "Street Light");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_streetlight.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_streetlight.png");
 
     tris.clear(); gen_crane(&mut tris);
     let img = render_model_sheet(&tris, 7.0, 25.0, "Crane");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_crane.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_crane.png");
 
     tris.clear(); gen_warehouse(&mut tris);
     let img = render_model_sheet(&tris, 3.0, 18.0, "Warehouse");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_warehouse.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_warehouse.png");
 
     // ── Primitives ──
     tris.clear();
     mesh::cylinder_tris(&mut tris, 0.0, 0.5, 0.0, 0.3, 1.0, 8, 0xFF3388CC);
     let img = render_model_sheet(&tris, 0.5, 3.0, "Cylinder");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_cylinder.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_cylinder.png");
 
     tris.clear();
     mesh::sphere_tris(&mut tris, 0.0, 0.5, 0.0, 0.5, 2, 0xFFCC4433);
     let img = render_model_sheet(&tris, 0.5, 2.5, "Sphere");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_sphere.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_sphere.png");
 
     tris.clear();
     mesh::beveled_box_tris(&mut tris, 0.0, 0.5, 0.0, 1.0, 1.0, 1.0, 0.1, 0xFF44AA44);
     let img = render_model_sheet(&tris, 0.5, 3.0, "Beveled Box");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_bevelbox.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_bevelbox.png");
 
     tris.clear();
     mesh::cone_tris(&mut tris, 0.0, 0.0, 0.0, 0.4, 1.0, 8, 0xFFCC8833);
     let img = render_model_sheet(&tris, 0.5, 3.0, "Cone");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_cone.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_cone.png");
 
     tris.clear();
     mesh::box_tris(&mut tris, 0.0, 0.5, 0.0, 1.0, 1.0, 1.0, 0xFF5577AA);
     let img = render_model_sheet(&tris, 0.5, 3.0, "Box");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_box.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_box.png");
 
     tris.clear();
     mesh::pitched_roof_tris(&mut tris, 0.0, 0.0, 0.0, 4.0, 3.0, 1.5, 0xFF885544);
     let img = render_model_sheet(&tris, 1.0, 8.0, "Pitched Roof");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_pitchedroof.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_pitchedroof.png");
 
     tris.clear();
     mesh::hip_roof_tris(&mut tris, 0.0, 0.0, 0.0, 4.0, 3.0, 1.5, 0xFF885544);
     let img = render_model_sheet(&tris, 1.0, 8.0, "Hip Roof");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_hiproof.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_hiproof.png");
 
     tris.clear();
     let profile: [[f32;2]; 6] = [
@@ -906,7 +907,7 @@ fn main() {
     ];
     mesh::lathe_tris(&mut tris, 0.0, 0.0, 0.0, &profile, 8, 0xFFCC6644);
     let img = render_model_sheet(&tris, 0.5, 3.0, "Lathe");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_lathe.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_lathe.png");
 
     // Wall with holes standalone test
     tris.clear();
@@ -919,13 +920,13 @@ fn main() {
     mesh::wall_with_holes_tris(&mut tris, -2.5, 0.0, 0.0, 5.0, 6.0, &holes, 0.15,
         0xFF887766, 0xFF222244, 1.0, 1.0, false);
     let img = render_model_sheet(&tris, 3.0, 10.0, "Wall Holes Z+");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_wallholes.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_wallholes.png");
 
     tris.clear();
     mesh::wall_with_holes_tris(&mut tris, 2.5, 0.0, 0.0, 5.0, 6.0, &holes, 0.15,
         0xFF887766, 0xFF222244, -1.0, -1.0, false);
     let img = render_model_sheet(&tris, 3.0, 10.0, "Wall Holes Z-");
-    save_png(&img, IMG_W, IMG_H, "/tmp/clauding_model_wallholes_back.png");
+    save_png(&img, IMG_W, IMG_H, "debug/model_wallholes_back.png");
 
-    eprintln!("All model sheets saved to /tmp/clauding_model_*.png");
+    eprintln!("All model sheets saved to debug/model_*.png");
 }

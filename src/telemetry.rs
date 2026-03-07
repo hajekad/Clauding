@@ -226,7 +226,8 @@ pub fn sys_telemetry(game: &GameState) {
     let _ = writeln!(s, "communication: vocalizing_now={} sound_ticks_today={} heard_ticks_today={}",
         vocalizing_now, sound_ticks_today, heard_ticks_today);
 
-    let _ = std::fs::write("/tmp/clauding_state.txt", s);
+    let _ = std::fs::create_dir_all("debug");
+    let _ = std::fs::write("debug/state.txt", s);
 }
 
 fn world_to_grid(x: f32, z: f32) -> (usize, usize) {

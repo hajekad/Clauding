@@ -96,6 +96,7 @@ fn draw_cross(buf: &mut [u8], wx: f32, wz: f32, size: i32, r: u8, g: u8, b: u8) 
 }
 
 fn main() {
+    let _ = std::fs::create_dir_all("debug");
     let args: Vec<String> = std::env::args().collect();
     let seed: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(42);
     let sim_hours: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(14.0);
@@ -302,7 +303,7 @@ fn main() {
     }
 
     // Write PPM
-    let path = "/tmp/clauding_map.ppm";
+    let path = "debug/map.ppm";
     let mut ppm = Vec::with_capacity(IMG_SIZE * IMG_SIZE * 3 + 50);
     ppm.extend_from_slice(format!("P6\n{} {}\n255\n", IMG_SIZE, IMG_SIZE).as_bytes());
     ppm.extend_from_slice(&buf);
@@ -398,7 +399,7 @@ fn main() {
         }
     }
 
-    let path2 = "/tmp/clauding_map_collision.ppm";
+    let path2 = "debug/map_collision.ppm";
     let mut ppm2 = Vec::with_capacity(IMG_SIZE * IMG_SIZE * 3 + 50);
     ppm2.extend_from_slice(format!("P6\n{} {}\n255\n", IMG_SIZE, IMG_SIZE).as_bytes());
     ppm2.extend_from_slice(&cbuf);

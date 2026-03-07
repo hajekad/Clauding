@@ -9,6 +9,7 @@ const MAP_W: usize = 120;
 const MAP_H: usize = 60;
 
 fn main() {
+    let _ = std::fs::create_dir_all("debug");
     let args: Vec<String> = std::env::args().collect();
     let seed: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(42);
 
@@ -35,7 +36,7 @@ fn main() {
     // ---- Parking lot details ----
     dump_parking_details(&game, &mut out);
 
-    let path = "/tmp/clauding_inspect.txt";
+    let path = "debug/inspect.txt";
     std::fs::write(path, &out).unwrap();
     eprintln!("Wrote {} bytes to {}", out.len(), path);
 }

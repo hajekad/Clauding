@@ -546,21 +546,25 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
 
 /// Generate the anatomical neck with musculature — thicker, more visible muscles
 fn gen_neck(tris: &mut Vec<WorldTri>, skin: u32) {
-    // Base neck — thicker tapered cylinder
-    mesh::tapered_cylinder_tris(tris, 0.0, 1.49, 0.0, 0.08, 0.07, 0.14, 10, skin);
+    // Base neck — thick, muscular (proportional to wide shoulders)
+    mesh::tapered_cylinder_tris(tris, 0.0, 1.49, 0.0, 0.10, 0.085, 0.14, 10, skin);
     // Sternocleidomastoid muscles (prominent diagonal ridges, neck to collarbone)
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.05, 1.47, -0.03, 0.022, 0.07, 0.018, 0, darken(skin, 0.94));
+        mesh::ellipsoid_tris(tris, side * 0.06, 1.47, -0.04, 0.028, 0.08, 0.022, 0, darken(skin, 0.93));
     }
-    // Laryngeal prominence (Adam's apple — slightly more prominent)
-    mesh::sphere_tris(tris, 0.0, 1.48, -0.075, 0.022, 0, darken(skin, 0.96));
-    // Trapezius muscle base (wider, back/sides of neck)
-    mesh::ellipsoid_tris(tris, 0.0, 1.44, 0.05, 0.10, 0.06, 0.05, 0, darken(skin, 0.95));
+    // Laryngeal prominence (Adam's apple)
+    mesh::sphere_tris(tris, 0.0, 1.48, -0.09, 0.024, 0, darken(skin, 0.96));
+    // Trapezius muscle base (wide, creates thick neck-to-shoulder slope)
+    mesh::ellipsoid_tris(tris, 0.0, 1.44, 0.06, 0.14, 0.08, 0.07, 0, darken(skin, 0.95));
     // Suprasternal notch (hollow at base of throat)
-    mesh::sphere_tris(tris, 0.0, 1.43, -0.065, 0.014, 0, darken(skin, 0.72));
+    mesh::sphere_tris(tris, 0.0, 1.43, -0.08, 0.016, 0, darken(skin, 0.72));
     // Platysma muscle (thin sheet visible at sides)
     for &side in &[-1.0f32, 1.0] {
-        push_box(tris, side * 0.065, 1.44, -0.04, 0.015, 0.04, 0.01, darken(skin, 0.92));
+        push_box(tris, side * 0.07, 1.44, -0.05, 0.018, 0.05, 0.012, darken(skin, 0.92));
+    }
+    // Neck-to-trap slope (fills the visual gap between neck and shoulders)
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.16, 1.44, 0.02, 0.10, 0.04, 0.06, 0, darken(skin, 0.95));
     }
 }
 
@@ -1502,244 +1506,325 @@ fn gen_seated_body(
 // base skeletal forms. Skin-colored throughout — no clothing.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Nude male torso — full musculoskeletal anatomy visible through skin
+/// Nude male torso — reference-accurate proportions from anatomy sculpture
+/// Shoulders ~3x head width, massive pecs, aggressive V-taper, thick back muscles
 fn gen_nude_torso(tris: &mut Vec<WorldTri>, skin: u32) {
     let sk = skin;
-    let sk_dk = darken(sk, 0.94);
-    let sk_shadow = darken(sk, 0.87);
-    let sk_deep = darken(sk, 0.78);
-    let sk_lt = darken(sk, 1.05);
-    let nipple_col = darken(sk, 0.70);
+    let sk_dk = darken(sk, 0.96);
+    let sk_shadow = darken(sk, 0.90);
+    let sk_deep = darken(sk, 0.80);
+    let sk_lt = darken(sk, 1.03);
+    let nipple_col = darken(sk, 0.68);
 
-    // ── BASE FORMS — ribcage + abdomen + pelvis ──
-    mesh::ellipsoid_tris(tris, 0.0, 1.25, 0.0, 0.22, 0.19, 0.15, 1, sk);
-    mesh::ellipsoid_tris(tris, 0.0, 1.02, 0.0, 0.17, 0.14, 0.13, 1, sk);
-    mesh::ellipsoid_tris(tris, 0.0, 0.88, 0.0, 0.20, 0.08, 0.15, 0, sk);
-
-    // ── CLAVICLES — S-curved ridges from sternum to shoulders ──
+    // ── BASE FORMS — wider ribcage, deeper front-to-back ──
+    // Ribcage — wide barrel, projects forward (high subdiv for smooth surface)
+    mesh::ellipsoid_tris(tris, 0.0, 1.26, -0.01, 0.26, 0.21, 0.18, 2, sk);
+    // Abdomen — narrower waist for V-taper
+    mesh::ellipsoid_tris(tris, 0.0, 1.02, 0.0, 0.20, 0.16, 0.15, 2, sk);
+    // Waist bridge (fills gap between abdomen and pelvis — wide overlap)
+    mesh::ellipsoid_tris(tris, 0.0, 0.94, 0.0, 0.22, 0.12, 0.16, 1, sk);
+    // Pelvis — wide, continuous with hip sockets
+    mesh::ellipsoid_tris(tris, 0.0, 0.87, 0.0, 0.24, 0.14, 0.18, 2, sk);
+    // Hip-to-thigh transition (bridges pelvis to leg tops — smooth taper)
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.10, 1.42, -0.06, 0.12, 0.013, 0.016, 0, sk_lt);
-        mesh::ellipsoid_tris(tris, side * 0.20, 1.41, -0.03, 0.06, 0.011, 0.016, 0, sk_lt);
+        mesh::ellipsoid_tris(tris, side * 0.12, 0.84, 0.0, 0.10, 0.08, 0.10, 1, sk);
     }
+    // Groin front fill (prevents visible gap at front between legs)
+    mesh::ellipsoid_tris(tris, 0.0, 0.84, -0.08, 0.12, 0.08, 0.08, 1, sk);
+    // Groin back fill
+    mesh::ellipsoid_tris(tris, 0.0, 0.84, 0.06, 0.10, 0.06, 0.06, 0, sk);
+    // Inner groin (perineum area — fills gap between upper thighs)
+    mesh::ellipsoid_tris(tris, 0.0, 0.82, 0.0, 0.06, 0.04, 0.08, 0, sk);
+    // Pubic mound
+    mesh::ellipsoid_tris(tris, 0.0, 0.86, -0.14, 0.08, 0.04, 0.04, 0, sk_dk);
+    // Shoulder-to-torso bridge (armpit area — smooth transition to deltoids)
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.24, 1.36, 0.0, 0.08, 0.08, 0.10, 1, sk);
+        // Lower armpit fill (lat-to-arm transition)
+        mesh::ellipsoid_tris(tris, side * 0.22, 1.30, 0.0, 0.06, 0.06, 0.08, 0, sk);
+    }
+
+    // ── CLAVICLES — wide S-curves defining shoulder width ──
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.10, 1.43, -0.07, 0.14, 0.015, 0.018, 0, sk_lt);
+        mesh::ellipsoid_tris(tris, side * 0.22, 1.42, -0.04, 0.08, 0.013, 0.018, 0, sk_lt);
+    }
+    // Sternal notch depression
+    mesh::sphere_tris(tris, 0.0, 1.44, -0.09, 0.015, 0, sk_deep);
 
     // ── STERNUM ──
-    push_box(tris, 0.0, 1.32, -0.12, 0.016, 0.12, 0.008, sk_dk);
-    // Xiphoid process
-    push_box(tris, 0.0, 1.18, -0.11, 0.008, 0.02, 0.006, sk_dk);
+    push_box(tris, 0.0, 1.33, -0.14, 0.018, 0.14, 0.010, sk_dk);
+    push_box(tris, 0.0, 1.18, -0.13, 0.010, 0.02, 0.008, sk_dk);
 
-    // ── PECTORALIS MAJOR — fan-shaped chest muscles ──
+    // ── PECTORALIS MAJOR — MASSIVE chest slabs (reference-accurate) ──
     for &side in &[-1.0f32, 1.0] {
-        // Main pec mass
-        mesh::ellipsoid_tris(tris, side * 0.09, 1.28, -0.12, 0.10, 0.07, 0.06, 1, sk);
-        // Clavicular head (upper)
-        mesh::ellipsoid_tris(tris, side * 0.10, 1.35, -0.10, 0.08, 0.03, 0.05, 0, sk_dk);
-        // Sternal head (lower, larger)
-        mesh::ellipsoid_tris(tris, side * 0.09, 1.24, -0.13, 0.09, 0.04, 0.05, 0, sk);
-        // Pec lower border (sharp edge)
-        mesh::ellipsoid_tris(tris, side * 0.10, 1.21, -0.10, 0.09, 0.008, 0.04, 0, sk_shadow);
-        // Areola + nipple
-        mesh::sphere_tris(tris, side * 0.10, 1.25, -0.158, 0.018, 0, darken(sk, 0.80));
-        mesh::sphere_tris(tris, side * 0.10, 1.25, -0.165, 0.008, 0, nipple_col);
+        // Main pec mass — huge, dominates upper chest
+        mesh::ellipsoid_tris(tris, side * 0.10, 1.29, -0.14, 0.14, 0.08, 0.08, 1, sk);
+        // Clavicular head (upper pec shelf under collarbone)
+        mesh::ellipsoid_tris(tris, side * 0.12, 1.37, -0.12, 0.10, 0.04, 0.06, 0, sk_dk);
+        // Sternal head (lower, massive)
+        mesh::ellipsoid_tris(tris, side * 0.10, 1.24, -0.15, 0.12, 0.05, 0.07, 1, sk);
+        // Pec insertion (converges toward armpit)
+        mesh::ellipsoid_tris(tris, side * 0.20, 1.32, -0.08, 0.06, 0.04, 0.05, 0, sk_dk);
+        // Lower pec border (sharp defined line)
+        mesh::ellipsoid_tris(tris, side * 0.11, 1.20, -0.11, 0.11, 0.010, 0.05, 0, sk_shadow);
+        // Pec gap (dark cleft between pecs)
+        push_box(tris, 0.0, 1.30, -0.16, 0.008, 0.10, 0.005, sk_shadow);
+        // Areola + nipple (on pec surface)
+        mesh::sphere_tris(tris, side * 0.11, 1.26, -0.20, 0.020, 0, darken(sk, 0.78));
+        mesh::sphere_tris(tris, side * 0.11, 1.26, -0.21, 0.010, 0, nipple_col);
     }
 
-    // ── RECTUS ABDOMINIS — 6-pack ──
-    // Linea alba (midline)
-    push_box(tris, 0.0, 1.08, -0.135, 0.005, 0.18, 0.005, sk_shadow);
-    // Tendinous intersections
+    // ── RECTUS ABDOMINIS — defined 6-pack with wider bellies ──
+    // Linea alba (deep midline groove)
+    push_box(tris, 0.0, 1.08, -0.16, 0.006, 0.20, 0.006, sk_shadow);
+    // Tendinous intersections (horizontal groove lines)
     for row in 0..3 {
-        let ry = 1.17 - row as f32 * 0.065;
-        push_box(tris, 0.0, ry, -0.135, 0.08, 0.003, 0.005, sk_shadow);
+        let ry = 1.18 - row as f32 * 0.07;
+        push_box(tris, 0.0, ry, -0.16, 0.10, 0.004, 0.006, sk_shadow);
     }
-    // Six muscle bellies
+    // Eight muscle bellies (4 per side for 8-pack)
     for &side in &[-1.0f32, 1.0] {
-        for row in 0..3 {
-            let ry = 1.17 - row as f32 * 0.065;
-            let rw = 0.035 - row as f32 * 0.003;
-            mesh::ellipsoid_tris(tris, side * 0.04, ry, -0.13, rw, 0.028, 0.025, 0, sk);
+        for row in 0..4 {
+            let ry = 1.18 - row as f32 * 0.07;
+            let rw = 0.042 - row as f32 * 0.003;
+            let rd = 0.030 - row as f32 * 0.002;
+            mesh::ellipsoid_tris(tris, side * 0.045, ry, -0.15, rw, 0.030, rd, 0, sk);
         }
     }
 
     // ── NAVEL ──
-    mesh::sphere_tris(tris, 0.0, 0.98, -0.14, 0.012, 0, sk_deep);
-    mesh::sphere_tris(tris, 0.0, 0.98, -0.135, 0.017, 0, sk_shadow);
+    mesh::sphere_tris(tris, 0.0, 0.97, -0.17, 0.013, 0, sk_deep);
+    mesh::sphere_tris(tris, 0.0, 0.97, -0.16, 0.019, 0, sk_shadow);
 
-    // ── EXTERNAL OBLIQUES ──
+    // ── EXTERNAL OBLIQUES — thick side muscles creating V-taper ──
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.15, 1.12, -0.06, 0.05, 0.12, 0.06, 0, sk_dk);
-        // V-line / Adonis belt
-        mesh::ellipsoid_tris(tris, side * 0.10, 0.95, -0.10, 0.06, 0.04, 0.03, 0, sk_shadow);
+        // Main oblique mass
+        mesh::ellipsoid_tris(tris, side * 0.17, 1.12, -0.06, 0.06, 0.14, 0.08, 0, sk_dk);
+        // Lower oblique (feeds into V-line)
+        mesh::ellipsoid_tris(tris, side * 0.14, 1.00, -0.07, 0.05, 0.08, 0.06, 0, sk_dk);
+        // V-line / inguinal ligament (Adonis belt)
+        mesh::ellipsoid_tris(tris, side * 0.11, 0.93, -0.11, 0.08, 0.05, 0.04, 0, sk_shadow);
     }
 
-    // ── SERRATUS ANTERIOR — rib-side finger muscles ──
+    // ── SERRATUS ANTERIOR — prominent finger-like ribs ──
     for &side in &[-1.0f32, 1.0] {
-        for fi in 0..4 {
-            let sy = 1.22 - fi as f32 * 0.035;
-            mesh::ellipsoid_tris(tris, side * 0.19, sy, -0.04, 0.025, 0.014, 0.02, 0, sk_dk);
+        for fi in 0..5 {
+            let sy = 1.24 - fi as f32 * 0.035;
+            let sz = -0.05 + fi as f32 * 0.005;
+            mesh::ellipsoid_tris(tris, side * 0.22, sy, sz, 0.030, 0.016, 0.025, 0, sk_dk);
         }
     }
 
-    // ── ILIAC CREST — hip bone ridges ──
+    // ── ILIAC CREST — prominent hip bones ──
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.15, 0.92, -0.04, 0.06, 0.015, 0.04, 0, sk_lt);
-        // ASIS bony point
-        mesh::sphere_tris(tris, side * 0.17, 0.90, -0.08, 0.012, 0, sk_lt);
+        mesh::ellipsoid_tris(tris, side * 0.17, 0.91, -0.04, 0.07, 0.018, 0.05, 0, sk_lt);
+        mesh::sphere_tris(tris, side * 0.19, 0.89, -0.09, 0.014, 0, sk_lt);
     }
 
     // ── LOWER ABDOMEN ──
-    mesh::ellipsoid_tris(tris, 0.0, 0.93, -0.10, 0.12, 0.06, 0.06, 0, sk);
+    mesh::ellipsoid_tris(tris, 0.0, 0.92, -0.11, 0.14, 0.07, 0.07, 0, sk);
 
-    // ── BACK — trapezius, lats, erectors, scapulae ──
-    // Upper trapezius
-    mesh::ellipsoid_tris(tris, 0.0, 1.38, 0.08, 0.20, 0.08, 0.08, 1, sk_dk);
-    // Lower trapezius
-    mesh::ellipsoid_tris(tris, 0.0, 1.22, 0.10, 0.14, 0.10, 0.06, 0, sk_dk);
-    // Latissimus dorsi (V-taper)
+    // ── BACK — MASSIVE musculature (reference-accurate) ──
+    // Upper trapezius (thick, from neck to shoulder tips) — HUGE diamond
+    mesh::ellipsoid_tris(tris, 0.0, 1.40, 0.09, 0.26, 0.10, 0.10, 1, sk_dk);
+    // Mid trapezius (between scapulae)
+    mesh::ellipsoid_tris(tris, 0.0, 1.28, 0.12, 0.18, 0.08, 0.06, 0, sk_dk);
+    // Lower trapezius (descending to mid-back)
+    mesh::ellipsoid_tris(tris, 0.0, 1.16, 0.12, 0.12, 0.10, 0.05, 0, sk_dk);
+
+    // Latissimus dorsi — WIDE V-taper wings (biggest change)
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.16, 1.18, 0.06, 0.06, 0.16, 0.06, 0, sk_dk);
-        mesh::ellipsoid_tris(tris, side * 0.20, 1.30, 0.02, 0.04, 0.06, 0.05, 0, sk_dk);
+        // Main lat body (extends from armpit to lower back)
+        mesh::ellipsoid_tris(tris, side * 0.18, 1.16, 0.07, 0.08, 0.20, 0.08, 1, sk_dk);
+        // Lat lateral flare (creates visible width from front)
+        mesh::ellipsoid_tris(tris, side * 0.24, 1.22, 0.03, 0.05, 0.10, 0.06, 0, sk_dk);
+        // Lat insertion near armpit/humerus
+        mesh::ellipsoid_tris(tris, side * 0.22, 1.34, 0.02, 0.05, 0.06, 0.06, 0, sk_dk);
     }
-    // Erector spinae (two ridges)
+
+    // Erector spinae (thick vertical columns flanking spine)
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.04, 1.15, 0.12, 0.025, 0.22, 0.03, 0, sk);
+        mesh::ellipsoid_tris(tris, side * 0.05, 1.14, 0.14, 0.030, 0.24, 0.04, 0, sk);
     }
-    // Spinal furrow
-    push_box(tris, 0.0, 1.15, 0.12, 0.008, 0.22, 0.005, sk_shadow);
-    // Scapulae
+    // Spinal furrow (deep groove)
+    push_box(tris, 0.0, 1.14, 0.14, 0.010, 0.26, 0.006, sk_shadow);
+
+    // Scapulae (shoulder blades — visible bony shapes)
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.10, 1.30, 0.10, 0.06, 0.08, 0.015, 0, sk);
-        mesh::ellipsoid_tris(tris, side * 0.12, 1.35, 0.10, 0.06, 0.008, 0.015, 0, sk_lt);
+        // Scapular body
+        mesh::ellipsoid_tris(tris, side * 0.12, 1.30, 0.12, 0.07, 0.10, 0.018, 0, sk);
+        // Scapular spine (horizontal ridge across blade)
+        mesh::ellipsoid_tris(tris, side * 0.14, 1.36, 0.11, 0.07, 0.010, 0.020, 0, sk_lt);
+        // Inferior angle (bottom point)
+        mesh::sphere_tris(tris, side * 0.10, 1.20, 0.12, 0.012, 0, sk_lt);
     }
-    // Infraspinatus / Teres
+
+    // Infraspinatus (fills scapular fossa)
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.12, 1.26, 0.08, 0.05, 0.04, 0.03, 0, sk_dk);
-        mesh::ellipsoid_tris(tris, side * 0.15, 1.22, 0.06, 0.03, 0.04, 0.03, 0, sk_dk);
+        mesh::ellipsoid_tris(tris, side * 0.14, 1.28, 0.10, 0.06, 0.06, 0.035, 0, sk_dk);
     }
-    // Lower back
-    mesh::ellipsoid_tris(tris, 0.0, 1.00, 0.10, 0.14, 0.10, 0.06, 0, sk);
+    // Teres major (below scapula, connects to lat)
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.18, 1.22, 0.07, 0.04, 0.05, 0.04, 0, sk_dk);
+    }
+    // Teres minor (above teres major)
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.17, 1.28, 0.08, 0.03, 0.04, 0.03, 0, sk);
+    }
+    // Rhomboids (between spine and scapulae)
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.06, 1.28, 0.12, 0.035, 0.08, 0.025, 0, sk);
+    }
+
+    // Lower back (lumbar — thick erector mass)
+    mesh::ellipsoid_tris(tris, 0.0, 0.98, 0.11, 0.16, 0.12, 0.07, 0, sk);
     // Sacral triangle
-    mesh::ellipsoid_tris(tris, 0.0, 0.90, 0.10, 0.06, 0.04, 0.02, 0, sk_shadow);
-    // Rib hints (lean build)
+    mesh::ellipsoid_tris(tris, 0.0, 0.88, 0.11, 0.08, 0.05, 0.03, 0, sk_shadow);
+    // Thoracolumbar fascia (diamond shape at lower back)
+    mesh::ellipsoid_tris(tris, 0.0, 1.00, 0.13, 0.10, 0.08, 0.015, 0, sk_lt);
+
+    // ── RIB CAGE visible through skin (lean build) ──
     for &side in &[-1.0f32, 1.0] {
-        for ri in 0..3 {
-            let ry = 1.18 - ri as f32 * 0.03;
-            mesh::ellipsoid_tris(tris, side * 0.16, ry, -0.06, 0.05, 0.004, 0.03, 0, sk_shadow);
+        for ri in 0..4 {
+            let ry = 1.20 - ri as f32 * 0.032;
+            let rz = -0.07 + ri as f32 * 0.008;
+            mesh::ellipsoid_tris(tris, side * 0.19, ry, rz, 0.06, 0.005, 0.04, 0, sk_shadow);
         }
     }
+    // Costal margin (lower rib edge — V-shape at bottom of ribcage)
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.10, 1.10, -0.12, 0.08, 0.006, 0.03, 0, sk_shadow);
+    }
 }
 
-/// Gluteal muscles
+/// Gluteal muscles — large, defined masses
 fn gen_glutes(tris: &mut Vec<WorldTri>, skin: u32) {
-    let sk_dk = darken(skin, 0.94);
+    let sk_dk = darken(skin, 0.93);
     for &side in &[-1.0f32, 1.0] {
-        // Gluteus maximus
-        mesh::ellipsoid_tris(tris, side * 0.10, 0.82, 0.08, 0.10, 0.08, 0.08, 1, skin);
-        // Gluteus medius (upper lateral)
-        mesh::ellipsoid_tris(tris, side * 0.14, 0.88, 0.05, 0.06, 0.04, 0.05, 0, sk_dk);
+        // Gluteus maximus — large rounded mass
+        mesh::ellipsoid_tris(tris, side * 0.10, 0.80, 0.10, 0.12, 0.10, 0.10, 1, skin);
+        // Gluteus medius (upper lateral — creates hip width)
+        mesh::ellipsoid_tris(tris, side * 0.16, 0.88, 0.06, 0.07, 0.05, 0.06, 0, sk_dk);
+        // Gluteus minimus (deeper, visible at side)
+        mesh::ellipsoid_tris(tris, side * 0.17, 0.85, 0.02, 0.04, 0.04, 0.04, 0, sk_dk);
     }
     // Gluteal cleft
-    push_box(tris, 0.0, 0.82, 0.10, 0.006, 0.10, 0.005, darken(skin, 0.78));
-    // Gluteal fold
+    push_box(tris, 0.0, 0.80, 0.13, 0.008, 0.12, 0.006, darken(skin, 0.75));
+    // Gluteal fold (sharp lower crease)
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.08, 0.76, 0.06, 0.08, 0.006, 0.04, 0, darken(skin, 0.85));
+        mesh::ellipsoid_tris(tris, side * 0.08, 0.73, 0.08, 0.10, 0.008, 0.06, 0, darken(skin, 0.82));
     }
+    // Sacrum/coccyx transition
+    mesh::ellipsoid_tris(tris, 0.0, 0.85, 0.13, 0.05, 0.04, 0.02, 0, darken(skin, 0.88));
 }
 
-/// Nude male arm — joint-based with deltoid, biceps, triceps, forearm muscles
+/// Nude male arm — wider shoulders, thicker muscles matching anatomy references
 fn gen_nude_arm(
     tris: &mut Vec<WorldTri>, side: f32, fwd: f32, bend: f32, skin: u32,
 ) {
     let sk = skin;
-    let sk_dk = darken(sk, 0.94);
-    let sk_shadow = darken(sk, 0.87);
-    let sk_lt = darken(sk, 1.04);
+    let sk_dk = darken(sk, 0.96);
+    let sk_shadow = darken(sk, 0.90);
+    let sk_lt = darken(sk, 1.03);
 
-    // ── JOINT POSITIONS ──
-    let shoulder = [side * 0.28, 1.42, 0.0];
-    let elbow = [side * 0.32, 1.08, fwd * 0.35];
-    let wrist = [side * 0.30, 0.82, fwd * 0.15 - bend];
+    // ── JOINT POSITIONS — wider shoulder placement ──
+    let shoulder = [side * 0.32, 1.42, 0.0];
+    let elbow = [side * 0.36, 1.06, fwd * 0.35];
+    let wrist = [side * 0.34, 0.80, fwd * 0.15 - bend];
 
-    // ── DELTOID — 3-head shoulder cap ──
-    mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2],
-        0.10, 0.08, 0.09, 1, sk);
-    // Anterior deltoid
-    mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1] - 0.04, shoulder[2] - 0.04,
-        0.06, 0.05, 0.04, 0, sk_dk);
-    // Posterior deltoid
-    mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1] - 0.04, shoulder[2] + 0.04,
-        0.05, 0.05, 0.04, 0, sk_dk);
-    // Deltoid insertion
-    let delt_ins = lerp3(shoulder, elbow, 0.35);
-    mesh::ellipsoid_tris(tris, delt_ins[0] + side * 0.02, delt_ins[1], delt_ins[2],
-        0.015, 0.03, 0.015, 0, sk_lt);
+    // ── DELTOID — MASSIVE 3-head shoulder cap (reference shows huge rounded delts) ──
+    // Lateral deltoid (main visible bulk — creates shoulder width, high subdiv)
+    mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1] - 0.02, shoulder[2],
+        0.12, 0.10, 0.10, 2, sk);
+    // Anterior deltoid (front, thick)
+    mesh::ellipsoid_tris(tris, shoulder[0] - side * 0.02, shoulder[1] - 0.05, shoulder[2] - 0.05,
+        0.07, 0.07, 0.06, 1, sk_dk);
+    // Posterior deltoid (back)
+    mesh::ellipsoid_tris(tris, shoulder[0] - side * 0.01, shoulder[1] - 0.05, shoulder[2] + 0.05,
+        0.06, 0.07, 0.06, 1, sk_dk);
+    // Deltoid insertion V (converges on lateral humerus)
+    let delt_ins = lerp3(shoulder, elbow, 0.40);
+    mesh::ellipsoid_tris(tris, delt_ins[0] + side * 0.03, delt_ins[1], delt_ins[2],
+        0.020, 0.05, 0.020, 0, sk);
+    // Armpit fill (smooth transition from arm to torso)
+    mesh::ellipsoid_tris(tris, shoulder[0] - side * 0.08, shoulder[1] - 0.10, shoulder[2],
+        0.06, 0.06, 0.06, 0, sk);
 
-    // ── UPPER ARM (shoulder → elbow) ──
-    mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.085, 0.060, 10, sk);
-    // Biceps brachii
+    // ── UPPER ARM (shoulder → elbow) — thick, smooth ──
+    mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.10, 0.070, 12, sk);
+    // Biceps brachii (large anterior mass — smooth)
     let bicep = lerp3(shoulder, elbow, 0.42);
-    mesh::ellipsoid_tris(tris, bicep[0] - side * 0.01, bicep[1], bicep[2] - 0.03,
-        0.045, 0.06, 0.04, 0, sk);
-    // Bicep peak
-    mesh::ellipsoid_tris(tris, bicep[0], bicep[1] + 0.01, bicep[2] - 0.035,
-        0.025, 0.03, 0.02, 0, sk_lt);
-    // Triceps brachii
+    mesh::ellipsoid_tris(tris, bicep[0] - side * 0.01, bicep[1], bicep[2] - 0.04,
+        0.055, 0.08, 0.050, 1, sk);
+    // Bicep short head (medial)
+    mesh::ellipsoid_tris(tris, bicep[0] - side * 0.03, bicep[1] + 0.01, bicep[2] - 0.03,
+        0.030, 0.05, 0.028, 0, sk);
+    // Triceps brachii (horseshoe shape, LARGER than bicep — smooth)
     let tricep = lerp3(shoulder, elbow, 0.48);
-    mesh::ellipsoid_tris(tris, tricep[0], tricep[1], tricep[2] + 0.03,
-        0.040, 0.08, 0.035, 0, sk_dk);
+    mesh::ellipsoid_tris(tris, tricep[0], tricep[1], tricep[2] + 0.04,
+        0.050, 0.10, 0.045, 1, sk_dk);
     // Tricep lateral head
-    mesh::ellipsoid_tris(tris, tricep[0] + side * 0.02, tricep[1], tricep[2] + 0.015,
-        0.025, 0.05, 0.025, 0, sk);
-    // Brachialis (lateral)
-    let brach = lerp3(shoulder, elbow, 0.55);
-    mesh::ellipsoid_tris(tris, brach[0] + side * 0.025, brach[1], brach[2],
-        0.025, 0.05, 0.025, 0, sk_dk);
-    // Cephalic vein
+    mesh::ellipsoid_tris(tris, tricep[0] + side * 0.03, tricep[1], tricep[2] + 0.02,
+        0.032, 0.07, 0.032, 0, sk);
+    // Tricep long head
+    let tri_long = lerp3(shoulder, elbow, 0.35);
+    mesh::ellipsoid_tris(tris, tri_long[0] - side * 0.01, tri_long[1], tri_long[2] + 0.04,
+        0.035, 0.09, 0.032, 0, sk_dk);
+    // Brachialis (between bicep/tricep, lateral view)
+    let brach = lerp3(shoulder, elbow, 0.58);
+    mesh::ellipsoid_tris(tris, brach[0] + side * 0.03, brach[1], brach[2],
+        0.030, 0.06, 0.028, 0, sk_dk);
+    // Cephalic vein (surface vein)
     let vein = lerp3(shoulder, elbow, 0.35);
-    push_box(tris, vein[0] - side * 0.01, vein[1], vein[2] - 0.05,
-        0.004, 0.06, 0.004, darken(sk, 0.90));
+    push_box(tris, vein[0] - side * 0.01, vein[1], vein[2] - 0.06,
+        0.004, 0.08, 0.004, darken(sk, 0.88));
+    // Bicipital groove
+    let groove = lerp3(shoulder, elbow, 0.30);
+    push_box(tris, groove[0] - side * 0.02, groove[1], groove[2] - 0.02,
+        0.003, 0.06, 0.003, sk_shadow);
 
-    // ── ELBOW JOINT ──
-    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.058, 1, sk);
-    // Olecranon (elbow point)
-    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2] + 0.04, 0.025, 0, sk_lt);
+    // ── ELBOW JOINT — defined bony landmarks ──
+    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.066, 1, sk);
+    // Olecranon (prominent elbow point)
+    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2] + 0.045, 0.028, 0, sk_lt);
     // Medial epicondyle
-    mesh::sphere_tris(tris, elbow[0] - side * 0.04, elbow[1], elbow[2], 0.017, 0, sk_lt);
+    mesh::sphere_tris(tris, elbow[0] - side * 0.045, elbow[1], elbow[2], 0.020, 0, sk_lt);
     // Lateral epicondyle
-    mesh::sphere_tris(tris, elbow[0] + side * 0.03, elbow[1], elbow[2], 0.014, 0, sk_lt);
-    // Cubital fossa
-    mesh::sphere_tris(tris, elbow[0] - side * 0.015, elbow[1], elbow[2] - 0.03, 0.012, 0, sk_shadow);
+    mesh::sphere_tris(tris, elbow[0] + side * 0.035, elbow[1], elbow[2], 0.016, 0, sk_lt);
+    // Cubital fossa (inner elbow)
+    mesh::sphere_tris(tris, elbow[0] - side * 0.02, elbow[1], elbow[2] - 0.04, 0.014, 0, sk_shadow);
 
-    // ── FOREARM (elbow → wrist) ──
-    mesh::tapered_cylinder_between(tris, elbow, wrist, 0.058, 0.042, 8, sk);
-    // Brachioradialis
-    let brachrad = lerp3(elbow, wrist, 0.22);
-    mesh::ellipsoid_tris(tris, brachrad[0] + side * 0.015, brachrad[1], brachrad[2] - 0.015,
-        0.035, 0.055, 0.030, 0, sk);
-    // Flexor group
+    // ── FOREARM (elbow → wrist) — muscular ──
+    mesh::tapered_cylinder_between(tris, elbow, wrist, 0.068, 0.048, 8, sk);
+    // Brachioradialis (largest forearm muscle)
+    let brachrad = lerp3(elbow, wrist, 0.20);
+    mesh::ellipsoid_tris(tris, brachrad[0] + side * 0.02, brachrad[1], brachrad[2] - 0.02,
+        0.040, 0.065, 0.035, 0, sk);
+    // Flexor group (palm side — medial mass)
     let flex = lerp3(elbow, wrist, 0.28);
-    mesh::ellipsoid_tris(tris, flex[0] - side * 0.01, flex[1], flex[2] - 0.01,
-        0.030, 0.050, 0.025, 0, sk_dk);
-    // Extensor group
-    let ext = lerp3(elbow, wrist, 0.32);
-    mesh::ellipsoid_tris(tris, ext[0], ext[1], ext[2] + 0.015,
-        0.025, 0.045, 0.025, 0, sk_dk);
-    // Forearm tendons near wrist
-    let tendon = lerp3(elbow, wrist, 0.70);
-    for ti in 0..3 {
-        let tx = tendon[0] + (ti as f32 - 1.0) * 0.008;
-        push_box(tris, tx, tendon[1], tendon[2] - 0.025,
-            0.003, 0.04, 0.003, sk_shadow);
-    }
-    // Pronator teres
+    mesh::ellipsoid_tris(tris, flex[0] - side * 0.015, flex[1], flex[2] - 0.015,
+        0.035, 0.060, 0.030, 0, sk_dk);
+    // Extensor group (dorsal mass)
+    let ext = lerp3(elbow, wrist, 0.30);
+    mesh::ellipsoid_tris(tris, ext[0] + side * 0.01, ext[1], ext[2] + 0.02,
+        0.030, 0.055, 0.028, 0, sk_dk);
+    // Pronator teres (diagonal)
     let pron = lerp3(elbow, wrist, 0.15);
     mesh::ellipsoid_tris(tris, pron[0] - side * 0.02, pron[1], pron[2] - 0.02,
-        0.020, 0.040, 0.018, 0, sk);
+        0.025, 0.045, 0.020, 0, sk);
+    // Forearm tendons near wrist
+    let tendon = lerp3(elbow, wrist, 0.72);
+    for ti in 0..3 {
+        let tx = tendon[0] + (ti as f32 - 1.0) * 0.009;
+        push_box(tris, tx, tendon[1], tendon[2] - 0.030,
+            0.004, 0.05, 0.004, sk_shadow);
+    }
 
-    // ── WRIST ──
-    mesh::sphere_tris(tris, wrist[0], wrist[1], wrist[2], 0.038, 0, sk);
-    // Ulnar styloid
-    mesh::sphere_tris(tris, wrist[0] + side * 0.030, wrist[1], wrist[2] + 0.01, 0.012, 0, sk_lt);
-    // Radial styloid
-    mesh::sphere_tris(tris, wrist[0] - side * 0.025, wrist[1], wrist[2] - 0.01, 0.011, 0, sk_lt);
+    // ── WRIST — defined ──
+    mesh::sphere_tris(tris, wrist[0], wrist[1], wrist[2], 0.042, 0, sk);
+    mesh::sphere_tris(tris, wrist[0] + side * 0.035, wrist[1], wrist[2] + 0.01, 0.014, 0, sk_lt);
+    mesh::sphere_tris(tris, wrist[0] - side * 0.028, wrist[1], wrist[2] - 0.01, 0.012, 0, sk_lt);
 
     // ── HAND ──
     gen_hand(tris, wrist[0], wrist[1] - 0.05, wrist[2] - 0.02, side, sk);
@@ -1795,148 +1880,196 @@ fn gen_bare_foot(tris: &mut Vec<WorldTri>, ankle: [f32; 3], side: f32, skin: u32
     push_box(tris, lx, 0.003, az - 0.03, 0.045, 0.003, 0.08, sk_dk);
 }
 
-/// Nude male leg — quadriceps, hamstrings, calves, bare feet
+/// Nude male leg — massive quads, hamstrings, calves matching anatomy sculpture references
 fn gen_nude_leg(
     tris: &mut Vec<WorldTri>, side: f32, fwd: f32, knee_bend: f32, skin: u32,
 ) {
     let sk = skin;
-    let sk_dk = darken(sk, 0.94);
-    let sk_shadow = darken(sk, 0.87);
-    let sk_lt = darken(sk, 1.04);
+    let sk_dk = darken(sk, 0.96);
+    let sk_shadow = darken(sk, 0.90);
+    let sk_lt = darken(sk, 1.03);
 
-    // ── JOINT POSITIONS ──
-    let lx = side * 0.14;
-    let hip = [lx, 0.86, 0.0];
-    let knee = [lx, 0.44, fwd * 0.5];
+    // ── JOINT POSITIONS — wider stance, proportional to broad shoulders ──
+    let lx = side * 0.15;
+    let hip = [lx, 0.88, 0.0];
+    let knee = [lx, 0.46, fwd * 0.5];
     let ankle = [lx, 0.08, fwd * 0.25 - knee_bend * 0.4];
 
-    // ── HIP SOCKET ──
-    mesh::sphere_tris(tris, hip[0], hip[1], hip[2], 0.10, 1, sk);
-    // Greater trochanter
-    mesh::sphere_tris(tris, hip[0] + side * 0.08, hip[1], hip[2], 0.020, 0, sk_lt);
-    // Tensor fasciae latae
-    mesh::ellipsoid_tris(tris, hip[0] + side * 0.06, hip[1] - 0.02, hip[2] - 0.02,
-        0.03, 0.05, 0.03, 0, sk_dk);
+    // ── HIP SOCKET — large smooth ball joint ──
+    mesh::sphere_tris(tris, hip[0], hip[1], hip[2], 0.12, 2, sk);
+    // Greater trochanter (prominent lateral bony landmark)
+    mesh::sphere_tris(tris, hip[0] + side * 0.10, hip[1], hip[2], 0.028, 0, sk_lt);
+    // Tensor fasciae latae (lateral hip muscle)
+    mesh::ellipsoid_tris(tris, hip[0] + side * 0.08, hip[1] - 0.02, hip[2] - 0.03,
+        0.04, 0.08, 0.04, 1, sk_dk);
 
-    // ── THIGH (hip → knee) ──
-    mesh::tapered_cylinder_between(tris, hip, knee, 0.12, 0.075, 12, sk);
-    // Rectus femoris (central quad)
-    let rf = lerp3(hip, knee, 0.40);
-    mesh::ellipsoid_tris(tris, rf[0], rf[1], rf[2] - 0.04,
-        0.05, 0.10, 0.045, 0, sk);
-    // Vastus lateralis (outer quad)
-    let vl = lerp3(hip, knee, 0.38);
-    mesh::ellipsoid_tris(tris, vl[0] + side * 0.05, vl[1], vl[2] - 0.02,
-        0.04, 0.10, 0.04, 0, sk_dk);
-    // Vastus medialis (teardrop near knee)
-    let vm = lerp3(hip, knee, 0.70);
-    mesh::ellipsoid_tris(tris, vm[0] - side * 0.04, vm[1], vm[2] - 0.03,
-        0.035, 0.05, 0.03, 0, sk_dk);
-    // Hamstrings (posterior)
-    let ham = lerp3(hip, knee, 0.50);
-    mesh::ellipsoid_tris(tris, ham[0], ham[1], ham[2] + 0.04,
-        0.05, 0.10, 0.04, 0, sk_dk);
+    // ── THIGH (hip → knee) — MASSIVE, matching sculpture references ──
+    mesh::tapered_cylinder_between(tris, hip, knee, 0.14, 0.090, 14, sk);
+
+    // Rectus femoris (central quad — huge main mass)
+    let rf = lerp3(hip, knee, 0.38);
+    mesh::ellipsoid_tris(tris, rf[0], rf[1], rf[2] - 0.05,
+        0.065, 0.14, 0.060, 1, sk);
+    // Vastus lateralis (outer quad — creates outer thigh sweep)
+    let vl = lerp3(hip, knee, 0.35);
+    mesh::ellipsoid_tris(tris, vl[0] + side * 0.06, vl[1], vl[2] - 0.03,
+        0.055, 0.14, 0.055, 1, sk_dk);
+    // Vastus medialis (teardrop near knee — prominent on lean builds)
+    let vm = lerp3(hip, knee, 0.68);
+    mesh::ellipsoid_tris(tris, vm[0] - side * 0.05, vm[1], vm[2] - 0.04,
+        0.045, 0.07, 0.040, 0, sk_dk);
+    // Vastus intermedius (deep quad, adds mass between RF and VL)
+    let vi = lerp3(hip, knee, 0.42);
+    mesh::ellipsoid_tris(tris, vi[0] + side * 0.02, vi[1], vi[2] - 0.03,
+        0.050, 0.10, 0.040, 0, sk);
+
+    // Hamstrings — posterior thigh (LARGE group)
+    let ham = lerp3(hip, knee, 0.48);
+    mesh::ellipsoid_tris(tris, ham[0], ham[1], ham[2] + 0.05,
+        0.065, 0.14, 0.055, 1, sk_dk);
     // Biceps femoris (lateral hamstring)
-    let bf = lerp3(hip, knee, 0.55);
-    mesh::ellipsoid_tris(tris, bf[0] + side * 0.04, bf[1], bf[2] + 0.03,
-        0.03, 0.06, 0.03, 0, sk);
+    let bf = lerp3(hip, knee, 0.52);
+    mesh::ellipsoid_tris(tris, bf[0] + side * 0.05, bf[1], bf[2] + 0.04,
+        0.040, 0.08, 0.040, 0, sk);
     // Semitendinosus (medial hamstring)
-    let st = lerp3(hip, knee, 0.52);
-    mesh::ellipsoid_tris(tris, st[0] - side * 0.03, st[1], st[2] + 0.03,
-        0.025, 0.06, 0.025, 0, sk);
-    // Adductors (inner thigh)
-    let add = lerp3(hip, knee, 0.30);
-    mesh::ellipsoid_tris(tris, add[0] - side * 0.04, add[1], add[2],
-        0.04, 0.10, 0.04, 0, sk_dk);
-    // IT band
+    let st = lerp3(hip, knee, 0.50);
+    mesh::ellipsoid_tris(tris, st[0] - side * 0.04, st[1], st[2] + 0.04,
+        0.035, 0.08, 0.035, 0, sk);
+    // Semimembranosus (deep medial, adds inner bulk)
+    let smem = lerp3(hip, knee, 0.55);
+    mesh::ellipsoid_tris(tris, smem[0] - side * 0.03, smem[1], smem[2] + 0.03,
+        0.030, 0.06, 0.030, 0, sk_dk);
+
+    // Adductors (inner thigh — large muscle group)
+    let add = lerp3(hip, knee, 0.28);
+    mesh::ellipsoid_tris(tris, add[0] - side * 0.05, add[1], add[2],
+        0.055, 0.14, 0.050, 1, sk_dk);
+    // Adductor longus (more superficial, creates inner thigh line)
+    let addl = lerp3(hip, knee, 0.35);
+    mesh::ellipsoid_tris(tris, addl[0] - side * 0.06, addl[1], addl[2] - 0.02,
+        0.030, 0.08, 0.030, 0, sk);
+    // Gracilis (thin inner thigh muscle)
+    let grac = lerp3(hip, knee, 0.50);
+    mesh::ellipsoid_tris(tris, grac[0] - side * 0.07, grac[1], grac[2],
+        0.015, 0.16, 0.015, 0, sk_shadow);
+
+    // IT band (iliotibial tract — tight band on lateral thigh)
     let itb = lerp3(hip, knee, 0.50);
-    mesh::ellipsoid_tris(tris, itb[0] + side * 0.07, itb[1], itb[2],
-        0.010, 0.16, 0.015, 0, sk_shadow);
-    // Sartorius
+    mesh::ellipsoid_tris(tris, itb[0] + side * 0.09, itb[1], itb[2],
+        0.012, 0.20, 0.018, 0, sk_shadow);
+    // Sartorius (diagonal strap muscle from ASIS to medial knee)
     let sar = lerp3(hip, knee, 0.35);
-    mesh::ellipsoid_tris(tris, sar[0] + side * 0.04, sar[1], sar[2] - 0.03,
-        0.012, 0.08, 0.010, 0, sk_shadow);
+    mesh::ellipsoid_tris(tris, sar[0] + side * 0.04, sar[1], sar[2] - 0.04,
+        0.015, 0.12, 0.012, 0, sk_shadow);
 
-    // ── KNEE JOINT ──
-    mesh::sphere_tris(tris, knee[0], knee[1], knee[2], 0.075, 1, sk);
-    // Patella
-    mesh::sphere_tris(tris, knee[0], knee[1], knee[2] - 0.05, 0.030, 0, sk_lt);
+    // ── KNEE JOINT — large, smooth ──
+    mesh::sphere_tris(tris, knee[0], knee[1], knee[2], 0.085, 2, sk);
+    // Patella (kneecap — prominent)
+    mesh::sphere_tris(tris, knee[0], knee[1], knee[2] - 0.06, 0.035, 0, sk_lt);
     // Patellar tendon
-    push_box(tris, knee[0], knee[1] - 0.05, knee[2] - 0.045, 0.015, 0.04, 0.008, sk_shadow);
+    push_box(tris, knee[0], knee[1] - 0.06, knee[2] - 0.055, 0.018, 0.05, 0.010, sk_shadow);
     // Tibial tuberosity
-    mesh::sphere_tris(tris, knee[0], knee[1] - 0.07, knee[2] - 0.04, 0.012, 0, sk_lt);
-    // Popliteal fossa (back of knee)
-    mesh::sphere_tris(tris, knee[0], knee[1], knee[2] + 0.05, 0.020, 0, sk_shadow);
+    mesh::sphere_tris(tris, knee[0], knee[1] - 0.08, knee[2] - 0.05, 0.015, 0, sk_lt);
+    // Popliteal fossa (back of knee depression)
+    mesh::sphere_tris(tris, knee[0], knee[1], knee[2] + 0.06, 0.022, 0, sk_shadow);
+    // Medial condyle
+    mesh::sphere_tris(tris, knee[0] - side * 0.05, knee[1], knee[2], 0.020, 0, sk_lt);
+    // Lateral condyle
+    mesh::sphere_tris(tris, knee[0] + side * 0.04, knee[1], knee[2], 0.018, 0, sk_lt);
 
-    // ── CALF (knee → ankle) ──
-    mesh::tapered_cylinder_between(tris, knee, ankle, 0.072, 0.045, 10, sk);
-    // Gastrocnemius medial head
-    let gast = lerp3(knee, ankle, 0.25);
-    mesh::ellipsoid_tris(tris, gast[0] - side * 0.02, gast[1], gast[2] + 0.025,
-        0.035, 0.07, 0.035, 0, sk);
+    // ── CALF (knee → ankle) — muscular, diamond-shaped ──
+    mesh::tapered_cylinder_between(tris, knee, ankle, 0.085, 0.052, 12, sk);
+    // Gastrocnemius medial head (larger, more prominent)
+    let gast = lerp3(knee, ankle, 0.22);
+    mesh::ellipsoid_tris(tris, gast[0] - side * 0.02, gast[1], gast[2] + 0.03,
+        0.045, 0.09, 0.045, 1, sk);
     // Gastrocnemius lateral head
-    mesh::ellipsoid_tris(tris, gast[0] + side * 0.02, gast[1], gast[2] + 0.02,
-        0.030, 0.06, 0.030, 0, sk);
-    // Soleus
-    let sol = lerp3(knee, ankle, 0.45);
-    mesh::ellipsoid_tris(tris, sol[0], sol[1], sol[2] + 0.02,
-        0.035, 0.06, 0.03, 0, sk_dk);
-    // Tibialis anterior (shin muscle)
-    let ta = lerp3(knee, ankle, 0.30);
-    mesh::ellipsoid_tris(tris, ta[0], ta[1], ta[2] - 0.03,
-        0.025, 0.08, 0.025, 0, sk);
-    // Peroneus (lateral)
-    let per = lerp3(knee, ankle, 0.35);
-    mesh::ellipsoid_tris(tris, per[0] + side * 0.03, per[1], per[2],
-        0.018, 0.06, 0.018, 0, sk_dk);
-    // Shin bone (tibia ridge)
+    mesh::ellipsoid_tris(tris, gast[0] + side * 0.02, gast[1], gast[2] + 0.025,
+        0.038, 0.08, 0.038, 0, sk);
+    // Soleus (wider than gastroc, lower)
+    let sol = lerp3(knee, ankle, 0.42);
+    mesh::ellipsoid_tris(tris, sol[0], sol[1], sol[2] + 0.025,
+        0.045, 0.08, 0.038, 0, sk_dk);
+    // Tibialis anterior (shin muscle — creates front calf shape)
+    let ta = lerp3(knee, ankle, 0.28);
+    mesh::ellipsoid_tris(tris, ta[0], ta[1], ta[2] - 0.04,
+        0.032, 0.10, 0.030, 0, sk);
+    // Peroneus longus (lateral compartment)
+    let per = lerp3(knee, ankle, 0.32);
+    mesh::ellipsoid_tris(tris, per[0] + side * 0.04, per[1], per[2],
+        0.025, 0.08, 0.022, 0, sk_dk);
+    // Peroneus brevis (lower lateral)
+    let perb = lerp3(knee, ankle, 0.50);
+    mesh::ellipsoid_tris(tris, perb[0] + side * 0.035, perb[1], perb[2],
+        0.020, 0.05, 0.018, 0, sk_dk);
+    // Shin bone (tibia ridge — visible subcutaneous)
     let shin = lerp3(knee, ankle, 0.30);
-    push_box(tris, shin[0] - side * 0.01, shin[1], shin[2] - 0.04,
-        0.008, 0.16, 0.006, sk_lt);
-    // Achilles tendon
-    let ach = lerp3(knee, ankle, 0.70);
-    mesh::ellipsoid_tris(tris, ach[0], ach[1], ach[2] + 0.03,
-        0.012, 0.08, 0.010, 0, sk_shadow);
+    push_box(tris, shin[0] - side * 0.01, shin[1], shin[2] - 0.05,
+        0.010, 0.20, 0.008, sk_lt);
+    // Achilles tendon (thick, prominent)
+    let ach = lerp3(knee, ankle, 0.65);
+    mesh::ellipsoid_tris(tris, ach[0], ach[1], ach[2] + 0.035,
+        0.015, 0.10, 0.012, 0, sk_shadow);
+    // Extensor digitorum longus (anterior-lateral)
+    let edl = lerp3(knee, ankle, 0.35);
+    mesh::ellipsoid_tris(tris, edl[0] + side * 0.02, edl[1], edl[2] - 0.03,
+        0.020, 0.07, 0.018, 0, sk);
 
-    // ── ANKLE ──
-    mesh::sphere_tris(tris, ankle[0], ankle[1], ankle[2], 0.042, 0, sk);
-    // Medial malleolus
-    mesh::sphere_tris(tris, ankle[0] - side * 0.035, ankle[1] + 0.01, ankle[2], 0.015, 0, sk_lt);
-    // Lateral malleolus
-    mesh::sphere_tris(tris, ankle[0] + side * 0.038, ankle[1] + 0.005, ankle[2] + 0.005, 0.013, 0, sk_lt);
+    // ── ANKLE — defined bony landmarks ──
+    mesh::sphere_tris(tris, ankle[0], ankle[1], ankle[2], 0.048, 0, sk);
+    // Medial malleolus (larger, lower)
+    mesh::sphere_tris(tris, ankle[0] - side * 0.04, ankle[1] + 0.01, ankle[2], 0.018, 0, sk_lt);
+    // Lateral malleolus (smaller, higher)
+    mesh::sphere_tris(tris, ankle[0] + side * 0.042, ankle[1] + 0.005, ankle[2] + 0.005, 0.015, 0, sk_lt);
 
     // ── BARE FOOT ──
     gen_bare_foot(tris, ankle, side, sk);
 }
 
-/// Nude attack arm — punching forward with flexed muscles
+/// Nude attack arm — punching forward with flexed muscles, proportional to wide shoulders
 fn gen_nude_attack_arm(tris: &mut Vec<WorldTri>, side: f32, extend: f32, skin: u32) {
     let sk = skin;
-    let sk_dk = darken(sk, 0.94);
-    let shoulder = [side * 0.28, 1.42, 0.0];
-    let elbow = [side * 0.32, 1.10, -0.15 - extend * 0.20];
-    let wrist = [side * 0.30, 0.92, -0.35 - extend * 0.35];
+    let sk_dk = darken(sk, 0.93);
+    let sk_lt = darken(sk, 1.05);
+    let shoulder = [side * 0.32, 1.42, 0.0];
+    let elbow = [side * 0.36, 1.10, -0.15 - extend * 0.20];
+    let wrist = [side * 0.34, 0.92, -0.35 - extend * 0.35];
 
-    // Deltoid
-    mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2], 0.10, 0.08, 0.09, 1, sk);
-    // Upper arm
-    mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.085, 0.060, 10, sk);
-    // Bicep (flexed)
+    // Deltoid (massive, 3-head)
+    mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1] - 0.02, shoulder[2],
+        0.12, 0.10, 0.10, 1, sk);
+    mesh::ellipsoid_tris(tris, shoulder[0] - side * 0.02, shoulder[1] - 0.05, shoulder[2] - 0.05,
+        0.07, 0.06, 0.05, 0, sk_dk);
+    // Upper arm (thick)
+    mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.10, 0.070, 10, sk);
+    // Bicep (flexed, large)
     let bicep = lerp3(shoulder, elbow, 0.40);
-    mesh::ellipsoid_tris(tris, bicep[0], bicep[1], bicep[2] - 0.03, 0.05, 0.06, 0.04, 0, sk);
-    // Tricep
+    mesh::ellipsoid_tris(tris, bicep[0], bicep[1], bicep[2] - 0.04,
+        0.060, 0.07, 0.055, 1, sk);
+    // Tricep (large horseshoe)
     let tricep = lerp3(shoulder, elbow, 0.48);
-    mesh::ellipsoid_tris(tris, tricep[0], tricep[1], tricep[2] + 0.03, 0.04, 0.07, 0.035, 0, sk_dk);
+    mesh::ellipsoid_tris(tris, tricep[0], tricep[1], tricep[2] + 0.04,
+        0.050, 0.09, 0.045, 1, sk_dk);
+    // Brachialis
+    let brach_u = lerp3(shoulder, elbow, 0.58);
+    mesh::ellipsoid_tris(tris, brach_u[0] + side * 0.03, brach_u[1], brach_u[2],
+        0.030, 0.06, 0.028, 0, sk_dk);
     // Elbow
-    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.058, 1, sk);
-    // Forearm
-    mesh::tapered_cylinder_between(tris, elbow, wrist, 0.058, 0.042, 8, sk);
-    // Forearm muscles
-    let brach = lerp3(elbow, wrist, 0.25);
-    mesh::ellipsoid_tris(tris, brach[0], brach[1], brach[2] - 0.015, 0.035, 0.05, 0.025, 0, sk);
-    // Fist
-    mesh::sphere_tris(tris, wrist[0], wrist[1] - 0.03, wrist[2] - 0.03, 0.050, 1, sk);
-    push_box(tris, wrist[0], wrist[1] - 0.03, wrist[2] - 0.06, 0.040, 0.035, 0.025, darken(sk, 0.85));
+    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.066, 1, sk);
+    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2] + 0.045, 0.028, 0, sk_lt);
+    // Forearm (thick)
+    mesh::tapered_cylinder_between(tris, elbow, wrist, 0.068, 0.048, 8, sk);
+    // Brachioradialis
+    let brach = lerp3(elbow, wrist, 0.20);
+    mesh::ellipsoid_tris(tris, brach[0] + side * 0.02, brach[1], brach[2] - 0.02,
+        0.040, 0.065, 0.035, 0, sk);
+    // Flexor group
+    let flex = lerp3(elbow, wrist, 0.28);
+    mesh::ellipsoid_tris(tris, flex[0] - side * 0.015, flex[1], flex[2] - 0.015,
+        0.035, 0.060, 0.030, 0, sk_dk);
+    // Fist (large)
+    mesh::sphere_tris(tris, wrist[0], wrist[1] - 0.03, wrist[2] - 0.03, 0.055, 1, sk);
+    push_box(tris, wrist[0], wrist[1] - 0.03, wrist[2] - 0.06, 0.045, 0.040, 0.030, darken(sk, 0.85));
 }
 
 /// Complete nude male player body with animation
@@ -1974,25 +2107,25 @@ fn gen_nude_player_body(
             for v in &mut tri.v { v[1] -= 0.4; }
         }
         gen_glutes(tris, skin);
-        // Horizontal thighs
+        // Horizontal thighs (matching wider stance and thicker proportions)
         for &side in &[-1.0f32, 1.0] {
-            let hip_s = [side * 0.14, 0.44, 0.0];
-            let knee_s = [side * 0.14, 0.42, -0.38];
-            let ankle_s = [side * 0.14, 0.06, -0.40];
-            mesh::tapered_cylinder_between(tris, hip_s, knee_s, 0.10, 0.075, 8, skin);
-            mesh::sphere_tris(tris, knee_s[0], knee_s[1], knee_s[2], 0.070, 0, skin);
-            mesh::tapered_cylinder_between(tris, knee_s, ankle_s, 0.065, 0.042, 7, skin);
+            let hip_s = [side * 0.15, 0.44, 0.0];
+            let knee_s = [side * 0.15, 0.42, -0.38];
+            let ankle_s = [side * 0.15, 0.06, -0.40];
+            mesh::tapered_cylinder_between(tris, hip_s, knee_s, 0.14, 0.090, 10, skin);
+            mesh::sphere_tris(tris, knee_s[0], knee_s[1], knee_s[2], 0.085, 0, skin);
+            mesh::tapered_cylinder_between(tris, knee_s, ankle_s, 0.085, 0.052, 8, skin);
             gen_bare_foot(tris, ankle_s, side, skin);
         }
-        // Arms resting on thighs
+        // Arms resting on thighs (matching wider shoulders)
         for &side in &[-1.0f32, 1.0] {
-            let shoulder = [side * 0.30, 0.98, 0.0];
-            let elbow = [side * 0.32, 0.64, -0.15];
-            let wrist = [side * 0.28, 0.48, -0.30];
-            mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2], 0.09, 0.06, 0.08, 0, skin);
-            mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.07, 0.055, 7, skin);
-            mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.054, 0, skin);
-            mesh::tapered_cylinder_between(tris, elbow, wrist, 0.054, 0.040, 6, skin);
+            let shoulder = [side * 0.32, 0.98, 0.0];
+            let elbow = [side * 0.34, 0.64, -0.15];
+            let wrist = [side * 0.32, 0.48, -0.30];
+            mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2], 0.12, 0.10, 0.10, 1, skin);
+            mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.10, 0.070, 8, skin);
+            mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.066, 0, skin);
+            mesh::tapered_cylinder_between(tris, elbow, wrist, 0.068, 0.048, 7, skin);
             gen_hand(tris, wrist[0], wrist[1] - 0.04, wrist[2] - 0.02, side, skin);
         }
         return;
