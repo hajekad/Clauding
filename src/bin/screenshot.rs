@@ -10,7 +10,7 @@
 //
 // Output: debug/screenshot*.png
 
-use clauding::{state, world, render, raster, math, gpu, neat};
+use clauding::{state, world, render, raster, math, gpu, neat, npc, vehicle, collision, combat};
 
 const W: usize = 1920;
 const H: usize = 1080;
@@ -148,6 +148,7 @@ fn main() {
     let mut custom_look: Option<[f32; 3]> = None;
     let mut orbit_count = 8;
     let mut time_of_day = 10.0_f32; // 10am default (good lighting)
+    let mut sim_ticks: u32 = 0;
 
     let mut i = 1;
     while i < args.len() {
@@ -187,6 +188,12 @@ fn main() {
                     i += 1;
                 }
             }
+            "--sim" => {
+                if i + 1 < args.len() {
+                    sim_ticks = args[i+1].parse().unwrap_or(30);
+                    i += 1;
+                }
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: screenshot [OPTIONS]");
                 eprintln!("  --pos X Y Z        Camera position (default: 0 50 -50)");
@@ -194,6 +201,7 @@ fn main() {
                 eprintln!("  --orbit [N]        Take N shots orbiting center (default: 8)");
                 eprintln!("  --grid             4x4 grid of viewpoints");
                 eprintln!("  --time HOUR        Time of day 0-24 (default: 10)");
+                eprintln!("  --sim TICKS        Simulate N ticks before render (default: 0)");
                 return;
             }
             _ => {}
@@ -241,6 +249,27 @@ fn main() {
         .collect();
 
     game.time_of_day = time_of_day;
+
+    // Simulate ticks to warm up physics (terrain normals, slope effects)
+    if sim_ticks > 0 {
+        eprintln!("Simulating {} ticks...", sim_ticks);
+        let dt = 1.0 / 30.0;
+        for _ in 0..sim_ticks {
+            vehicle::sys_vehicle(&mut game, dt);
+            npc::sys_npc(
+                &mut game.world, &mut game.road_network, &game.terrain,
+                dt, game.time_of_day, &mut game.neat_brains, 0.0, 0.0,
+            );
+            npc::sys_night_spawning(
+                &mut game.world, &game.terrain, game.time_of_day,
+                dt, &mut game.spawn_rng, &game.road_network,
+            );
+            collision::sys_collisions_headless(&mut game.world, &game.terrain, dt);
+            combat::sys_ragdoll_update(&mut game.world, &game.terrain, dt);
+            game.frame_counter += 1;
+        }
+    }
+
     eprintln!("World: {} static tris, time={:.1}h", game.world.static_tris.len(), time_of_day);
 
     // Upload static geometry to GPU

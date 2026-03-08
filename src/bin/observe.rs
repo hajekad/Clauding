@@ -317,6 +317,37 @@ fn main() {
     let _ = writeln!(out, "  NW={} NE={} SW={} SE={}", quadrants[0], quadrants[1], quadrants[2], quadrants[3]);
     let _ = writeln!(out, "  Near center (<50m): {}  Far out (>150m): {}", near_center, far_out);
 
+    // Slope physics analysis — terrain tilt on entities after simulation
+    let _ = writeln!(out, "\n--- SLOPE PHYSICS (entity tilt after simulation) ---");
+    let mut npc_tilted = 0u32;
+    let mut npc_max_tilt: f32 = 0.0;
+    let mut veh_tilted = 0u32;
+    let mut veh_max_tilt: f32 = 0.0;
+    let mut bin_tilted = 0u32;
+    for npc in &game.world.npcs {
+        let angle = npc.terrain_normal[1].clamp(-1.0, 1.0).acos().to_degrees();
+        if angle > 2.0 { npc_tilted += 1; }
+        if angle > npc_max_tilt { npc_max_tilt = angle; }
+    }
+    for v in &game.world.vehicles {
+        let angle = v.terrain_normal[1].clamp(-1.0, 1.0).acos().to_degrees();
+        if angle > 2.0 { veh_tilted += 1; }
+        if angle > veh_max_tilt { veh_max_tilt = angle; }
+    }
+    for b in &game.world.trash_bins {
+        let angle = b.terrain_normal[1].clamp(-1.0, 1.0).acos().to_degrees();
+        if angle > 2.0 { bin_tilted += 1; }
+    }
+    let _ = writeln!(out, "  NPCs tilted (>2°): {}/{}  max={:.1}°", npc_tilted, n_npcs, npc_max_tilt);
+    let _ = writeln!(out, "  Vehicles tilted (>2°): {}/{}  max={:.1}°", veh_tilted, n_vehicles, veh_max_tilt);
+    let _ = writeln!(out, "  Bins tilted (>2°): {}/{}", bin_tilted, game.world.trash_bins.len());
+    // Check for extreme tilt (clipping risk)
+    let extreme_npc = game.world.npcs.iter().filter(|n| n.terrain_normal[1].clamp(-1.0, 1.0).acos().to_degrees() > 30.0).count();
+    let extreme_veh = game.world.vehicles.iter().filter(|v| v.terrain_normal[1].clamp(-1.0, 1.0).acos().to_degrees() > 30.0).count();
+    if extreme_npc > 0 || extreme_veh > 0 {
+        let _ = writeln!(out, "  WARNING: {} NPCs + {} vehicles at >30° tilt (clipping risk)", extreme_npc, extreme_veh);
+    }
+
     // Vehicle activity
     let active_vehicles = game.world.vehicles.iter().filter(|v| v.ai_active || v.occupied).count();
     let moving_vehicles = game.world.vehicles.iter().filter(|v| v.speed.abs() > 0.5).count();

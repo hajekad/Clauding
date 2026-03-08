@@ -14,6 +14,7 @@
 //   parking                 — parking spot analysis
 //   vehicles                — vehicle analysis
 //   reachability            — walkability grid, flood-fill components, building/NPC reachability
+//   slopes [step]           — terrain slope analysis + entities on slopes with tilt angles
 
 use clauding::{state, world};
 
@@ -93,6 +94,10 @@ fn main() {
         }
         "reachability" => {
             analyze_reachability(&game.world, &game.road_network);
+        }
+        "slopes" => {
+            let step: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(5.0);
+            analyze_slopes(&game.world, &game.terrain, step);
         }
         _ => {
             print_summary(&game.world, &game.road_network, &game.terrain);
@@ -661,12 +666,20 @@ fn print_summary(world: &state::WorldData, net: &state::RoadNetwork, terrain: &s
         .count();
     let vehicles_on_river = world.vehicles.iter().filter(|v| world::on_river(v.x, v.z, &world.river_segments)).count();
 
+    // Check objects on road surface
+    let rocks_on_road = world.rocks.iter().filter(|r| world::on_road_surface(r.x, r.z, net)).count();
+    let bins_on_road = world.trash_bins.iter().filter(|b| world::on_road_surface(b.x, b.z, net)).count();
+    let interactibles_on_road = world.interactibles.iter().filter(|i| world::on_road_surface(i.x, i.z, net)).count();
+
     println!("--- Health Check ---");
     println!("NPC homes on river: {}", homes_on_river);
     println!("Vehicles on river: {}", vehicles_on_river);
     println!("Parking spots occupied: {}/{}",
         net.parking_spots.iter().filter(|p| p.occupied_by.is_some()).count(),
         net.parking_spots.len());
+    println!("Rocks on road: {}/{}", rocks_on_road, world.rocks.len());
+    println!("Trash bins on road: {}/{}", bins_on_road, world.trash_bins.len());
+    println!("Interactibles on road: {}/{}", interactibles_on_road, world.interactibles.len());
 }
 
 // === Reachability Analysis ===
@@ -987,4 +1000,143 @@ fn nearest_node(x: f32, z: f32, net: &state::RoadNetwork) -> (usize, f32) {
 
 fn dist2(x0: f32, z0: f32, x1: f32, z1: f32) -> f32 {
     (x0 - x1).powi(2) + (z0 - z1).powi(2)
+}
+
+fn analyze_slopes(world: &state::WorldData, terrain: &state::Terrain, step: f32) {
+    let half = state::WORLD_HALF;
+    println!("=== SLOPE ANALYSIS (step={:.1}m) ===\n", step);
+
+    // 1. Scan terrain for slope distribution
+    let mut slope_counts = [0u32; 10]; // 0-5, 5-10, 10-15, ... 45+ degrees
+    let mut steepest_angle: f32 = 0.0;
+    let mut steepest_pos = (0.0f32, 0.0f32);
+    let mut total_samples = 0u32;
+
+    let mut x = -half;
+    while x <= half {
+        let mut z = -half;
+        while z <= half {
+            let n = terrain.normal_at(x, z);
+            let angle_deg = n[1].clamp(-1.0, 1.0).acos().to_degrees();
+            let bucket = (angle_deg / 5.0) as usize;
+            slope_counts[bucket.min(9)] += 1;
+            if angle_deg > steepest_angle {
+                steepest_angle = angle_deg;
+                steepest_pos = (x, z);
+            }
+            total_samples += 1;
+            z += step;
+        }
+        x += step;
+    }
+
+    println!("Terrain slope distribution ({} samples):", total_samples);
+    let labels = ["0-5", "5-10", "10-15", "15-20", "20-25", "25-30", "30-35", "35-40", "40-45", "45+"];
+    for (i, label) in labels.iter().enumerate() {
+        let pct = slope_counts[i] as f32 / total_samples as f32 * 100.0;
+        let bar_len = (pct * 0.5) as usize;
+        let bar: String = (0..bar_len).map(|_| '#').collect();
+        println!("  {:>5}°: {:5} ({:5.1}%) {}", label, slope_counts[i], pct, bar);
+    }
+    println!("  Steepest: {:.1}° at ({:.1}, {:.1})", steepest_angle, steepest_pos.0, steepest_pos.1);
+    let sn = terrain.normal_at(steepest_pos.0, steepest_pos.1);
+    println!("  Normal there: ({:.3}, {:.3}, {:.3})", sn[0], sn[1], sn[2]);
+    println!();
+
+    // 2. Find top 10 steep spots (unique, spaced >20m apart)
+    let mut steep_spots: Vec<(f32, f32, f32)> = Vec::new(); // angle, x, z
+    x = -half;
+    while x <= half {
+        let mut z = -half;
+        while z <= half {
+            let n = terrain.normal_at(x, z);
+            let angle_deg = n[1].clamp(-1.0, 1.0).acos().to_degrees();
+            if angle_deg > 8.0 {
+                let too_close = steep_spots.iter().any(|s| dist2(x, z, s.1, s.2) < 400.0);
+                if !too_close {
+                    steep_spots.push((angle_deg, x, z));
+                }
+            }
+            z += step;
+        }
+        x += step;
+    }
+    steep_spots.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    steep_spots.truncate(10);
+
+    println!("Top {} steep locations (>8°, spaced >20m):", steep_spots.len());
+    for (i, s) in steep_spots.iter().enumerate() {
+        let h = terrain.height_at(s.1, s.2);
+        println!("  #{}: {:.1}° at ({:.0}, {:.0}) height={:.1}m", i + 1, s.0, s.1, s.2, h);
+    }
+    println!();
+
+    // 3. Entities on slopes — NPCs
+    println!("--- NPCs on slopes (tilt > 3°) ---");
+    let mut npc_on_slope = 0;
+    for (i, npc) in world.npcs.iter().enumerate() {
+        let n = npc.terrain_normal;
+        let angle = n[1].clamp(-1.0, 1.0).acos().to_degrees();
+        if angle > 3.0 {
+            npc_on_slope += 1;
+            println!("  NPC[{:2}] tilt={:.1}° normal=({:.3},{:.3},{:.3}) pos=({:.0},{:.0}) h={:.1}",
+                i, angle, n[0], n[1], n[2], npc.x, npc.z, npc.y);
+        }
+    }
+    if npc_on_slope == 0 { println!("  (none — all on flat terrain at init)"); }
+    println!();
+
+    // 4. Entities on slopes — Vehicles
+    println!("--- Vehicles on slopes (tilt > 3°) ---");
+    let mut veh_on_slope = 0;
+    for (i, v) in world.vehicles.iter().enumerate() {
+        let n = v.terrain_normal;
+        let angle = n[1].clamp(-1.0, 1.0).acos().to_degrees();
+        if angle > 3.0 {
+            veh_on_slope += 1;
+            println!("  Vehicle[{:2}] tilt={:.1}° normal=({:.3},{:.3},{:.3}) pos=({:.0},{:.0}) h={:.1} parked={}",
+                i, angle, n[0], n[1], n[2], v.x, v.z, v.y, v.parked);
+        }
+    }
+    if veh_on_slope == 0 { println!("  (none — all on flat terrain at init)"); }
+    println!();
+
+    // 5. Entities on slopes — Trash bins
+    println!("--- Trash bins on slopes (tilt > 3°) ---");
+    let mut bin_on_slope = 0;
+    for (i, b) in world.trash_bins.iter().enumerate() {
+        let n = b.terrain_normal;
+        let angle = n[1].clamp(-1.0, 1.0).acos().to_degrees();
+        if angle > 3.0 {
+            bin_on_slope += 1;
+            println!("  Bin[{:2}] tilt={:.1}° normal=({:.3},{:.3},{:.3}) pos=({:.0},{:.0}) h={:.1}",
+                i, angle, n[0], n[1], n[2], b.x, b.z, b.y);
+        }
+    }
+    if bin_on_slope == 0 { println!("  (none — all initialized flat)"); }
+    println!();
+
+    // 6. Terrain normal at each entity position (what tilt they SHOULD have)
+    println!("--- Expected tilt at entity positions (terrain normal, > 3°) ---");
+    let mut expected_count = 0;
+    for (i, npc) in world.npcs.iter().enumerate() {
+        let n = terrain.normal_at(npc.x, npc.z);
+        let angle = n[1].clamp(-1.0, 1.0).acos().to_degrees();
+        if angle > 3.0 {
+            expected_count += 1;
+            println!("  NPC[{:2}] expected_tilt={:.1}° at ({:.0},{:.0})", i, angle, npc.x, npc.z);
+        }
+    }
+    for (i, v) in world.vehicles.iter().enumerate() {
+        let n = terrain.normal_at(v.x, v.z);
+        let angle = n[1].clamp(-1.0, 1.0).acos().to_degrees();
+        if angle > 3.0 {
+            expected_count += 1;
+            println!("  Vehicle[{:2}] expected_tilt={:.1}° at ({:.0},{:.0})", i, angle, v.x, v.z);
+        }
+    }
+    if expected_count == 0 { println!("  (all entities on flat terrain)"); }
+    println!();
+
+    println!("Summary: {} NPCs, {} vehicles, {} bins on tilted ground at init", npc_on_slope, veh_on_slope, bin_on_slope);
 }

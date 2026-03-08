@@ -1314,6 +1314,46 @@ fn main() {
     let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Collector");
     save_png(&img, IMG_W, IMG_H, "debug/model_npc.png");
 
+    // ── NPC LOD comparison: full, mid, low side by side ──
+    {
+        let lod_npc = make_npc(state::NpcJob::DeliveryCourier);
+        // Mid-detail LOD
+        tris.clear();
+        render::gen_npc_mesh_mid(&lod_npc, &mut tris);
+        let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Mid LOD");
+        save_png(&img, IMG_W, IMG_H, "debug/model_npc_mid.png");
+    }
+
+    // ── NPC KO pose ──
+    {
+        let mut ko_npc = make_npc(state::NpcJob::Collector);
+        ko_npc.state = state::NpcState::KnockedOut;
+        tris.clear();
+        render::gen_npc_mesh(&ko_npc, &mut tris);
+        let img = render_model_sheet(&tris, 0.5, 4.5, "NPC Knocked Out");
+        save_png(&img, IMG_W, IMG_H, "debug/model_npc_ko.png");
+    }
+
+    // ── NPC ragdoll pose ──
+    {
+        let mut rag_npc = make_npc(state::NpcJob::Collector);
+        rag_npc.ragdoll_active = true;
+        // Simulate a tumbling ragdoll — body tilted ~45° with spread limbs
+        rag_npc.ragdoll_points = [
+            [0.0, 0.5, 0.0],       // hips
+            [0.0, 1.2, -0.3],      // chest
+            [0.1, 1.7, -0.5],      // head
+            [-0.5, 0.9, -0.2],     // l_hand
+            [0.5, 0.8, -0.4],      // r_hand
+            [-0.2, 0.0, 0.3],      // l_foot
+            [0.2, 0.0, 0.2],       // r_foot
+        ];
+        tris.clear();
+        render::gen_npc_mesh(&rag_npc, &mut tris);
+        let img = render_model_sheet(&tris, 0.8, 4.5, "NPC Ragdoll");
+        save_png(&img, IMG_W, IMG_H, "debug/model_npc_ragdoll.png");
+    }
+
     let bin = make_trash_bin();
     tris.clear();
     render::gen_trash_bin_mesh(&bin, &mut tris);
