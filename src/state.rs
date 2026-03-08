@@ -514,6 +514,8 @@ pub struct Player {
     // Law system
     pub wanted_vehicle_hit: bool,
     pub bounty: f32,
+    // Body type
+    pub is_female: bool,
 }
 
 pub struct Camera {
@@ -600,6 +602,7 @@ impl GameState {
                 attack_cooldown: 0.0, attack_phase: 0.0, hit_flash: 0.0, damage_shake: 0.0,
                 hunger: 100.0, thirst: 100.0,
                 wanted_vehicle_hit: false, bounty: 0.0,
+                is_female: false,
             },
             camera: Camera {
                 x: 0.0, y: 8.0, z: 18.0,

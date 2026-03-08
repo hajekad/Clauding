@@ -17,6 +17,109 @@ const TIRE_COLOR: u32 = 0xFF222222;
 
 const NEAR_W: f32 = 0.1;
 
+// Body proportion scaling: ~6.5 heads tall heroic proportions
+const BODY_STRETCH: f32 = 1.25;  // moderate vertical stretch (less distortion)
+const BODY_WIDEN: f32 = 1.0;     // no horizontal scale (chest was too massive)
+const HEAD_SCALE: f32 = 0.62;    // Loomis proportions: deeper/wider head needs smaller scale
+const HEAD_CY: f32 = 1.70;       // head's natural Y center
+const NECK_TOP: f32 = 1.50;      // natural neck top Y
+
+// ── Parameterized body proportions (from GLTF reference scans) ──
+struct BodyProportions {
+    body_stretch: f32,
+    body_widen: f32,
+    head_scale: f32,
+    head_cy: f32,
+    neck_top: f32,
+    // Torso cross-sections
+    shoulder_rx: f32,
+    shoulder_deltoid_amp: f32,
+    hip_rx: f32,
+    waist_rx: f32,
+    chest_rx: f32,
+    chest_rz: f32,
+    // Muscle definition (0.0=smooth, 1.0=full male muscle)
+    muscle_def: f32,
+    // Limb scaling
+    arm_rx_scale: f32,
+    leg_rx_scale: f32,
+    shoulder_joint_x: f32,
+    hip_joint_x: f32,
+    // Neck
+    neck_rx: f32,
+    neck_rz: f32,
+    has_adams_apple: bool,
+    // Female-specific
+    has_breasts: bool,
+    breast_rx: f32,
+    breast_ry: f32,
+    breast_rz: f32,
+    breast_y: f32,
+    breast_z: f32,
+    breast_x_off: f32,
+    is_female: bool,
+}
+
+fn male_proportions() -> BodyProportions {
+    BodyProportions {
+        body_stretch: 1.25,
+        body_widen: 1.0,
+        head_scale: 0.62,
+        head_cy: 1.70,
+        neck_top: 1.50,
+        shoulder_rx: 0.32,
+        shoulder_deltoid_amp: 0.07,
+        hip_rx: 0.18,
+        waist_rx: 0.15,
+        chest_rx: 0.22,
+        chest_rz: 0.19,
+        muscle_def: 1.0,
+        arm_rx_scale: 1.0,
+        leg_rx_scale: 1.0,
+        shoulder_joint_x: 0.22,
+        hip_joint_x: 0.12,
+        neck_rx: 0.10,
+        neck_rz: 0.085,
+        has_adams_apple: true,
+        has_breasts: false,
+        breast_rx: 0.0, breast_ry: 0.0, breast_rz: 0.0,
+        breast_y: 0.0, breast_z: 0.0, breast_x_off: 0.0,
+        is_female: false,
+    }
+}
+
+fn female_proportions() -> BodyProportions {
+    BodyProportions {
+        body_stretch: 1.25,
+        body_widen: 1.0,
+        head_scale: 0.57,
+        head_cy: 1.70,
+        neck_top: 1.50,
+        shoulder_rx: 0.22,
+        shoulder_deltoid_amp: 0.03,
+        hip_rx: 0.20,
+        waist_rx: 0.12,
+        chest_rx: 0.17,
+        chest_rz: 0.16,
+        muscle_def: 0.3,
+        arm_rx_scale: 0.90,
+        leg_rx_scale: 0.90,
+        shoulder_joint_x: 0.20,
+        hip_joint_x: 0.13,
+        neck_rx: 0.07,
+        neck_rz: 0.065,
+        has_adams_apple: false,
+        has_breasts: true,
+        breast_rx: 0.065,
+        breast_ry: 0.055,
+        breast_rz: 0.038,     // subtle forward projection
+        breast_y: 1.26,
+        breast_z: -0.18,      // closer to chest wall
+        breast_x_off: 0.09,
+        is_female: true,
+    }
+}
+
 // Trash bin colors
 const BIN_COLOR: u32 = 0xFF226622;
 const BIN_LID_COLOR: u32 = 0xFF338833;
@@ -356,244 +459,362 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     let skin = app.skin;
     let hair = app.hair;
     let sk = skin;
-    let sk_dk = darken(skin, 0.97);
     let sk_sh = darken(skin, 0.92);
+    let sk_dk = darken(skin, 0.85);
+
+    use std::f32::consts::{PI, TAU};
+    let n = 48;
+
+    // Loomis proportions: eyes 50%, brow 43% from top, nose bottom 68%, mouth 75%
+    let hp = PI * 0.5;
+    let re = 0.39; // right eye angular position
+    let le = TAU - re;
+    let fem = app.is_female;
+
+    // Gender-specific parameters
+    let jaw_w = if fem { 0.008 } else { 0.012 };
+    let jawline = if fem { 0.010 } else { 0.015 };
+    let gonial = if fem { 0.010 } else { 0.022 };
+    let masseter = if fem { 0.005 } else { 0.012 };
+    let brow_shelf = if fem { 0.008 } else { 0.020 };
+    let brow_boss = if fem { 0.005 } else { 0.012 };
+    let glabella = if fem { 0.003 } else { 0.008 };
+    let supraorb = if fem { 0.004 } else { 0.010 };
+    let cheek = if fem { 0.032 } else { 0.025 };
+    let chin_proj = if fem { 0.035 } else { 0.048 };
+    let chin_w = if fem { 0.05 } else { 0.06 };
+    let nose_size = if fem { 0.028 } else { 0.035 };
 
     // ══════════════════════════════════════════════════════════════
-    // SKULL — high-res lathe, ACU-bust proportions: narrow face,
-    // tall cranium, angular jaw, temporal indent, prominent zygomatic
+    // SKULL LOFT — continuous head surface from chin to crown
     // ══════════════════════════════════════════════════════════════
-    let skull_profile: [[f32; 2]; 24] = [
-        [0.0,   -0.24],  // chin bottom center
-        [0.03,  -0.235], // chin tip
-        [0.055, -0.22],  // chin front
-        [0.075, -0.20],  // chin corner (angular transition)
-        [0.09,  -0.17],  // jawline front
-        [0.10,  -0.13],  // jaw angle (square, strong)
-        [0.105, -0.09],  // gonial angle (jaw corner — prominent)
-        [0.11,  -0.05],  // lower cheek / masseter region
-        [0.12,  -0.01],  // zygomatic arch (widest face point)
-        [0.125,  0.02],  // cheekbone peak
-        [0.12,   0.05],  // upper cheek / orbit lateral wall
-        [0.11,   0.08],  // temple (temporal fossa — indent)
-        [0.105,  0.11],  // temporal ridge
-        [0.11,   0.14],  // parietal lower (re-expands)
-        [0.115,  0.18],  // parietal widest
-        [0.115,  0.22],  // parietal peak
-        [0.11,   0.25],  // upper parietal
-        [0.10,   0.28],  // pre-crown
-        [0.085,  0.31],  // crown approach
-        [0.07,   0.33],  // crown
-        [0.05,   0.35],  // crown top
-        [0.035,  0.36],  // near apex
-        [0.015,  0.37],  // apex approach
-        [0.0,    0.375], // apex
+    let rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+        // ── CHIN — forward-projecting mental protuberance ──
+        (1.46, body_ring(0.0, -0.06, chin_w, 0.09, &[
+            (0.0, 0.3, chin_proj),   // mental protuberance — forward projection
+        ], n), sk),
+        (1.49, body_ring(0.0, -0.04, 0.10, 0.11, &[
+            (0.0, 0.3, chin_proj * 0.8),  // chin pad
+        ], n), sk),
+        // Chin pad upper surface
+        (1.52, body_ring(0.0, -0.02, 0.13, 0.13, &[
+            (0.0, 0.3, chin_proj * 0.5),
+        ], n), sk),
+        // Labiomental fold — crease between chin pad and lower lip
+        (1.55, body_ring(0.0, -0.01, 0.15, 0.15, &[
+            (0.0, 0.25, -0.008),     // labiomental sulcus — inward crease
+            (hp, 0.25, jaw_w), (le, 0.25, jaw_w),
+        ], n), sk),
+
+        // ── JAW ──
+        (1.58, body_ring(0.0, 0.01, 0.19, 0.17, &[
+            (hp, 0.25, jawline), (le, 0.25, jawline),
+            (0.0, 0.3, 0.008),       // lower face projection
+        ], n), sk),
+        // Jaw angle (gonion) — defined corner, not smooth curve
+        (1.61, body_ring(0.0, 0.02, 0.20, 0.18, &[
+            (hp, 0.18, gonial), (le, 0.18, gonial),  // narrow bump = sharper angle
+            (hp - 0.3, 0.2, masseter), (le + 0.3, 0.2, masseter),
+        ], n), sk),
+        (1.63, body_ring(0.0, 0.02, 0.20, 0.18, &[
+            (hp, 0.18, gonial * 0.8), (le, 0.18, gonial * 0.8),
+            (hp - 0.3, 0.2, masseter), (le + 0.3, 0.2, masseter),
+        ], n), sk),
+
+        // ── MOUTH LEVEL ──
+        (1.65, body_ring(0.0, 0.03, 0.195, 0.19, &[
+            (0.0, 0.20, 0.008),      // oral projection
+        ], n), sk),
+        (1.67, body_ring(0.0, 0.03, 0.20, 0.20, &[
+            (0.0, 0.25, 0.012),      // upper lip/maxilla projection
+            (hp - 0.3, 0.2, masseter * 0.8), (le + 0.3, 0.2, masseter * 0.8),
+        ], n), sk),
+
+        // ── NOSE BASE ──
+        (1.69, body_ring(0.0, 0.03, 0.205, 0.21, &[
+            (0.0, 0.12, 0.014),      // piriform aperture
+            (0.20, 0.10, -0.006), (TAU - 0.20, 0.10, -0.006), // nasolabial fold
+        ], n), sk),
+        // Nose mid — alar wings and tip projection
+        (1.72, body_ring(0.0, 0.04, 0.21, 0.22, &[
+            (0.0, 0.07, nose_size),   // nose tip projection
+            (0.12, 0.06, 0.012), (TAU - 0.12, 0.06, 0.012), // alar
+            (0.25, 0.10, -0.006), (TAU - 0.25, 0.10, -0.006), // nasolabial
+        ], n), sk),
+        // Nose bridge + cheekbones
+        (1.75, body_ring(0.0, 0.04, 0.22, 0.23, &[
+            (0.0, 0.06, nose_size * 0.7), // nasal bones
+            (0.55, 0.2, cheek), (TAU - 0.55, 0.2, cheek), // zygomatic arch
+            (0.30, 0.12, if fem { -0.008 } else { -0.005 }),
+            (TAU - 0.30, 0.12, if fem { -0.008 } else { -0.005 }),
+        ], n), sk),
+
+        // ── EYE LEVEL — convex face, no concavities ──
+        (1.77, body_ring(0.0, 0.05, 0.215, 0.24, &[
+            (0.0, 0.07, 0.018),       // nasion / nose bridge
+            (re, 0.08, 0.006), (le, 0.08, 0.006), // orbital rim
+            (0.55, 0.15, cheek * 0.5), (TAU - 0.55, 0.15, cheek * 0.5), // zygomatic
+        ], n), sk),
+        (1.80, body_ring(0.0, 0.05, 0.21, 0.24, &[
+            (0.0, 0.07, 0.014),       // upper nose bridge
+        ], n), sk),
+
+        // ── BROW RIDGE ──
+        (1.82, body_ring(0.0, 0.06, 0.205, 0.25, &[
+            (0.0, 0.45, brow_shelf),
+            (0.0, 0.10, glabella),     // glabella
+            (re, 0.12, supraorb), (le, 0.12, supraorb),
+        ], n), sk),
+        (1.84, body_ring(0.0, 0.06, 0.21, 0.25, &[
+            (0.0, 0.5, brow_boss),
+        ], n), sk),
+
+        // ── FOREHEAD ──
+        (1.87, body_ring(0.0, 0.07, 0.215, 0.26, &[
+            (PI, 0.4, 0.010),
+        ], n), sk),
+        (1.91, body_ring(0.0, 0.08, 0.22, 0.27, &[
+            (PI, 0.4, 0.015),
+        ], n), sk),
+
+        // ── CRANIAL VAULT ──
+        (1.95, body_ring(0.0, 0.08, 0.22, 0.27, &[(PI, 0.4, 0.015)], n), sk),
+        (1.99, body_ring(0.0, 0.08, 0.22, 0.27, &[(PI, 0.4, 0.015)], n), sk),
+
+        // ── CROWN ──
+        (2.03, body_ring(0.0, 0.07, 0.20, 0.24, &[], n), sk),
+        (2.06, body_ring(0.0, 0.06, 0.17, 0.20, &[], n), sk),
+        (2.08, body_ring(0.0, 0.05, 0.13, 0.16, &[], n), sk),
+        (2.10, body_ring(0.0, 0.04, 0.09, 0.11, &[], n), sk),
+        (2.12, body_ring(0.0, 0.03, 0.04, 0.05, &[], n), sk),
     ];
-    mesh::lathe_tris(tris, 0.0, 1.70, 0.0, &skull_profile, 24, sk);
+    mesh::loft_y_tris(tris, &rings);
 
-    // ── CRANIAL VAULT — smooth high-res sphere caps for roundness ──
-    // Back of skull (occipital) — rounded, slightly protruding
-    mesh::ellipsoid_tris(tris, 0.0, 1.82, 0.06, 0.10, 0.12, 0.10, 2, sk);
-    // Frontal bone (forehead) — flat, slightly receding as per bust
-    mesh::ellipsoid_tris(tris, 0.0, 1.82, -0.06, 0.10, 0.10, 0.06, 2, sk);
-    // Parietal eminences (top-sides of skull)
+    // ══════════════════════════════════════════════════════════════
+    // EYE ASSEMBLY — protruding eyeball with overhanging lid shelves
+    // ══════════════════════════════════════════════════════════════
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.06, 1.86, 0.0, 0.06, 0.08, 0.07, 1, sk);
+        let ex = side * 0.08;
+        let ey = 1.775;
+        let ez = -0.21;  // eye center well forward of face surface
+
+        // Orbital rim — bony ridge frames the socket opening
+        mesh::ellipsoid_tris(tris, ex, ey, ez + 0.030, 0.044, 0.028, 0.025, 2, sk);
+
+        // Eyeball — large sphere protruding past the lid plane
+        let eye_r = 0.024;
+        mesh::sphere_tris(tris, ex, ey, ez, eye_r, 1, 0xFFEEEEEE); // sclera
+        // Iris — colored disk on front of eyeball
+        mesh::sphere_tris(tris, ex, ey, ez - 0.018, 0.013, 1, 0xFF445533);
+        // Pupil — dark center
+        mesh::sphere_tris(tris, ex, ey, ez - 0.022, 0.006, 0, 0xFF111100);
+
+        // Upper eyelid — thick shelf that overhangs the eyeball top, creating shadow
+        // Main lid body — sits above the eyeball and curves over it
+        mesh::ellipsoid_tris(tris, ex, ey + 0.016, ez + 0.004, 0.038, 0.012, 0.030, 1, sk);
+        // Lid crease fold — secondary fold above the lid
+        mesh::ellipsoid_tris(tris, ex, ey + 0.022, ez + 0.010, 0.036, 0.005, 0.024, 1, darken(sk, 0.94));
+        // Lash line — dark edge along lower margin of upper lid
+        mesh::ellipsoid_tris(tris, ex, ey + 0.008, ez - 0.012, 0.035, 0.003, 0.022, 0, sk_dk);
+
+        // Lower eyelid — defined fleshy rim below the eyeball
+        mesh::ellipsoid_tris(tris, ex, ey - 0.014, ez + 0.002, 0.034, 0.008, 0.024, 1, sk);
+        // Lower lid rim — slight thickness catching light
+        mesh::ellipsoid_tris(tris, ex, ey - 0.009, ez - 0.010, 0.030, 0.003, 0.018, 0, darken(sk, 0.92));
+
+        // Lacrimal caruncle — fleshy pink corner at medial canthus
+        let caruncle_x = ex - side * 0.028;
+        mesh::ellipsoid_tris(tris, caruncle_x, ey - 0.002, ez - 0.004,
+            0.007, 0.007, 0.006, 0, 0xFFCC8888);
+    }
+
+    // ── EYEBROWS — on brow ridge ──
+    for &side in &[-1.0f32, 1.0] {
+        let brow_thick = if fem { 0.004 } else { 0.006 };
+        mesh::ellipsoid_tris(tris, side * 0.075, 1.82, -0.205,
+            0.040, brow_thick, 0.012, 0, darken(hair, 0.85));
+        // Arch peak (lateral third is thinner)
+        mesh::ellipsoid_tris(tris, side * 0.10, 1.825, -0.20,
+            0.018, brow_thick * 0.6, 0.008, 0, darken(hair, 0.80));
     }
 
     // ══════════════════════════════════════════════════════════════
-    // BROW RIDGE — heavy shelf overhanging eyes (ACU bust key feature)
+    // NOSE — bridge with plane changes, enclosed nostrils, philtrum ridges
     // ══════════════════════════════════════════════════════════════
-    // Central brow ridge (full width — massive shelf)
-    mesh::ellipsoid_tris(tris, 0.0, 1.77, -0.12, 0.12, 0.018, 0.04, 2, sk);
-    // Lateral brow shelves (thicker, overhanging each eye)
+    let ns = nose_size;
+    // Bridge — 3 distinct planes: upper nasal bone, mid bridge, lateral walls
+    // Upper bridge (nasal bone) — hard, flat plane
+    mesh::ellipsoid_tris(tris, 0.0, 1.78, -0.230, 0.010, 0.018, 0.012, 0, sk);
+    // Mid bridge — slightly wider, different angle catches different light
+    mesh::ellipsoid_tris(tris, 0.0, 1.75, -0.240, 0.014, 0.030, 0.016, 1, sk);
+    // Lateral nasal walls — angled planes flanking the bridge
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.05, 1.77, -0.13, 0.06, 0.016, 0.035, 1, sk);
-        // Brow ridge lateral end (turns toward temple)
-        mesh::ellipsoid_tris(tris, side * 0.09, 1.765, -0.10, 0.03, 0.012, 0.025, 0, sk);
+        // Upper lateral wall
+        mesh::ellipsoid_tris(tris, side * 0.014, 1.75, -0.228,
+            0.010, 0.028, 0.010, 0, sk);
+        // Lower lateral wall — transitions to alar
+        mesh::ellipsoid_tris(tris, side * 0.016, 1.72, -0.232,
+            0.010, 0.020, 0.010, 0, sk);
     }
-    // Glabella (prominent between brows — projects forward)
-    mesh::ellipsoid_tris(tris, 0.0, 1.775, -0.14, 0.025, 0.015, 0.02, 1, sk);
-    // Eyebrow hair ridges
+    // Nose tip — bifurcated dome (two lobules)
+    mesh::sphere_tris(tris, 0.007, 1.715, -0.260, ns * 0.48, 1, darken(sk, 0.97));
+    mesh::sphere_tris(tris, -0.007, 1.715, -0.260, ns * 0.48, 1, darken(sk, 0.97));
+    // Supratip — slight ridge above the tip domes
+    mesh::ellipsoid_tris(tris, 0.0, 1.725, -0.255, 0.010, 0.008, 0.010, 0, sk);
+    // Alar wings — thick curved flaps that curl under to enclose nostrils
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.05, 1.775, -0.14, 0.045, 0.006, 0.015, 0, darken(hair, 0.85));
+        // Wing body — main fleshy flap
+        mesh::ellipsoid_tris(tris, side * 0.020, 1.717, -0.245,
+            0.016, 0.012, 0.014, 0, sk);
+        // Wing outer edge — rolls outward
+        mesh::ellipsoid_tris(tris, side * 0.024, 1.715, -0.238,
+            0.008, 0.010, 0.008, 0, sk);
+        // Wing curl (underside wrapping inward) — encloses nostril opening
+        mesh::ellipsoid_tris(tris, side * 0.016, 1.708, -0.248,
+            0.012, 0.006, 0.010, 0, darken(sk, 0.92));
+        // Inner wing wall — completes the nostril enclosure
+        mesh::ellipsoid_tris(tris, side * 0.010, 1.710, -0.245,
+            0.006, 0.008, 0.008, 0, darken(sk, 0.93));
+    }
+    // Columella — strip between nostrils, angled down
+    mesh::ellipsoid_tris(tris, 0.0, 1.706, -0.252, 0.005, 0.008, 0.006, 0, darken(sk, 0.95));
+    // Nostril openings — teardrop-shaped dark cavities enclosed by alar wings
+    for &side in &[-1.0f32, 1.0] {
+        // Dark nostril interior — enclosed teardrop shape
+        mesh::ellipsoid_tris(tris, side * 0.012, 1.704, -0.248,
+            0.008, 0.005, 0.006, 0, darken(sk, 0.35));
+        // Deeper interior shadow
+        mesh::ellipsoid_tris(tris, side * 0.012, 1.706, -0.244,
+            0.005, 0.004, 0.004, 0, darken(sk, 0.25));
+    }
+    // Philtrum — two prominent ridges from columella to Cupid's bow
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.006, 1.695, -0.218,
+            0.003, 0.018, 0.004, 0, sk_sh);
+    }
+    // Philtrum groove — concavity between the two ridges
+    mesh::ellipsoid_tris(tris, 0.0, 1.695, -0.214, 0.004, 0.016, 0.002, 0, darken(sk, 0.93));
+
+    // ══════════════════════════════════════════════════════════════
+    // MOUTH — clean vermilion border, Cupid's bow M-shape, defined commissures
+    // ══════════════════════════════════════════════════════════════
+    let lip_full = if fem { 1.3 } else { 1.0 };
+    let lip_col = if fem { 0xFFCC8888 } else { 0xFFBB8877 };
+    let lo_lip_col = if fem { 0xFFDD9999 } else { 0xFFCC9988 };
+
+    // Orbicularis oris — tissue ring around mouth (skin-colored base)
+    mesh::ellipsoid_tris(tris, 0.0, 1.667, -0.200, 0.048, 0.018 * lip_full, 0.016 * lip_full, 1, darken(sk, 0.95));
+
+    // Upper lip — two halves forming clear Cupid's bow M-shape
+    // Left peak of the bow
+    mesh::ellipsoid_tris(tris, -0.014, 1.676, -0.210, 0.022, 0.005 * lip_full, 0.010 * lip_full, 0, lip_col);
+    // Right peak of the bow
+    mesh::ellipsoid_tris(tris, 0.014, 1.676, -0.210, 0.022, 0.005 * lip_full, 0.010 * lip_full, 0, lip_col);
+    // Central tubercle — fills the dip of the M at center
+    mesh::ellipsoid_tris(tris, 0.0, 1.674, -0.214, 0.008, 0.004 * lip_full, 0.007 * lip_full, 0, lip_col);
+    // Vermilion border — sharp upper edge defining the lip-skin boundary
+    mesh::ellipsoid_tris(tris, 0.0, 1.679, -0.207, 0.036, 0.002, 0.006, 0, darken(lip_col, 0.90));
+
+    // Lower lip — fuller single form, slight central depression
+    mesh::ellipsoid_tris(tris, 0.0, 1.656, -0.208, 0.040, 0.010 * lip_full, 0.013 * lip_full, 1, lo_lip_col);
+    // Lower lip central softness
+    mesh::ellipsoid_tris(tris, 0.0, 1.654, -0.214, 0.010, 0.003 * lip_full, 0.004, 0, darken(lo_lip_col, 0.93));
+    // Lower vermilion border
+    mesh::ellipsoid_tris(tris, 0.0, 1.651, -0.206, 0.036, 0.002, 0.005, 0, darken(lo_lip_col, 0.88));
+
+    // Mouth crease — dark line between lips
+    mesh::ellipsoid_tris(tris, 0.0, 1.666, -0.216, 0.036, 0.001, 0.003, 0, darken(sk, 0.50));
+
+    // Commissures — mouth corners recede into cheek (continuous, not floating)
+    for &side in &[-1.0f32, 1.0] {
+        // Corner — connected to lip edges, receding into cheek
+        mesh::ellipsoid_tris(tris, side * 0.036, 1.666, -0.198,
+            0.008, 0.006, 0.006, 0, darken(sk, 0.75));
+        // Nasolabial fold — defined crease from nose to mouth corner
+        mesh::ellipsoid_tris(tris, side * 0.032, 1.69, -0.210,
+            0.005, 0.020, 0.004, 0, sk_sh);
     }
 
     // ══════════════════════════════════════════════════════════════
-    // ORBITAL REGION — deep sockets with walls (bust has deep-set eyes)
+    // EARS — anatomical landmarks: helix rim, antihelix Y-fork, concha bowl,
+    //        tragus tab, lobe. All scaled up for visibility.
     // ══════════════════════════════════════════════════════════════
     for &side in &[-1.0f32, 1.0] {
-        let ex = side * 0.055;
-        // Orbital rim — bony ring around the eye (high subdiv)
-        mesh::ellipsoid_tris(tris, ex, 1.745, -0.11, 0.040, 0.025, 0.010, 2, sk);
-        // Lateral orbital wall (outer socket wall)
-        mesh::ellipsoid_tris(tris, ex + side * 0.03, 1.745, -0.10, 0.015, 0.020, 0.020, 1, sk);
-        // Medial orbital wall (inner socket wall near nose)
-        mesh::ellipsoid_tris(tris, ex - side * 0.025, 1.745, -0.10, 0.012, 0.018, 0.018, 1, sk);
-        // Orbital socket floor (darkened recess — deep)
-        mesh::ellipsoid_tris(tris, ex, 1.735, -0.10, 0.035, 0.015, 0.020, 1, sk_sh);
-        // Infraorbital region (below eye — subtle cheek puff)
-        mesh::ellipsoid_tris(tris, ex, 1.725, -0.12, 0.030, 0.010, 0.015, 1, sk);
+        let ear_x = side * 0.22;
+        let ear_z = 0.05;
+        let s = side; // shorthand
 
-        // Eyeball — white sclera (high subdiv)
-        mesh::sphere_tris(tris, ex, 1.742, -0.12, 0.022, 2, 0xFFEEE8DD);
-        // Iris (colored)
-        mesh::sphere_tris(tris, ex, 1.742, -0.142, 0.014, 1, 0xFF556644);
-        // Pupil (dark center)
-        mesh::sphere_tris(tris, ex, 1.742, -0.146, 0.007, 0, 0xFF111100);
-        // Upper eyelid (curved, high subdiv)
-        mesh::ellipsoid_tris(tris, ex, 1.755, -0.125, 0.030, 0.008, 0.020, 2, sk);
-        // Upper eyelid crease
-        mesh::ellipsoid_tris(tris, ex, 1.762, -0.12, 0.028, 0.003, 0.015, 0, sk_sh);
-        // Lower eyelid
-        mesh::ellipsoid_tris(tris, ex, 1.732, -0.125, 0.025, 0.005, 0.015, 1, sk);
-        // Lacrimal caruncle (inner corner)
-        mesh::sphere_tris(tris, ex - side * 0.025, 1.74, -0.13, 0.005, 0, 0xFFCC9988);
+        // ── HELIX — outer C-shaped rim fold, the most visible ear structure ──
+        // Top arc — highest point of the ear
+        mesh::ellipsoid_tris(tris, ear_x + s * 0.003, 1.80, ear_z,
+            0.012 * s.abs(), 0.010, 0.016, 1, sk);
+        // Upper front — helix curves forward from top
+        mesh::ellipsoid_tris(tris, ear_x - s * 0.005, 1.79, ear_z - 0.012,
+            0.010, 0.016, 0.010, 1, sk);
+        // Mid helix — widest point, curling inward
+        mesh::ellipsoid_tris(tris, ear_x + s * 0.008, 1.77, ear_z + 0.002,
+            0.012, 0.022, 0.014, 1, sk);
+        // Lower helix — curves down toward lobe
+        mesh::ellipsoid_tris(tris, ear_x + s * 0.004, 1.74, ear_z - 0.004,
+            0.010, 0.018, 0.012, 1, sk);
+        // Helix root — where it attaches to head above ear canal
+        mesh::ellipsoid_tris(tris, ear_x - s * 0.010, 1.77, ear_z - 0.015,
+            0.008, 0.010, 0.008, 0, sk);
 
-        // Crow's feet (age)
-        if app.face_age > 0 {
+        // ── ANTIHELIX — Y-shaped inner ridge with clear fork ──
+        // Main trunk — vertical ridge inside the helix
+        mesh::ellipsoid_tris(tris, ear_x - s * 0.004, 1.76, ear_z + 0.002,
+            0.008, 0.030, 0.010, 1, darken(sk, 0.96));
+        // Superior crus (upper fork) — curves up and back
+        mesh::ellipsoid_tris(tris, ear_x, 1.79, ear_z + 0.006,
+            0.006, 0.014, 0.008, 0, darken(sk, 0.95));
+        // Inferior crus (lower fork) — curves toward helix root
+        mesh::ellipsoid_tris(tris, ear_x - s * 0.006, 1.79, ear_z - 0.006,
+            0.006, 0.014, 0.008, 0, darken(sk, 0.95));
+        // Fossa triangularis — depression between the two crura
+        mesh::ellipsoid_tris(tris, ear_x - s * 0.002, 1.79, ear_z,
+            0.004, 0.008, 0.004, 0, darken(sk, 0.80));
+
+        // ── CONCHA — deep bowl leading to canal ──
+        mesh::ellipsoid_tris(tris, ear_x - s * 0.012, 1.755, ear_z - 0.002,
+            0.014, 0.018, 0.012, 0, darken(sk, 0.55));
+        // Canal opening — dark center of concha
+        mesh::sphere_tris(tris, ear_x - s * 0.016, 1.755, ear_z - 0.005,
+            0.006, 0, darken(sk, 0.30));
+
+        // ── TRAGUS — cartilage tab projecting in front of canal ──
+        mesh::ellipsoid_tris(tris, ear_x - s * 0.020, 1.758, ear_z - 0.016,
+            0.008, 0.010, 0.007, 0, sk);
+        // Intertragic notch — gap between tragus and antitragus
+        mesh::ellipsoid_tris(tris, ear_x - s * 0.014, 1.745, ear_z - 0.010,
+            0.004, 0.005, 0.004, 0, darken(sk, 0.60));
+        // Antitragus — bump opposite the tragus
+        mesh::ellipsoid_tris(tris, ear_x - s * 0.006, 1.74, ear_z - 0.006,
+            0.007, 0.008, 0.006, 0, sk);
+
+        // ── LOBE — soft pendulous teardrop at bottom ──
+        mesh::ellipsoid_tris(tris, ear_x + s * 0.002, 1.72, ear_z - 0.004,
+            0.010, 0.016, 0.010, 1, darken(sk, 0.97));
+    }
+
+    // ── AGE-DEPENDENT DETAILS ──
+    if app.face_age >= 1 {
+        for fi in 0..3 {
+            let fy = 1.85 + fi as f32 * 0.012;
+            push_box(tris, 0.0, fy, -0.18, 0.08, 0.002, 0.002, sk_sh);
+        }
+    }
+    if app.face_age > 0 {
+        for &side in &[-1.0f32, 1.0] {
             for wi in 0..3 {
-                let wy = 1.745 + wi as f32 * 0.007 - 0.007;
-                push_box(tris, ex + side * 0.04, wy, -0.115, 0.010, 0.002, 0.002, sk_sh);
+                let wy = 1.77 + wi as f32 * 0.007 - 0.007;
+                push_box(tris, side * 0.09, wy, -0.16, 0.010, 0.002, 0.002, sk_sh);
             }
         }
     }
 
     // ══════════════════════════════════════════════════════════════
-    // NOSE — prominent, projecting forward (bust has strong nose)
-    // Built as overlapping high-subdiv forms
-    // ══════════════════════════════════════════════════════════════
-    // Nasal bone (upper bridge — bony)
-    mesh::ellipsoid_tris(tris, 0.0, 1.76, -0.14, 0.014, 0.015, 0.020, 1, sk);
-    // Nasal bridge / dorsum (long projecting ridge)
-    mesh::ellipsoid_tris(tris, 0.0, 1.73, -0.15, 0.012, 0.035, 0.025, 2, sk);
-    // Nose cartilage (lower bridge — slightly wider)
-    mesh::ellipsoid_tris(tris, 0.0, 1.71, -0.155, 0.016, 0.020, 0.025, 1, sk);
-    // Nose tip (lobule — bulbous, high subdiv)
-    mesh::sphere_tris(tris, 0.0, 1.698, -0.165, 0.022, 2, darken(sk, 0.98));
-    // Nose tip underside (creates rounded bottom)
-    mesh::ellipsoid_tris(tris, 0.0, 1.693, -0.155, 0.018, 0.008, 0.015, 1, sk);
-    // Alar wings (nostril sides — large, rounded)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.016, 1.695, -0.155, 0.014, 0.012, 0.014, 1, darken(sk, 0.96));
-        // Alar groove (crease where wing meets cheek)
-        mesh::ellipsoid_tris(tris, side * 0.022, 1.70, -0.14, 0.004, 0.010, 0.008, 0, sk_sh);
-    }
-    // Nostrils (dark openings)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::sphere_tris(tris, side * 0.008, 1.691, -0.162, 0.006, 0, darken(sk, 0.60));
-    }
-    // Columella (cartilage between nostrils)
-    mesh::ellipsoid_tris(tris, 0.0, 1.691, -0.158, 0.005, 0.006, 0.008, 0, darken(sk, 0.95));
-
-    // ══════════════════════════════════════════════════════════════
-    // CHEEKBONES — prominent zygomatic arches (bust key feature)
-    // ══════════════════════════════════════════════════════════════
-    for &side in &[-1.0f32, 1.0] {
-        // Zygomatic body (main cheekbone mass — projects forward-lateral)
-        mesh::ellipsoid_tris(tris, side * 0.09, 1.72, -0.09, 0.04, 0.018, 0.025, 2, sk);
-        // Zygomatic arch (extends toward ear)
-        mesh::ellipsoid_tris(tris, side * 0.11, 1.72, -0.05, 0.025, 0.012, 0.035, 1, sk);
-        // Malar fat pad (below cheekbone — subtle fullness)
-        mesh::ellipsoid_tris(tris, side * 0.07, 1.71, -0.11, 0.030, 0.015, 0.020, 1, sk);
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    // MOUTH — realistic anatomy with proper 3D forms
-    // ══════════════════════════════════════════════════════════════
-    // Muzzle area (the forward projection around the mouth)
-    mesh::ellipsoid_tris(tris, 0.0, 1.67, -0.14, 0.05, 0.025, 0.025, 2, sk);
-    // Philtrum (vertical groove above upper lip)
-    push_box(tris, 0.0, 1.678, -0.155, 0.006, 0.012, 0.004, sk_sh);
-    // Upper lip — 3D form
-    mesh::ellipsoid_tris(tris, 0.0, 1.668, -0.155, 0.035, 0.005, 0.010, 1, darken(sk, 0.90));
-    // Upper lip vermilion (red)
-    mesh::ellipsoid_tris(tris, 0.0, 1.665, -0.158, 0.030, 0.004, 0.009, 1, 0xFFBB8877);
-    // Lower lip — fuller, projecting
-    mesh::ellipsoid_tris(tris, 0.0, 1.657, -0.155, 0.032, 0.008, 0.012, 2, 0xFFCC9988);
-    // Oral commissures (corners)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::sphere_tris(tris, side * 0.028, 1.662, -0.148, 0.004, 0, darken(sk, 0.80));
-    }
-    // Mentolabial sulcus (groove below lower lip)
-    mesh::ellipsoid_tris(tris, 0.0, 1.648, -0.148, 0.030, 0.004, 0.008, 0, sk_sh);
-
-    // ══════════════════════════════════════════════════════════════
-    // CHIN — strong, projecting (angular male chin like bust)
-    // ══════════════════════════════════════════════════════════════
-    // Chin mass (large, high subdiv)
-    mesh::ellipsoid_tris(tris, 0.0, 1.635, -0.14, 0.035, 0.020, 0.025, 2, sk);
-    // Mental protuberance (chin point — projects forward)
-    mesh::ellipsoid_tris(tris, 0.0, 1.625, -0.15, 0.020, 0.012, 0.018, 1, sk);
-    // Mental tubercles (two bumps on chin)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::sphere_tris(tris, side * 0.012, 1.63, -0.15, 0.008, 0, sk);
-    }
-    // Chin cleft (optional)
-    if app.face_age != 1 {
-        push_box(tris, 0.0, 1.632, -0.155, 0.003, 0.006, 0.003, sk_sh);
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    // JAWLINE — strong angular mandible (bust has prominent jaw)
-    // ══════════════════════════════════════════════════════════════
-    for &side in &[-1.0f32, 1.0] {
-        // Mandibular body (jaw ridge from chin to ear — thick)
-        mesh::ellipsoid_tris(tris, side * 0.06, 1.65, -0.09, 0.050, 0.010, 0.045, 1, sk);
-        // Jaw ramus (vertical part from angle to ear)
-        mesh::ellipsoid_tris(tris, side * 0.10, 1.67, -0.04, 0.020, 0.025, 0.035, 1, sk);
-        // Mandibular angle (jaw corner — strong, prominent)
-        mesh::ellipsoid_tris(tris, side * 0.10, 1.655, -0.02, 0.025, 0.015, 0.030, 1, sk);
-        // Masseter muscle (jaw muscle bulge — gives jaw width)
-        mesh::ellipsoid_tris(tris, side * 0.10, 1.685, -0.04, 0.025, 0.030, 0.025, 2, sk);
-        // Submandibular (under jaw — fills gap)
-        mesh::ellipsoid_tris(tris, side * 0.04, 1.64, -0.05, 0.035, 0.010, 0.030, 0, sk);
-    }
-
-    // ── NASOLABIAL FOLDS ──
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.03, 1.69, -0.145, 0.004, 0.015, 0.006, 0, sk_sh);
-        mesh::ellipsoid_tris(tris, side * 0.035, 1.67, -0.14, 0.004, 0.015, 0.006, 0, sk_sh);
-        if app.face_age >= 2 {
-            mesh::ellipsoid_tris(tris, side * 0.038, 1.66, -0.14, 0.004, 0.010, 0.005, 0, sk_sh);
-        }
-    }
-
-    // ── FOREHEAD wrinkles (age-dependent) ──
-    if app.face_age >= 1 {
-        for fi in 0..3 {
-            let fy = 1.79 + fi as f32 * 0.012;
-            push_box(tris, 0.0, fy, -0.125, 0.07, 0.002, 0.002, sk_sh);
-        }
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    // EARS — full 3D ear anatomy (high subdiv)
-    // ══════════════════════════════════════════════════════════════
-    for &side in &[-1.0f32, 1.0] {
-        let ex = side * 0.135;
-        // Helix (outer ear rim — C-shaped curve, high subdiv)
-        mesh::ellipsoid_tris(tris, ex, 1.735, 0.005, 0.018, 0.038, 0.014, 2, sk);
-        // Helix top
-        mesh::ellipsoid_tris(tris, ex * 0.95, 1.76, 0.005, 0.015, 0.010, 0.012, 1, sk);
-        // Antihelix (Y-shaped inner ridge)
-        mesh::ellipsoid_tris(tris, ex * 0.92, 1.74, 0.0, 0.012, 0.028, 0.010, 1, sk);
-        // Antihelix branches
-        mesh::ellipsoid_tris(tris, ex * 0.90, 1.755, -0.005, 0.008, 0.012, 0.008, 0, sk);
-        // Tragus
-        mesh::ellipsoid_tris(tris, ex * 0.85, 1.73, -0.015, 0.007, 0.010, 0.007, 1, sk);
-        // Antitragus
-        mesh::ellipsoid_tris(tris, ex * 0.88, 1.715, -0.008, 0.006, 0.008, 0.006, 1, sk);
-        // Concha (ear cavity — deep, dark)
-        mesh::ellipsoid_tris(tris, ex * 0.88, 1.73, 0.005, 0.014, 0.018, 0.008, 1, darken(sk, 0.70));
-        // Ear lobe (rounded, high subdiv)
-        mesh::ellipsoid_tris(tris, ex, 1.695, 0.0, 0.010, 0.012, 0.008, 1, darken(sk, 0.98));
-        // Ear back (rear surface)
-        mesh::ellipsoid_tris(tris, ex * 1.02, 1.735, 0.015, 0.008, 0.030, 0.010, 1, sk);
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    // HAIR / HAT
+    // HAIR — skull-hugging lofted mesh + sideburns
     // ══════════════════════════════════════════════════════════════
     let hat = if let Some(jc) = is_job_hat {
         gen_job_hat(tris, jc);
@@ -602,56 +823,131 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
         gen_hat(tris, app, hair)
     };
 
+    let hair_dk = darken(hair, 0.90);
     if hat && app.hat_type != 6 {
-        mesh::ellipsoid_tris(tris, 0.0, 1.66, 0.1, 0.1, 0.06, 0.06, 0, hair);
-        push_box(tris, -0.13, 1.71, -0.02, 0.015, 0.05, 0.03, hair);
-        push_box(tris, 0.13, 1.71, -0.02, 0.015, 0.05, 0.03, hair);
-        push_box(tris, -0.12, 1.73, 0.03, 0.02, 0.04, 0.06, hair);
-        push_box(tris, 0.12, 1.73, 0.03, 0.02, 0.04, 0.06, hair);
-    } else if !hat {
-        // Full hair — volumetric (high subdiv for smoothness)
-        mesh::sphere_tris(tris, 0.0, 1.88, 0.01, 0.14, 2, hair);
+        // Hair peeking out from under hat
+        mesh::ellipsoid_tris(tris, 0.0, 1.70, 0.14, 0.14, 0.06, 0.10, 0, hair);
         for &side in &[-1.0f32, 1.0] {
-            mesh::ellipsoid_tris(tris, side * 0.10, 1.78, 0.0, 0.04, 0.08, 0.08, 1, hair);
+            push_box(tris, side * 0.17, 1.74, -0.02, 0.015, 0.05, 0.03, hair);
+            push_box(tris, side * 0.16, 1.76, 0.04, 0.02, 0.04, 0.08, hair);
         }
-        mesh::ellipsoid_tris(tris, 0.0, 1.74, 0.10, 0.10, 0.06, 0.06, 1, darken(hair, 0.9));
-        push_box(tris, -0.04, 1.89, -0.04, 0.02, 0.01, 0.08, darken(hair, 0.9));
-        push_box(tris, 0.04, 1.90, -0.02, 0.02, 0.01, 0.07, darken(hair, 1.1));
-        push_box(tris, -0.13, 1.71, -0.025, 0.015, 0.06, 0.03, hair);
-        push_box(tris, 0.13, 1.71, -0.025, 0.015, 0.06, 0.03, hair);
+    } else if !hat {
+        // Full hair — flush against scalp at hairline, dome volume above.
+        // Ring centers track skull centers to eliminate gap.
+        let ho = 0.020; // hair sits just outside skull surface
+        let hn = 32;
+        use std::f32::consts::TAU;
+        let hair_med = darken(hair, 0.95);
+        // Skull ring centers for reference:
+        //   y=1.87: cz=0.07, rx=0.215, rz=0.26
+        //   y=1.91: cz=0.08, rx=0.22,  rz=0.27
+        //   y=1.95: cz=0.08, rx=0.22,  rz=0.27
+        //   y=1.99: cz=0.08, rx=0.22,  rz=0.27
+        //   y=2.03: cz=0.07, rx=0.20,  rz=0.24
+        let hair_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+            // Hairline base — flush with skull surface (no gap)
+            (1.86, body_ring(0.0, 0.07, 0.215, 0.26, &[], hn), hair_dk),
+            // Just above hairline — minimal volume added, sits on scalp
+            (1.89, body_ring(0.0, 0.07, 0.22 + ho, 0.27 + ho, &[
+                (PI, 0.5, 0.015),         // back volume
+            ], hn), hair_dk),
+            // Hairline to crown transition — volume grows
+            (1.92, body_ring(0.0, 0.08, 0.23 + ho, 0.28 + ho, &[
+                (PI, 0.5, 0.020),
+                (hp + 0.3, 0.3, 0.008),   // part asymmetry
+            ], hn), hair_med),
+            // Cranial vault — full volume with strand-group bumps
+            (1.96, body_ring(0.0, 0.08, 0.24 + ho, 0.29 + ho, &[
+                (PI, 0.5, 0.025),         // back volume
+                (hp, 0.30, 0.014),        // side volume R — strand group
+                (PI + hp, 0.30, 0.014),   // side volume L — strand group
+                (0.4, 0.20, 0.008),       // front-right strand group
+                (TAU - 0.6, 0.20, 0.007), // front-left strand group
+            ], hn), hair),
+            // Mid vault — maximum width, strand texture
+            (2.00, body_ring(0.0, 0.08, 0.24 + ho, 0.30 + ho, &[
+                (PI, 0.5, 0.022),
+                (hp, 0.25, 0.012),        // strand groups shifting position
+                (PI + hp, 0.25, 0.012),   // (flow direction effect)
+                (0.8, 0.20, 0.008),
+                (TAU - 1.0, 0.20, 0.007),
+            ], hn), hair),
+            // Upper vault — volume holds, gentle taper begins
+            (2.04, body_ring(0.0, 0.07, 0.23 + ho, 0.28 + ho, &[
+                (PI, 0.4, 0.018),
+                (hp, 0.25, 0.010),
+                (PI + hp, 0.25, 0.010),
+                (1.2, 0.20, 0.006),       // crown swirl groups
+                (TAU - 1.4, 0.20, 0.006),
+            ], hn), hair),
+            // Crown — still has volume
+            (2.08, body_ring(0.0, 0.06, 0.20 + ho, 0.24 + ho, &[
+                (PI, 0.3, 0.012),
+                (hp, 0.25, 0.008),
+                (PI + hp, 0.25, 0.008),
+            ], hn), hair),
+            (2.11, body_ring(0.0, 0.05, 0.17 + ho, 0.20 + ho, &[
+                (PI, 0.3, 0.008),
+            ], hn), hair_med),
+            // Crown dome tip — rounded, not flat
+            (2.14, body_ring(0.0, 0.04, 0.12 + ho * 0.5, 0.14 + ho * 0.5, &[], hn), hair_med),
+            (2.17, body_ring(0.0, 0.03, 0.06, 0.07, &[], hn), hair_dk),
+        ];
+        mesh::loft_y_tris(tris, &hair_rings);
+
+        // Hairline coverage — fills any remaining transition at forehead
+        mesh::ellipsoid_tris(tris, 0.0, 1.87, -0.19, 0.22, 0.04, 0.06, 1, hair);
+        // Temple coverage — wraps from forehead around sides to ears
+        for &side in &[-1.0f32, 1.0] {
+            mesh::ellipsoid_tris(tris, side * 0.19, 1.87, 0.00, 0.08, 0.05, 0.16, 1, hair);
+            mesh::ellipsoid_tris(tris, side * 0.21, 1.79, 0.04, 0.06, 0.10, 0.14, 1, hair);
+        }
+        // Back of head / nape — natural taper, not hard edge
+        mesh::ellipsoid_tris(tris, 0.0, 1.84, 0.26, 0.20, 0.14, 0.10, 1, hair_dk);
+        // Nape wisps — tapered hair flow at neckline
+        mesh::ellipsoid_tris(tris, 0.0, 1.78, 0.22, 0.14, 0.08, 0.06, 0, hair_dk);
+        // Nape wisp — hair at the back of the neck
+        mesh::ellipsoid_tris(tris, 0.0, 1.76, 0.20, 0.14, 0.06, 0.08, 0, hair_dk);
+        // Sideburns
+        for &side in &[-1.0f32, 1.0] {
+            push_box(tris, side * 0.20, 1.74, -0.01, 0.012, 0.05, 0.04, hair);
+        }
     }
 }
 
-/// Generate the anatomical neck with musculature — thicker, more visible muscles
-fn gen_neck(tris: &mut Vec<WorldTri>, skin: u32) {
-    // Base neck — thick, muscular
-    mesh::tapered_cylinder_tris(tris, 0.0, 1.49, 0.0, 0.10, 0.085, 0.14, 12, skin);
-    // Neck-to-torso transition (large smooth bridging form)
-    mesh::ellipsoid_tris(tris, 0.0, 1.44, 0.0, 0.18, 0.10, 0.14, 1, skin);
-    // Sternocleidomastoid muscles (diagonal from ear to collarbone)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.06, 1.47, -0.04, 0.028, 0.08, 0.022, 1, darken(skin, 0.98));
-    }
-    // Laryngeal prominence (Adam's apple)
-    mesh::sphere_tris(tris, 0.0, 1.48, -0.10, 0.024, 0, darken(skin, 0.99));
-    // Suprasternal notch
-    mesh::sphere_tris(tris, 0.0, 1.43, -0.09, 0.016, 0, darken(skin, 0.88));
-    // Platysma
-    for &side in &[-1.0f32, 1.0] {
-        push_box(tris, side * 0.07, 1.44, -0.05, 0.018, 0.05, 0.012, darken(skin, 0.98));
-    }
-    // ── MASSIVE TRAPEZIUS SLOPE — continuous wedge from neck to shoulder tips ──
-    // Central trap base (back of neck, thick)
-    mesh::ellipsoid_tris(tris, 0.0, 1.44, 0.06, 0.16, 0.08, 0.08, 1, darken(skin, 0.99));
-    // Trap wings (slope from neck down to each shoulder — the key visual)
-    for &side in &[-1.0f32, 1.0] {
-        // Inner trap slope (close to neck)
-        mesh::ellipsoid_tris(tris, side * 0.10, 1.44, 0.04, 0.10, 0.06, 0.07, 1, darken(skin, 0.99));
-        // Mid trap slope (halfway to shoulder)
-        mesh::ellipsoid_tris(tris, side * 0.20, 1.43, 0.02, 0.08, 0.05, 0.06, 1, darken(skin, 0.99));
-        // Outer trap (reaching toward deltoid)
-        mesh::ellipsoid_tris(tris, side * 0.28, 1.42, 0.01, 0.06, 0.04, 0.05, 0, darken(skin, 0.99));
-    }
+/// Neck — ring-lofted with SCM muscles and larynx. Continuous head-to-neck topology.
+fn gen_neck(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions) {
+    use std::f32::consts::PI;
+    let nt = props.neck_top;
+    let m = props.muscle_def;
+    let rx = props.neck_rx;
+    let rz = props.neck_rz;
+    let n = 24;
+
+    // Neck from torso top (1.48) through to neck_top — monotonically increasing Y
+    let rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+        // Base — wide, blends with torso shoulder transition
+        (1.48, body_ring(0.0, 0.0, rx * 1.10, rz * 1.10, &[
+            (PI, 0.5, 0.025 * m),             // trapezius insertion
+            (PI * 0.5, 0.25, 0.012 * m),      // SCM origin (right, behind ear)
+            (PI * 1.5, 0.25, 0.012 * m),      // SCM origin (left)
+        ], n), skin),
+        // Mid-neck — SCM prominent, laryngeal prominence
+        (1.49, body_ring(0.0, 0.0, rx * 1.02, rz * 1.02, &[
+            (PI * 0.5, 0.28, 0.018 * m),      // SCM right — diagonal cord
+            (PI * 1.5, 0.28, 0.018 * m),      // SCM left
+            (0.0, 0.12, if props.has_adams_apple { 0.014 } else { 0.005 }), // larynx
+            (PI, 0.4, 0.015 * m),             // nuchal muscles
+        ], n), skin),
+        // Upper neck — tapers, SCM fading
+        (nt, body_ring(0.0, 0.0, rx * 0.95, rz * 0.95, &[
+            (PI * 0.5, 0.25, 0.010 * m),      // SCM insertion
+            (PI * 1.5, 0.25, 0.010 * m),
+            (0.0, 0.10, if props.has_adams_apple { 0.008 } else { 0.003 }),
+        ], n), skin),
+    ];
+
+    mesh::loft_y_tris(tris, &rings);
 }
 
 /// Generate layered torso clothing: anatomical base → waistcoat → coat
@@ -1180,50 +1476,70 @@ fn gen_arm(
 /// Generate a detailed hand — larger proportions, thicker fingers, muscle pads
 fn gen_hand(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, side: f32, skin: u32) {
     let palm_dk = darken(skin, 0.93);
-    let knuckle_dk = darken(skin, 0.85);
-    let nail_col = darken(skin, 1.08);
+    let knuckle_dk = darken(skin, 0.88);
+    let nail_col = darken(skin, 1.06);
 
-    // ── PALM — wider, thicker ──
-    push_box(tris, cx, cy, cz, 0.055, 0.05, 0.065, palm_dk);
-    // Thenar eminence (thumb muscle pad)
-    mesh::ellipsoid_tris(tris, cx + side * 0.02, cy - 0.01, cz + 0.01, 0.02, 0.02, 0.025, 0, darken(skin, 0.91));
-    // Hypothenar eminence (pinky side pad)
-    mesh::ellipsoid_tris(tris, cx - side * 0.02, cy - 0.01, cz + 0.01, 0.015, 0.018, 0.022, 0, darken(skin, 0.91));
-    // Palm crease lines
-    push_box(tris, cx, cy - 0.005, cz - 0.015, 0.04, 0.002, 0.003, darken(skin, 0.72));
-    push_box(tris, cx, cy - 0.012, cz + 0.005, 0.035, 0.002, 0.003, darken(skin, 0.72));
+    // ── PALM — lofted shape: wider at knuckles, narrower at wrist ──
+    // Back of hand (dorsal surface — slightly convex)
+    mesh::ellipsoid_tris(tris, cx, cy + 0.006, cz - 0.01, 0.040, 0.008, 0.045, 0, skin);
+    // Palm pad (palmar surface — fleshy)
+    mesh::ellipsoid_tris(tris, cx, cy - 0.006, cz - 0.01, 0.038, 0.010, 0.042, 0, palm_dk);
+    // Thenar eminence (thumb muscle pad — prominent mound)
+    mesh::ellipsoid_tris(tris, cx + side * 0.020, cy - 0.004, cz + 0.005,
+        0.018, 0.012, 0.022, 0, darken(skin, 0.92));
+    // Hypothenar (pinky side — smaller)
+    mesh::ellipsoid_tris(tris, cx - side * 0.018, cy - 0.004, cz - 0.005,
+        0.012, 0.010, 0.018, 0, darken(skin, 0.92));
 
-    // ── KNUCKLE RIDGE (more prominent) ──
-    push_box(tris, cx, cy + 0.025, cz - 0.035, 0.052, 0.012, 0.008, knuckle_dk);
+    // ── 4 FINGERS — tapered, 3 phalanges each ──
+    // Finger proportions: index longest, ring nearly same, middle longest, pinky shortest
+    let finger_lengths = [0.032f32, 0.038, 0.035, 0.028]; // index, middle, ring, pinky
+    let finger_radii  = [0.007f32, 0.0075, 0.007, 0.006]; // base radius, tapers
+    let finger_spread = [0.012f32, 0.004, -0.004, -0.013]; // X offset from center
 
-    // ── 4 FINGERS — thicker, more visible joints ──
     for fi in 0..4 {
-        let fx = cx + (fi as f32 - 1.5) * 0.013;
-        let fz_base = cz - 0.04;
-        let finger_len = 0.030 + (1.0 - (fi as f32 - 1.5).abs() * 0.35) * 0.012;
+        let fx = cx + side * finger_spread[fi];
+        let fz_base = cz - 0.050; // knuckle line
+        let flen = finger_lengths[fi];
+        let fr = finger_radii[fi];
 
-        // Proximal phalanx (thicker)
-        push_box(tris, fx, cy + 0.005, fz_base - finger_len * 0.5, 0.009, 0.010, finger_len, skin);
-        // Knuckle joint (ball)
-        mesh::sphere_tris(tris, fx, cy + 0.005, fz_base - finger_len, 0.007, 0, knuckle_dk);
-        // Distal phalanx
-        let d_len = finger_len * 0.7;
-        push_box(tris, fx, cy + 0.003, fz_base - finger_len - d_len * 0.5, 0.008, 0.008, d_len, skin);
+        // Proximal phalanx (thickest)
+        mesh::ellipsoid_tris(tris, fx, cy + 0.002, fz_base - flen * 0.3,
+            fr, fr * 0.9, flen * 0.45, 0, skin);
+        // PIP joint
+        mesh::sphere_tris(tris, fx, cy + 0.001, fz_base - flen * 0.55, fr * 0.85, 0, knuckle_dk);
+        // Middle phalanx (thinner)
+        mesh::ellipsoid_tris(tris, fx, cy + 0.001, fz_base - flen * 0.72,
+            fr * 0.8, fr * 0.75, flen * 0.28, 0, skin);
+        // DIP joint
+        mesh::sphere_tris(tris, fx, cy, fz_base - flen * 0.85, fr * 0.7, 0, knuckle_dk);
+        // Distal phalanx (thinnest — fingertip)
+        mesh::ellipsoid_tris(tris, fx, cy, fz_base - flen * 0.95,
+            fr * 0.65, fr * 0.6, flen * 0.14, 0, skin);
         // Fingernail
-        push_box(tris, fx, cy + 0.010, fz_base - finger_len - d_len + 0.003, 0.006, 0.003, 0.007, nail_col);
+        push_box(tris, fx, cy + 0.005, fz_base - flen + 0.003,
+            fr * 0.6, 0.002, fr * 0.8, nail_col);
     }
 
-    // ── THUMB — thicker, 2 segments ──
-    let tx = cx + side * 0.032;
+    // ── THUMB — offset at angle, opposable position ──
+    let tx = cx + side * 0.035;
     let tz = cz + 0.005;
-    // Metacarpal
-    push_box(tris, tx, cy - 0.005, tz - 0.015, 0.013, 0.014, 0.025, skin);
-    // CMC joint
-    mesh::sphere_tris(tris, tx, cy - 0.005, tz - 0.030, 0.008, 0, knuckle_dk);
-    // Distal thumb
-    push_box(tris, tx, cy - 0.003, tz - 0.045, 0.011, 0.012, 0.022, skin);
+    // Metacarpal (angled outward and forward)
+    mesh::ellipsoid_tris(tris, tx, cy - 0.003, tz - 0.008,
+        0.010, 0.011, 0.018, 0, skin);
+    // MCP joint
+    mesh::sphere_tris(tris, tx + side * 0.005, cy - 0.004, tz - 0.025, 0.008, 0, knuckle_dk);
+    // Proximal phalanx (angled further out)
+    mesh::ellipsoid_tris(tris, tx + side * 0.008, cy - 0.005, tz - 0.038,
+        0.009, 0.010, 0.016, 0, skin);
+    // IP joint
+    mesh::sphere_tris(tris, tx + side * 0.008, cy - 0.005, tz - 0.050, 0.007, 0, knuckle_dk);
+    // Distal phalanx (tip)
+    mesh::ellipsoid_tris(tris, tx + side * 0.008, cy - 0.004, tz - 0.058,
+        0.007, 0.008, 0.010, 0, skin);
     // Thumbnail
-    push_box(tris, tx, cy + 0.006, tz - 0.055, 0.008, 0.003, 0.008, nail_col);
+    push_box(tris, tx + side * 0.008, cy + 0.002, tz - 0.063,
+        0.006, 0.002, 0.007, nail_col);
 }
 
 /// Generate a single leg with joint-based positioning.
@@ -1421,19 +1737,12 @@ fn gen_character_body(
         return;
     }
 
-    // ── HEAD (skull + face + hair/hat) ──
-    gen_head(tris, app, is_job_hat);
-
-    // ── NECK ──
-    gen_neck(tris, skin);
-
-    // ── TORSO (undershirt + vest + coat) ──
+    // ── BODY (neck, torso, limbs) — generate then stretch for heroic proportions ──
+    let body_base = tris.len();
+    gen_neck(tris, skin, &male_proportions());
     gen_torso(tris, app, vest_col, swing);
-
-    // ── BELT / SASH / STRAPS / POUCHES ──
     gen_belt_system(tris, app, pants_col);
 
-    // ── LEGS — wider stance, larger stride, more visible knee bend ──
     let l_fwd = -swing * 0.40;
     let r_fwd = swing * 0.40;
     let l_knee = if swing > 0.0 { swing * 0.22 } else { 0.0 };
@@ -1441,7 +1750,6 @@ fn gen_character_body(
     gen_leg(tris, -1.0, l_fwd, l_knee, pants_col, app);
     gen_leg(tris, 1.0, r_fwd, r_knee, pants_col, app);
 
-    // ── ARMS — larger swing, more visible elbow articulation ──
     if attack_phase > 0.0 {
         gen_attack_arms(tris, attack_phase, arm_outer, skin, app);
     } else if carrying_item {
@@ -1458,6 +1766,35 @@ fn gen_character_body(
         let r_bend = 0.10 + swing.abs() * 0.14;
         gen_arm(tris, -1.0, l_arm_fwd, l_bend, arm_outer, skin, app);
         gen_arm(tris, 1.0, r_arm_fwd, r_bend, arm_outer, skin, app);
+    }
+
+    // Stretch body vertically and widen
+    for tri in &mut tris[body_base..] {
+        for v in &mut tri.v {
+            v[0] *= BODY_WIDEN;
+            v[1] *= BODY_STRETCH;
+            v[2] *= BODY_WIDEN;
+        }
+    }
+
+    // ── HEAD (separate, uniformly scaled, positioned on stretched neck) ──
+    let head_base = tris.len();
+    gen_head(tris, app, is_job_hat);
+    for tri in &mut tris[head_base..] {
+        for v in &mut tri.v {
+            v[0] *= HEAD_SCALE;
+            v[1] = HEAD_CY + (v[1] - HEAD_CY) * HEAD_SCALE;
+            v[2] *= HEAD_SCALE;
+        }
+    }
+    // Head sits on spine at skull base (y≈1.55), NOT at the chin.
+    // Chin hangs below, overlapping upper neck.
+    let skull_base = HEAD_CY + (1.55 - HEAD_CY) * HEAD_SCALE;
+    let head_shift = NECK_TOP * BODY_STRETCH - skull_base;
+    for tri in &mut tris[head_base..] {
+        for v in &mut tri.v {
+            v[1] += head_shift;
+        }
     }
 }
 
@@ -1619,388 +1956,486 @@ fn body_ring(cx: f32, cz: f32, rx: f32, rz: f32, bumps: &[(f32, f32, f32)], n: u
 /// Nude male torso — single continuous lofted surface with V-taper.
 /// Cross-section rings define the body contour at each height; muscle shape
 /// is built into the ring profiles via Gaussian bumps. No overlapping ellipsoids.
-fn gen_nude_torso(tris: &mut Vec<WorldTri>, skin: u32) {
+fn gen_nude_torso(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions) {
     let sk = skin;
-    let sk_shadow = darken(sk, 0.97);
-    let sk_deep = darken(sk, 0.93);
+    let m = props.muscle_def;
+    let sk_shadow = darken(sk, 1.0 - 0.03 * m);
+    let sk_deep = darken(sk, 1.0 - 0.07 * m);
     let nipple_col = darken(sk, 0.78);
 
     use std::f32::consts::PI;
-    let hp = PI * 0.5; // half PI = right side angle
-    let n = 32; // points per cross-section ring (smooth)
+    let hp = PI * 0.5;
+    let n = 32;
+
+    // Scale factors for each torso zone (1.0 for male baseline)
+    let sh = props.hip_rx / 0.18;       // hip scale
+    let sw = props.waist_rx / 0.15;     // waist scale
+    let sc = props.chest_rx / 0.22;     // chest scale
+    let ss = props.shoulder_rx / 0.32;  // shoulder scale
+
+    // Interpolate scale factor by Y height
+    let s = |y: f32| -> f32 {
+        if y <= 0.92 { sh }
+        else if y <= 1.00 { sh + (sw - sh) * (y - 0.92) / 0.08 }
+        else if y <= 1.24 { sw + (sc - sw) * (y - 1.00) / 0.24 }
+        else if y <= 1.42 { sc + (ss - sc) * (y - 1.24) / 0.18 }
+        else { ss }
+    };
+
+    // Breast bump profile: given a Y height, compute the breast bump amplitude
+    // Uses Gaussian falloff centered at breast_y with wide spread for natural shape
+    let breast_bump = |y: f32| -> f32 {
+        if !props.has_breasts { return 0.0; }
+        let by = props.breast_y; // center of breast volume (~1.26)
+        let dy = (y - by) / 0.10; // wider spread for softer transition
+        let amp = props.breast_rz * 1.3; // moderate forward projection (less pointy)
+        amp * (-0.5 * dy * dy).exp()
+    };
+
+    // Helper: scale rx/rz by zone factor, bump amps by muscle_def
+    // Adds breast bumps as structural (not scaled by muscle_def)
+    let sr = |y: f32, rx: f32, rz: f32, bumps: &[(f32, f32, f32)]| -> (f32, f32, Vec<(f32, f32, f32)>) {
+        let sf = s(y);
+        let mut sb: Vec<(f32, f32, f32)> = bumps.iter()
+            .map(|&(a, w, amp)| (a, w, amp * m))
+            .collect();
+        // Add breast bumps — wide angular spread for natural rounded shape
+        let bb = breast_bump(y);
+        if bb > 0.001 {
+            sb.push((0.30, 0.55, bb));   // right breast (very wide, soft curve)
+            sb.push((-0.30, 0.55, bb));  // left breast
+        }
+        (rx * sf, rz * sf, sb)
+    };
+
+    // Build each ring: structural bumps use s(y), muscle bumps use m
+    let ring = |y: f32, rx: f32, rz: f32, bumps: &[(f32, f32, f32)]| -> (f32, Vec<[f32; 2]>, u32) {
+        let (rx2, rz2, sb) = sr(y, rx, rz, bumps);
+        (y, body_ring(0.0, 0.0, rx2, rz2, &sb, n), sk)
+    };
 
     // ── LOFTED BODY SURFACE — continuous mesh from crotch to neck ──
     let rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-        // Crotch bottom (closed)
         (0.82, body_ring(0.0, 0.0, 0.04, 0.04, &[], n), sk),
 
-        // Crotch — narrow, transitions to legs
-        (0.86, body_ring(0.0, 0.0, 0.10, 0.08, &[
-            (PI, 0.5, 0.02),            // rear fill
-        ], n), sk),
-
-        // Lower pelvis — gradual widening
-        (0.89, body_ring(0.0, 0.0, 0.14, 0.11, &[
-            (PI, 0.5, 0.03),            // glute start
-        ], n), sk),
-
-        // Pelvis — hip width, glute bulge at back
-        (0.92, body_ring(0.0, 0.0, 0.18, 0.14, &[
-            (hp, 0.35, 0.02),           // R hip bone
-            (PI + hp, 0.35, 0.02),      // L hip bone
-            (PI, 0.5, 0.05),            // glute bulge
-            (PI - 0.4, 0.3, 0.02),      // R glute lobe
-            (PI + 0.4, 0.3, 0.02),      // L glute lobe
-        ], n), sk),
-
-        // Upper pelvis / V-line zone
-        (0.96, body_ring(0.0, 0.0, 0.17, 0.13, &[
-            (hp, 0.35, 0.015),          // R hip continuation
-            (PI + hp, 0.35, 0.015),     // L hip
-            (PI, 0.4, 0.03),            // lower back
-            (0.4, 0.3, -0.008),         // R V-line indent
-            (-0.4, 0.3, -0.008),        // L V-line indent
-        ], n), sk),
-
-        // Waist — narrowest point, V-taper
-        (1.00, body_ring(0.0, 0.0, 0.15, 0.13, &[
-            (0.8, 0.3, 0.015),          // R oblique
-            (-0.8, 0.3, 0.015),         // L oblique
-            (PI, 0.5, 0.03),            // lumbar back
-            (PI - 0.3, 0.2, 0.01),      // R erector spinae
-            (PI + 0.3, 0.2, 0.01),      // L erector spinae
-        ], n), sk),
-
-        // Navel area
-        (1.06, body_ring(0.0, 0.0, 0.16, 0.15, &[
-            (0.0, 0.5, 0.02),           // ab surface
-            (0.8, 0.3, 0.018),          // R oblique
-            (-0.8, 0.3, 0.018),         // L oblique
-            (PI, 0.5, 0.03),            // back
-            (PI - 0.3, 0.2, 0.012),     // R erector
-            (PI + 0.3, 0.2, 0.012),     // L erector
-        ], n), sk),
-
-        // Lower ribs
-        (1.12, body_ring(0.0, 0.0, 0.19, 0.16, &[
-            (0.0, 0.4, 0.015),          // abs
-            (PI - 0.6, 0.35, 0.025),    // R lat
-            (PI + 0.6, 0.35, 0.025),    // L lat
-            (PI, 0.4, 0.03),            // back muscles
-            (PI - 0.25, 0.15, 0.01),    // R erector
-            (PI + 0.25, 0.15, 0.01),    // L erector
-        ], n), sk),
-
-        // Mid ribs / lower pec transition
-        (1.18, body_ring(0.0, 0.0, 0.21, 0.17, &[
-            (0.4, 0.35, 0.03),          // R lower pec
-            (-0.4, 0.35, 0.03),         // L lower pec
-            (PI - 0.5, 0.35, 0.03),     // R lat flare
-            (PI + 0.5, 0.35, 0.03),     // L lat flare
-            (PI, 0.4, 0.035),           // back
-        ], n), sk),
-
-        // Pec shelf — peak chest protrusion
-        (1.24, body_ring(0.0, 0.0, 0.22, 0.19, &[
-            (0.4, 0.4, 0.05),           // R pec (strong)
-            (-0.4, 0.4, 0.05),          // L pec (strong)
-            (0.0, 0.12, -0.015),         // sternum gap (indent)
-            (PI - 0.5, 0.3, 0.025),     // R lat insertion
-            (PI + 0.5, 0.3, 0.025),     // L lat insertion
-            (PI, 0.5, 0.04),            // back (scapulae)
-            (PI - 0.8, 0.2, 0.015),     // R scapula
-            (PI + 0.8, 0.2, 0.015),     // L scapula
-        ], n), sk),
-
-        // Upper pec
-        (1.30, body_ring(0.0, 0.0, 0.22, 0.16, &[
-            (0.35, 0.4, 0.035),         // R pec upper
-            (-0.35, 0.4, 0.035),        // L pec upper
-            (0.0, 0.12, -0.01),          // sternum gap
-            (PI, 0.5, 0.045),           // upper back (traps)
-            (PI - 0.7, 0.25, 0.02),     // R infraspinatus
-            (PI + 0.7, 0.25, 0.02),     // L infraspinatus
-            (PI - 0.3, 0.2, 0.012),     // R rhomboid
-            (PI + 0.3, 0.2, 0.012),     // L rhomboid
-        ], n), sk),
-
-        // Shoulder approach — widening for deltoids
-        (1.36, body_ring(0.0, 0.0, 0.25, 0.15, &[
-            (hp, 0.4, 0.035),           // R deltoid
-            (PI + hp, 0.4, 0.035),      // L deltoid
-            (PI, 0.5, 0.05),            // traps (thick)
-            (0.3, 0.3, 0.015),          // R anterior delt
-            (-0.3, 0.3, 0.015),         // L anterior delt
-            (PI - 0.6, 0.3, 0.025),     // R teres major
-            (PI + 0.6, 0.3, 0.025),     // L teres major
-            (PI - 0.9, 0.25, 0.02),     // R posterior delt
-            (PI + 0.9, 0.25, 0.02),     // L posterior delt
-        ], n), sk),
-
-        // Mid-shoulder — trapezius yoke
-        (1.39, body_ring(0.0, 0.0, 0.27, 0.14, &[
-            (hp, 0.4, 0.04),            // R deltoid growing
-            (PI + hp, 0.4, 0.04),       // L deltoid growing
-            (PI, 0.5, 0.055),           // traps
-            (PI - 0.7, 0.3, 0.02),      // R teres/infraspinatus
-            (PI + 0.7, 0.3, 0.02),      // L teres/infraspinatus
-            (PI - 1.0, 0.25, 0.018),    // R posterior delt
-            (PI + 1.0, 0.25, 0.018),    // L posterior delt
-        ], n), sk),
-
-        // Shoulder peak — widest
-        (1.42, body_ring(0.0, 0.0, 0.28, 0.13, &[
-            (hp, 0.35, 0.05),           // R deltoid peak
-            (PI + hp, 0.35, 0.05),      // L deltoid peak
-            (PI, 0.5, 0.06),            // trap peak (strong)
-            (PI - 0.8, 0.3, 0.025),     // R posterior deltoid
-            (PI + 0.8, 0.3, 0.025),     // L posterior deltoid
-        ], n), sk),
-
-        // Upper trap shelf — gradual narrowing
-        (1.44, body_ring(0.0, 0.0, 0.22, 0.12, &[
-            (hp, 0.3, 0.03),            // R deltoid tail
-            (PI + hp, 0.3, 0.03),       // L deltoid tail
-            (PI, 0.5, 0.06),            // traps (thick yoke)
-            (PI - 0.5, 0.3, 0.02),      // R upper trap
-            (PI + 0.5, 0.3, 0.02),      // L upper trap
-        ], n), sk),
-
-        // Neck base — still narrowing with trap mass
-        (1.46, body_ring(0.0, 0.0, 0.14, 0.11, &[
-            (PI, 0.6, 0.06),            // trap continuation
-            (PI - 0.4, 0.3, 0.015),     // R trap edge
-            (PI + 0.4, 0.3, 0.015),     // L trap edge
-        ], n), sk),
-
-        // Neck transition — narrow
-        (1.48, body_ring(0.0, 0.0, 0.09, 0.09, &[
-            (PI, 0.5, 0.04),            // trap ridge
+        ring(0.86, 0.10, 0.08, &[
+            (PI, 0.5, 0.025),
+        ]),
+        ring(0.89, 0.14, 0.11, &[
+            (PI, 0.5, 0.04),
+        ]),
+        // Pelvis — hip width, glute bulge
+        {
+            let sf = s(0.92);
+            (0.92, body_ring(0.0, 0.0, 0.18 * sf, 0.14 * sf, &[
+                (hp, 0.35, 0.025 * sf),           // hip bone (structural — ASIS)
+                (PI + hp, 0.35, 0.025 * sf),
+                (PI, 0.5, 0.06 * sf),             // glute (structural)
+                (PI - 0.4, 0.3, 0.03 * m),        // glute lobe (muscle)
+                (PI + 0.4, 0.3, 0.03 * m),
+            ], n), sk)
+        },
+        // Upper pelvis / V-line / iliac crest
+        {
+            let sf = s(0.96);
+            (0.96, body_ring(0.0, 0.0, 0.17 * sf, 0.13 * sf, &[
+                (hp, 0.35, 0.02 * sf),
+                (PI + hp, 0.35, 0.02 * sf),
+                (PI, 0.4, 0.04 * sf),
+                (0.4, 0.3, -0.012 * m),           // V-line indent
+                (-0.4, 0.3, -0.012 * m),
+            ], n), sk)
+        },
+        // Waist — narrowest point
+        ring(1.00, 0.15, 0.13, &[
+            (0.8, 0.3, 0.022),      // oblique
+            (-0.8, 0.3, 0.022),
+            (PI, 0.5, 0.04),        // lumbar curve
+            (PI - 0.3, 0.2, 0.015), // erector spinae
+            (PI + 0.3, 0.2, 0.015),
+        ]),
+        // Lower abs / navel level
+        ring(1.04, 0.155, 0.14, &[
+            (0.0, 0.4, 0.025),     // rectus abdominis
+            (0.3, 0.15, -0.008),   // linea alba indent L
+            (-0.3, 0.15, -0.008),  // linea alba indent R
+            (0.8, 0.3, 0.025),     // oblique
+            (-0.8, 0.3, 0.025),
+            (PI, 0.5, 0.035),
+            (PI - 0.3, 0.2, 0.015),
+            (PI + 0.3, 0.2, 0.015),
+        ]),
+        // Mid-abs
+        ring(1.08, 0.17, 0.15, &[
+            (0.0, 0.35, 0.03),     // abs (upper row)
+            (0.3, 0.12, -0.010),   // tendinous intersection
+            (-0.3, 0.12, -0.010),
+            (0.8, 0.3, 0.025),     // oblique
+            (-0.8, 0.3, 0.025),
+            (PI, 0.5, 0.04),
+            (PI - 0.3, 0.2, 0.015),
+            (PI + 0.3, 0.2, 0.015),
+        ]),
+        // Lower ribs / serratus
+        ring(1.12, 0.19, 0.16, &[
+            (0.0, 0.4, 0.02),      // upper abs
+            (0.3, 0.12, -0.008),   // tendinous intersection
+            (-0.3, 0.12, -0.008),
+            (0.7, 0.2, 0.02),      // serratus anterior
+            (-0.7, 0.2, 0.02),
+            (hp, 0.35, 0.035),     // lateral body wall (serratus wrapping)
+            (PI + hp, 0.35, 0.035),
+            (PI - 0.6, 0.35, 0.035), // lat emerging
+            (PI + 0.6, 0.35, 0.035),
+            (PI, 0.4, 0.04),
+            (PI - 0.25, 0.15, 0.012),
+            (PI + 0.25, 0.15, 0.012),
+        ]),
+        // Lower pec line / serratus peak
+        ring(1.16, 0.20, 0.17, &[
+            (0.4, 0.35, 0.035),    // pec lower shelf (sternal head)
+            (-0.4, 0.35, 0.035),
+            (0.0, 0.10, -0.015),   // sternal groove — deeper, narrower
+            (0.7, 0.2, 0.025),     // serratus anterior
+            (-0.7, 0.2, 0.025),
+            (hp, 0.35, 0.040),     // lateral body wall
+            (PI + hp, 0.35, 0.040),
+            (PI - 0.5, 0.35, 0.040), // lat (growing)
+            (PI + 0.5, 0.35, 0.040),
+            (PI, 0.15, -0.008),    // spine groove
+            (PI - 0.25, 0.15, 0.012), // erector spinae
+            (PI + 0.25, 0.15, 0.012),
+        ]),
+        // Mid pec — clavicular head distinct from sternal head
+        ring(1.21, 0.21, 0.20, &[
+            (0.4, 0.35, 0.038),    // pec sternal head bulk
+            (-0.4, 0.35, 0.038),
+            (0.0, 0.10, -0.015),   // sternal groove — linear depression
+            (hp, 0.35, 0.040),     // lateral body wall — pec wrapping
+            (PI + hp, 0.35, 0.040),
+            (PI - 0.5, 0.3, 0.030), // lat (peak)
+            (PI + 0.5, 0.3, 0.030),
+            (PI, 0.15, -0.008),    // spine groove
+            (PI - 0.25, 0.12, 0.012), // erector spinae
+            (PI + 0.25, 0.12, 0.012),
+        ]),
+        // Pec shelf / chest peak
+        ring(1.26, 0.22, 0.21, &[
+            (0.4, 0.40, 0.038),    // pec peak
+            (-0.4, 0.40, 0.038),
+            (0.0, 0.10, -0.015),   // sternal groove
+            (hp, 0.35, 0.040),     // lateral body wall — pec to arm
+            (PI + hp, 0.35, 0.040),
+            (PI - 0.5, 0.3, 0.025), // lat insertion
+            (PI + 0.5, 0.3, 0.025),
+            (PI, 0.15, -0.008),    // spine groove
+            (PI - 0.6, 0.25, 0.018), // scapular medial border
+            (PI + 0.6, 0.25, 0.018),
+        ]),
+        // Upper pec → clavicular head
+        ring(1.32, 0.22, 0.19, &[
+            (0.35, 0.35, 0.028),   // clavicular pec head — raised upper pec
+            (-0.35, 0.35, 0.028),
+            (0.0, 0.10, -0.010),   // sternal notch approach
+            (hp, 0.30, 0.035),     // lateral body wall — narrowing toward shoulder
+            (PI + hp, 0.30, 0.035),
+            (PI, 0.15, -0.008),    // spine groove
+            (PI - 0.5, 0.25, 0.022), // rhomboid / scapular
+            (PI + 0.5, 0.25, 0.022),
+        ]),
+        // Shoulder approach — deltoid begins as distinct lateral mass
+        // Base rx = ribcage width; narrow deltoid bumps (width 0.35) carry shoulder width.
+        // Total target: ~0.28 per side for male (0.56m bi-deltoid)
+        {
+            let sf = s(1.36);
+            let da = props.shoulder_deltoid_amp;
+            (1.36, body_ring(0.0, 0.0, 0.20 * sf, 0.19 * sf, &[
+                (hp, 0.35, da + 0.02 * sf),   // deltoid emerging (narrow bump)
+                (PI + hp, 0.35, da + 0.02 * sf),
+                (0.5, 0.3, 0.020 * m),    // anterior deltoid
+                (-0.5, 0.3, 0.020 * m),
+                (PI - 0.5, 0.3, 0.025 * m), // posterior deltoid
+                (PI + 0.5, 0.3, 0.025 * m),
+                (PI, 0.5, 0.05 * sf),     // upper back mass
+                (0.3, 0.15, 0.010 * sf),  // clavicle ridge (anterior)
+                (-0.3, 0.15, 0.010 * sf),
+            ], n), sk)
+        },
+        // Mid-shoulder — deltoid growing
+        {
+            let sf = s(1.39);
+            let da = props.shoulder_deltoid_amp;
+            (1.39, body_ring(0.0, 0.0, 0.18 * sf, 0.18 * sf, &[
+                (hp, 0.35, da + 0.04 * sf),
+                (PI + hp, 0.35, da + 0.04 * sf),
+                (0.5, 0.3, 0.015 * m),
+                (-0.5, 0.3, 0.015 * m),
+                (PI - 0.5, 0.3, 0.025 * m),
+                (PI + 0.5, 0.3, 0.025 * m),
+                (PI, 0.5, 0.055 * sf),     // trapezius
+            ], n), sk)
+        },
+        // Shoulder peak — deltoid cap at maximum, ribcage narrowing
+        // Front/back trapezius: rx=0.16 to neck_rx=0.10 → ~45° slope
+        {
+            let sf = s(1.42);
+            let da = props.shoulder_deltoid_amp;
+            (1.42, body_ring(0.0, 0.0, 0.16 * sf, 0.17 * sf, &[
+                (hp, 0.35, da + 0.05 * sf),   // deltoid cap — concentrated lateral
+                (PI + hp, 0.35, da + 0.05 * sf),
+                (0.0, 0.4, 0.015 * sf),   // pec projection (front)
+                (PI, 0.5, 0.055 * sf),     // trapezius
+            ], n), sk)
+        },
+        // Shoulder-to-neck — deltoid fading, trapezius slope
+        {
+            let sf = s(1.43);
+            let da = props.shoulder_deltoid_amp;
+            (1.43, body_ring(0.0, 0.0, 0.14 * sf, 0.15 * sf, &[
+                (hp, 0.30, da * 0.3 + 0.02 * sf), (PI + hp, 0.30, da * 0.3 + 0.02 * sf),
+                (PI, 0.5, 0.050 * sf),     // trapezius
+            ], n), sk)
+        },
+        // Trapezius mid-slope
+        {
+            let sf = s(1.44);
+            (1.44, body_ring(0.0, 0.0, 0.13 * sf, 0.13 * sf, &[
+                (hp, 0.25, 0.010 * sf), (PI + hp, 0.25, 0.010 * sf),
+                (PI, 0.5, 0.045 * sf),     // trapezius slope
+            ], n), sk)
+        },
+        // Upper trapezius — approaching neck
+        {
+            let sf = s(1.45);
+            (1.45, body_ring(0.0, 0.0, 0.12 * sf, 0.11 * sf, &[
+                (PI, 0.5, 0.040 * sf),     // upper trap
+            ], n), sk)
+        },
+        // Neck base — trapezius wraps around
+        {
+            let sf = s(1.46);
+            (1.46, body_ring(0.0, 0.0, 0.12 * sf, 0.10 * sf, &[
+                (PI, 0.5, 0.04 * sf),      // upper trap / nuchal
+                (PI - 0.4, 0.3, 0.012 * sf),
+                (PI + 0.4, 0.3, 0.012 * sf),
+            ], n), sk)
+        },
+        // Neck transition
+        (1.48, body_ring(0.0, 0.0, props.neck_rx, props.neck_rz, &[
+            (PI, 0.5, 0.035 * m),      // trap insertion
         ], n), sk),
     ];
 
     mesh::loft_y_tris(tris, &rings);
 
-    // ── SURFACE DETAIL (minimal overlays on the lofted surface) ──
-
-    // Nipples (positioned on the pec surface)
+    // ── MINIMAL SURFACE DETAIL ──
+    // Nipples — lower-outer quadrant of each pectoral, slightly recessed
+    let nip_y = if props.has_breasts { 1.23 } else { 1.20 };
     for &side in &[-1.0f32, 1.0] {
-        mesh::sphere_tris(tris, side * 0.12, 1.24, -0.24, 0.016, 0, darken(sk, 0.90));
-        mesh::sphere_tris(tris, side * 0.12, 1.24, -0.25, 0.008, 0, nipple_col);
+        let nx = side * 0.12 * sc; // outer placement
+        mesh::sphere_tris(tris, nx, nip_y, -0.22 * sc, 0.004, 0, nipple_col);
+        // Areola — subtle ring around nipple
+        mesh::ellipsoid_tris(tris, nx, nip_y, -0.215 * sc, 0.012, 0.012, 0.003, 0, darken(nipple_col, 0.95));
     }
-
-    // Navel
-    mesh::sphere_tris(tris, 0.0, 1.04, -0.17, 0.013, 0, sk_deep);
-    mesh::sphere_tris(tris, 0.0, 1.04, -0.16, 0.019, 0, sk_shadow);
-
-    // Sternum line
-    push_box(tris, 0.0, 1.28, -0.17, 0.006, 0.10, 0.003, sk_shadow);
-
-    // Linea alba (midline ab groove)
-    push_box(tris, 0.0, 1.08, -0.17, 0.004, 0.14, 0.003, sk_shadow);
-
-    // Spinal furrow
-    push_box(tris, 0.0, 1.14, 0.19, 0.006, 0.30, 0.004, sk_shadow);
-
-    // Clavicles (subtle ridges on surface)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.12, 1.43, -0.08, 0.14, 0.010, 0.008, 0, sk);
-    }
+    // Navel (tiny indent)
+    mesh::sphere_tris(tris, 0.0, 1.02, -0.17 * sw, 0.008, 0, sk_deep);
 }
 
-/// Gluteal muscles — large, defined masses
-fn gen_glutes(tris: &mut Vec<WorldTri>, skin: u32) {
-    // Glute shape is in the torso loft. Only add surface detail here.
-    // Gluteal cleft
-    push_box(tris, 0.0, 0.86, 0.17, 0.006, 0.12, 0.004, darken(skin, 0.93));
-    // Gluteal fold
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.08, 0.79, 0.12, 0.10, 0.006, 0.04, 0, darken(skin, 0.96));
-    }
+/// Gluteal muscles — now just a subtle cleft line, bulk is in the torso ring profile
+fn gen_glutes(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions) {
+    let _hip_s = props.hip_rx / 0.18;
+    // No overlaid geometry — glute shape is built into the torso loft's lower rings
 }
 
-/// Nude male arm — wider shoulders, thicker muscles matching anatomy references
+/// Nude arm — single continuous loft from shoulder to wrist, no sphere joints
 fn gen_nude_arm(
     tris: &mut Vec<WorldTri>, side: f32, fwd: f32, bend: f32, skin: u32,
+    props: &BodyProportions,
 ) {
     let sk = skin;
-    let sk_lt = darken(sk, 1.01);
+    let a = props.arm_rx_scale;
+    let m = props.muscle_def;
 
     use std::f32::consts::PI;
     let hp = PI * 0.5;
     let n = 24;
 
     // ── JOINT POSITIONS ──
-    let shoulder = [side * 0.28, 1.42, 0.0];
-    let elbow = [side * 0.38, 1.06, fwd * 0.35];
-    let wrist = [side * 0.34, 0.80, fwd * 0.15 - bend];
+    let shoulder = [side * props.shoulder_joint_x, 1.42, 0.0];
+    let elbow = [side * (props.shoulder_joint_x + 0.10), 1.06, fwd * 0.35];
+    let wrist = [side * (props.shoulder_joint_x + 0.06), 0.80, fwd * 0.15 - bend];
 
-    // ── ARMPIT FILL (bridges arm to torso) ──
-    mesh::ellipsoid_tris(tris, shoulder[0] - side * 0.06, shoulder[1] - 0.08, shoulder[2],
-        0.12, 0.12, 0.12, 2, sk);
-    mesh::ellipsoid_tris(tris, shoulder[0] - side * 0.10, shoulder[1] - 0.14, shoulder[2],
-        0.10, 0.10, 0.10, 1, sk);
-
-    // ── UPPER ARM (shoulder → elbow) — lofted cross-sections ──
-    // Bumps for right arm: hp=lateral(+X), 3hp=medial(-X), 0=front(-Z), PI=back(+Z)
-    // Deltoid shape from bumps on narrow base, not wide base radius
-    let upper_heights: [(f32, f32, f32, &[(f32, f32, f32)]); 8] = [
-        (1.42, 0.07, 0.07, &[
-            (hp, 0.5, 0.05),              // lateral deltoid cap
-            (0.7, 0.4, 0.025),            // anterior deltoid
-            (PI - 0.7, 0.4, 0.02),        // posterior deltoid
+    // ── SINGLE CONTINUOUS ARM LOFT (shoulder → elbow → wrist) ──
+    // Upper arm rings are wide at shoulder to overlap with torso volume.
+    // Moderate inward bumps at PI+hp push arm inner surface into torso.
+    // Top cap seals arm from above. Z-buffer resolves overlap with torso.
+    let arm_heights: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
+        // Shoulder cap — arm center at shoulder_joint_x=0.22
+        // Outer edge ≈ 0.22+rx+bump ≈ 0.34, protrudes ~0.06 past torso shoulder
+        (1.44, 0.11, 0.12, vec![
+            (hp, 0.35, 0.030 * m),             // deltoid cap lateral
+            (PI + hp, 0.35, 0.035),            // inward overlap (structural)
         ]),
-        (1.38, 0.07, 0.07, &[
-            (hp, 0.5, 0.06),              // lateral deltoid (peak)
-            (0.7, 0.4, 0.035),            // anterior deltoid
-            (PI - 0.7, 0.4, 0.03),        // posterior deltoid
+        (1.42, 0.10, 0.10, vec![
+            (hp, 0.35, 0.030 * m),             // deltoid cap
+            (0.5, 0.30, 0.020 * m),            // anterior delt
+            (PI - 0.5, 0.30, 0.016 * m),       // posterior delt
+            (PI + hp, 0.35, 0.035),            // inward overlap
         ]),
-        (1.34, 0.068, 0.066, &[
-            (hp, 0.45, 0.04),             // deltoid tapering
-            (0.6, 0.35, 0.02),            // anterior tail
-            (PI - 0.6, 0.35, 0.015),      // posterior tail
+        (1.39, 0.092, 0.088, vec![
+            (hp, 0.35, 0.032 * m),             // deltoid peak
+            (0.5, 0.35, 0.022 * m),            // anterior deltoid
+            (PI - 0.5, 0.35, 0.018 * m),       // posterior deltoid
+            (PI + hp, 0.40, 0.040),            // inward overlap
         ]),
-        (1.30, 0.065, 0.062, &[
-            (hp, 0.4, 0.02),              // deltoid insertion V
-            (0.0, 0.35, 0.01),            // bicep emerging
-            (PI, 0.35, 0.01),             // tricep start
+        (1.36, 0.085, 0.080, vec![
+            (hp, 0.35, 0.025 * m),             // deltoid insertion
+            (0.5, 0.30, 0.016 * m),            // anterior tail
+            (PI - 0.5, 0.30, 0.012 * m),       // posterior tail
+            (PI + hp, 0.45, 0.045),            // pec wrap inward
         ]),
-        (1.26, 0.065, 0.060, &[
-            (0.0, 0.4, 0.02),             // bicep growing
-            (PI + hp + 0.3, 0.3, 0.01),   // bicep short head (medial)
-            (PI, 0.45, 0.02),             // tricep
-            (hp, 0.25, 0.01),             // brachialis
+        (1.32, 0.080, 0.074, vec![
+            (hp, 0.20, -0.005 * m),            // deltoid-bicep groove (lateral)
+            (0.0, 0.35, 0.018 * m),            // bicep emerging
+            (PI, 0.4, 0.015 * m),              // tricep long head
+            (PI + hp, 0.45, 0.048),            // pec/lat wrap inward
         ]),
-        (1.20, 0.068, 0.063, &[
-            (0.0, 0.4, 0.025),            // bicep peak
-            (PI + hp + 0.3, 0.3, 0.012),  // bicep short head
-            (PI, 0.45, 0.022),            // tricep peak
-            (hp + 0.3, 0.3, 0.01),        // tricep lateral
-            (hp, 0.25, 0.012),            // brachialis
+        (1.26, 0.076, 0.070, vec![
+            (0.0, 0.4, 0.026 * m),             // bicep — stronger peak
+            (PI, 0.45, 0.020 * m),             // tricep
+            (hp, 0.25, 0.013 * m),             // brachialis
+            (PI + hp, 0.45, 0.045),            // pec/lat wrap
         ]),
-        (1.14, 0.062, 0.058, &[
-            (0.0, 0.35, 0.018),           // bicep taper
-            (PI, 0.4, 0.015),             // tricep taper
-            (hp, 0.25, 0.008),            // brachialis
+        (1.20, 0.074, 0.068, vec![
+            (0.0, 0.4, 0.030 * m),             // bicep peak — strongest
+            (PI, 0.50, 0.026 * m),             // tricep — horseshoe shape
+            (PI - 0.4, 0.25, 0.013 * m),       // tricep lateral head
+            (PI + 0.4, 0.25, 0.013 * m),       // tricep medial head
+            (hp, 0.25, 0.015 * m),             // brachialis
+            (PI + hp, 0.45, 0.040),            // inner overlap
         ]),
-        (1.06, 0.055, 0.055, &[
-            (PI, 0.3, 0.012),             // olecranon area
+        (1.14, 0.064, 0.058, vec![
+            (0.0, 0.35, 0.020 * m),            // bicep taper
+            (PI, 0.45, 0.018 * m),             // tricep taper
+            (PI - 0.4, 0.20, 0.009 * m),       // tricep lateral
+            (PI + 0.4, 0.20, 0.009 * m),       // tricep medial
+            (PI + hp, 0.40, 0.028),            // inner taper
         ]),
+        // Elbow — olecranon point + narrowest transition
+        (1.08, 0.055, 0.052, vec![
+            (PI, 0.20, 0.014 * m),             // olecranon — bony protrusion
+        ]),
+        (1.06, 0.052, 0.050, vec![
+            (PI, 0.18, 0.012 * m),             // olecranon point
+            (0.0, 0.25, -0.004),               // cubital fossa (front concavity)
+        ]),
+        (1.04, 0.055, 0.052, vec![]),
+        // Forearm — widens for muscle belly, tapers, cross-section flattens toward wrist
+        (1.00, 0.058, 0.054, vec![
+            (hp - 0.3, 0.35, 0.024 * m),       // brachioradialis (outer bulge)
+            (PI + hp + 0.3, 0.3, 0.018 * m),   // flexor group
+            (hp + 0.3, 0.3, 0.016 * m),        // extensor group
+            (PI + hp, 0.15, 0.006),            // ulnar border (bony ridge)
+        ]),
+        (0.95, 0.054, 0.050, vec![
+            (hp - 0.3, 0.35, 0.022 * m),       // brachioradialis taper
+            (PI + hp + 0.3, 0.3, 0.014 * m),   // flexor group
+            (PI + hp, 0.12, 0.006),            // ulnar border
+        ]),
+        (0.90, 0.048, 0.044, vec![
+            (hp, 0.3, 0.012 * m),              // extensor carpi
+            (PI + hp, 0.20, 0.008),            // ulnar border (more prominent)
+        ]),
+        (0.84, 0.044, 0.036, vec![             // flatter cross-section toward wrist
+            (PI + hp, 0.15, 0.006),            // ulnar border
+        ]),
+        // Wrist — oval, flatter than circular (radius/ulna crossing)
+        (0.80, 0.038, 0.030, vec![]),
     ];
 
-    let shoulder_y = 1.42;
+    let shoulder_y = 1.44; // top of arm loft (overlaps torso)
     let elbow_y = 1.06;
-    let upper_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = upper_heights.iter().map(|&(y, rx, rz, bumps)| {
-        let t = (shoulder_y - y) / (shoulder_y - elbow_y);
-        let cx = shoulder[0] * (1.0 - t) + elbow[0] * t;
-        let cz = shoulder[2] * (1.0 - t) + elbow[2] * t;
-        (y, limb_ring(cx, cz, rx, rz, side, bumps, n), sk)
-    }).collect();
-
-    mesh::loft_y_tris(tris, &upper_rings);
-
-    // ── ELBOW JOINT ──
-    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.060, 2, sk);
-    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2] + 0.045, 0.025, 0, sk_lt);
-    mesh::sphere_tris(tris, elbow[0] - side * 0.045, elbow[1], elbow[2], 0.018, 0, sk_lt);
-    mesh::sphere_tris(tris, elbow[0] + side * 0.035, elbow[1], elbow[2], 0.014, 0, sk_lt);
-
-    // ── FOREARM (elbow → wrist) — lofted cross-sections ──
-    let fore_heights: [(f32, f32, f32, &[(f32, f32, f32)]); 7] = [
-        (0.80, 0.032, 0.032, &[
-            (hp, 0.3, 0.010),              // ulnar styloid
-            (PI + hp, 0.3, 0.008),         // radial styloid
-        ]),
-        (0.84, 0.036, 0.034, &[
-            (0.0, 0.3, 0.006),            // extensor tendons
-        ]),
-        (0.90, 0.042, 0.040, &[
-            (hp, 0.3, 0.01),              // extensor carpi ulnaris
-            (0.0, 0.3, 0.008),            // tendon ridges
-        ]),
-        (0.95, 0.050, 0.046, &[
-            (hp - 0.3, 0.35, 0.018),      // brachioradialis
-            (PI + hp + 0.3, 0.3, 0.012),  // flexor group
-            (hp + 0.3, 0.3, 0.01),        // extensor group
-        ]),
-        (1.00, 0.055, 0.050, &[
-            (hp - 0.3, 0.35, 0.022),      // brachioradialis (peak)
-            (PI + hp + 0.3, 0.3, 0.015),  // flexor group (peak)
-            (hp + 0.3, 0.3, 0.012),       // extensor group
-            (PI, 0.3, 0.008),             // anconeus
-        ]),
-        (1.03, 0.055, 0.052, &[
-            (hp - 0.3, 0.3, 0.015),       // brachioradialis tail
-            (PI + hp + 0.3, 0.3, 0.01),   // flexor
-        ]),
-        (1.06, 0.055, 0.055, &[]),
-    ];
-
     let wrist_y = 0.80;
-    let fore_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = fore_heights.iter().map(|&(y, rx, rz, bumps)| {
-        let t = (y - wrist_y) / (elbow_y - wrist_y);
-        let cx = wrist[0] * (1.0 - t) + elbow[0] * t;
-        let cz = wrist[2] * (1.0 - t) + elbow[2] * t;
-        (y, limb_ring(cx, cz, rx, rz, side, bumps, n), sk)
+    let arm_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = arm_heights.iter().map(|&(ref y, rx, rz, ref bumps)| {
+        // Interpolate center position along shoulder→elbow→wrist path
+        // Upper arm uses cubic ease-in: arm center stays near body even longer,
+        // moves outward quickly only near elbow. Maximizes torso overlap.
+        let (cx, cz) = if *y >= elbow_y {
+            let t_lin = ((shoulder_y - *y) / (shoulder_y - elbow_y)).clamp(0.0, 1.0);
+            let t = t_lin * t_lin * t_lin; // cubic — stays near shoulder even longer
+            (shoulder[0] * (1.0 - t) + elbow[0] * t, shoulder[2] * (1.0 - t) + elbow[2] * t)
+        } else {
+            let t = (elbow_y - *y) / (elbow_y - wrist_y);
+            (elbow[0] * (1.0 - t) + wrist[0] * t, elbow[2] * (1.0 - t) + wrist[2] * t)
+        };
+        (*y, limb_ring(cx, cz, rx * a, rz * a, side, bumps, n), sk)
     }).collect();
 
-    mesh::loft_y_tris(tris, &fore_rings);
-
-    // ── WRIST ──
-    mesh::sphere_tris(tris, wrist[0], wrist[1], wrist[2], 0.038, 0, sk);
+    mesh::loft_y_tris(tris, &arm_rings);
 
     // ── HAND ──
     gen_hand(tris, wrist[0], wrist[1] - 0.05, wrist[2] - 0.02, side, sk);
 }
 
-/// Bare foot with toes, arch, heel
+/// Bare foot with proper arch, heel, ball, and toes
 fn gen_bare_foot(tris: &mut Vec<WorldTri>, ankle: [f32; 3], side: f32, skin: u32) {
     let sk = skin;
-    let sk_dk = darken(sk, 0.97);
-    let sk_lt = darken(sk, 1.02);
+    let sk_dk = darken(sk, 0.96);
     let nail_col = darken(sk, 1.06);
     let lx = ankle[0];
     let az = ankle[2];
 
-    // ── HEEL ──
-    mesh::ellipsoid_tris(tris, lx, 0.03, az + 0.03, 0.04, 0.03, 0.04, 0, sk);
-    mesh::ellipsoid_tris(tris, lx, 0.01, az + 0.03, 0.035, 0.01, 0.035, 0, sk_dk);
+    // ── HEEL — calcaneus, rounded posterior ──
+    mesh::ellipsoid_tris(tris, lx, 0.028, az + 0.035, 0.035, 0.028, 0.035, 0, sk);
+    // Achilles insertion (slight bump at back)
+    mesh::ellipsoid_tris(tris, lx, 0.045, az + 0.04, 0.020, 0.015, 0.018, 0, sk_dk);
 
-    // ── MIDFOOT ──
-    mesh::ellipsoid_tris(tris, lx, 0.04, az - 0.02, 0.05, 0.025, 0.06, 0, sk);
-    // Medial arch
-    mesh::ellipsoid_tris(tris, lx - side * 0.02, 0.025, az, 0.015, 0.015, 0.04, 0, sk_lt);
+    // ── MIDFOOT — arch structure ──
+    // Dorsum (top of foot — convex ridge)
+    mesh::ellipsoid_tris(tris, lx, 0.042, az - 0.02, 0.038, 0.018, 0.055, 0, sk);
+    // Lateral border (outer edge — touches ground)
+    mesh::ellipsoid_tris(tris, lx + side * 0.020, 0.015, az - 0.01, 0.020, 0.015, 0.050, 0, sk);
+    // Medial arch (inner — doesn't touch ground, concave underneath)
+    mesh::ellipsoid_tris(tris, lx - side * 0.015, 0.030, az - 0.005, 0.018, 0.020, 0.045, 0, sk);
 
-    // ── FOREFOOT — ball of foot ──
-    mesh::ellipsoid_tris(tris, lx, 0.02, az - 0.07, 0.055, 0.018, 0.03, 0, sk);
-    mesh::ellipsoid_tris(tris, lx - side * 0.02, 0.01, az - 0.065, 0.025, 0.01, 0.02, 0, sk_dk);
-    mesh::ellipsoid_tris(tris, lx + side * 0.02, 0.01, az - 0.065, 0.020, 0.01, 0.02, 0, sk_dk);
+    // ── FOREFOOT — metatarsal heads (ball of foot) ──
+    // Ball of foot — wide transverse arch
+    mesh::ellipsoid_tris(tris, lx, 0.018, az - 0.065, 0.042, 0.016, 0.025, 0, sk);
+    // 1st metatarsal head (big toe side — prominent)
+    mesh::ellipsoid_tris(tris, lx - side * 0.020, 0.015, az - 0.068, 0.016, 0.013, 0.016, 0, sk_dk);
+    // 5th metatarsal head (pinky side)
+    mesh::ellipsoid_tris(tris, lx + side * 0.025, 0.013, az - 0.060, 0.012, 0.010, 0.014, 0, sk_dk);
 
-    // ── TOP OF FOOT + tendons ──
-    push_box(tris, lx, 0.05, az - 0.03, 0.04, 0.01, 0.05, sk);
-    for ti in 0..3 {
-        let tx = lx + (ti as f32 - 1.0) * 0.012;
-        push_box(tris, tx, 0.055, az - 0.03, 0.003, 0.005, 0.04, darken(sk, 0.95));
-    }
-
-    // ── TOES ──
-    // Big toe
-    let btx = lx - side * 0.025;
-    mesh::ellipsoid_tris(tris, btx, 0.015, az - 0.10, 0.018, 0.013, 0.020, 0, sk);
-    mesh::ellipsoid_tris(tris, btx, 0.015, az - 0.12, 0.016, 0.012, 0.016, 0, sk);
-    push_box(tris, btx, 0.025, az - 0.13, 0.010, 0.005, 0.008, nail_col);
-    // 4 smaller toes
+    // ── EXTENSOR TENDONS (top of foot, subtle ridges) ──
     for ti in 0..4 {
-        let tx = lx - side * 0.01 + (ti as f32 + 0.5) * side * 0.014;
-        let toe_len = 0.015 - ti as f32 * 0.002;
-        let toe_r = 0.010 - ti as f32 * 0.001;
-        let tz = az - 0.095 - ti as f32 * 0.003;
-        mesh::ellipsoid_tris(tris, tx, 0.012, tz, toe_r, 0.008, toe_len, 0, sk);
-        push_box(tris, tx, 0.018, tz - toe_len + 0.003, 0.006, 0.003, 0.005, nail_col);
+        let tx = lx + (ti as f32 - 1.5) * side * 0.010;
+        mesh::ellipsoid_tris(tris, tx, 0.048, az - 0.030, 0.003, 0.004, 0.035, 0, darken(sk, 0.97));
     }
 
-    // ── SOLE ──
-    push_box(tris, lx, 0.003, az - 0.03, 0.045, 0.003, 0.08, sk_dk);
+    // ── TOES — hallux (big toe) + 4 lesser toes ──
+    // Big toe — 2 phalanges, wider and thicker
+    let btx = lx - side * 0.022;
+    // Proximal phalanx
+    mesh::ellipsoid_tris(tris, btx, 0.013, az - 0.088, 0.014, 0.011, 0.018, 0, sk);
+    // Distal phalanx
+    mesh::ellipsoid_tris(tris, btx, 0.012, az - 0.108, 0.012, 0.010, 0.014, 0, sk);
+    // Toenail
+    push_box(tris, btx, 0.020, az - 0.118, 0.008, 0.003, 0.006, nail_col);
+
+    // 4 lesser toes — progressively shorter and thinner
+    for ti in 0..4 {
+        let tx = lx - side * 0.008 + (ti as f32 + 0.5) * side * 0.012;
+        let toe_len = 0.014 - ti as f32 * 0.002;
+        let toe_r = 0.008 - ti as f32 * 0.001;
+        let tz = az - 0.082 + ti as f32 * 0.004; // each toe slightly shorter reach
+        // Single phalanx (small toes read as one unit at game scale)
+        mesh::ellipsoid_tris(tris, tx, 0.010, tz - toe_len * 0.5, toe_r, 0.006, toe_len, 0, sk);
+        // Toenail
+        push_box(tris, tx, 0.015, tz - toe_len + 0.002, 0.005, 0.002, 0.004, nail_col);
+    }
+
+    // ── SOLE — flat pad for ground contact ──
+    mesh::ellipsoid_tris(tris, lx, 0.004, az - 0.02, 0.038, 0.004, 0.065, 0, sk_dk);
 }
 
 /// Generate a limb cross-section ring, mirroring bumps for left-side limbs.
@@ -2017,237 +2452,210 @@ fn limb_ring(cx: f32, cz: f32, rx: f32, rz: f32, side: f32, bumps: &[(f32, f32, 
     }
 }
 
-/// Nude male leg — lofted cross-section surfaces for thigh and calf.
-/// Muscle contour built into ring profiles. Single continuous mesh per segment.
+/// Nude leg — single continuous loft from hip to ankle, no sphere joints
 fn gen_nude_leg(
     tris: &mut Vec<WorldTri>, side: f32, fwd: f32, knee_bend: f32, skin: u32,
+    props: &BodyProportions,
 ) {
     let sk = skin;
-    let sk_lt = darken(sk, 1.01);
+    let l = props.leg_rx_scale;
+    let m = props.muscle_def;
 
     use std::f32::consts::PI;
     let hp = PI * 0.5;
     let n = 24;
 
-    let lx = side * 0.12;
+    let lx = side * props.hip_joint_x;
     let hip = [lx, 0.92, 0.0];
     let knee = [lx, 0.48, fwd * 0.5];
     let ankle = [lx, 0.08, fwd * 0.25 - knee_bend * 0.4];
 
-    // ── HIP SOCKET ──
-    mesh::sphere_tris(tris, hip[0], hip[1], hip[2], 0.10, 2, sk);
-
-    // ── THIGH (hip → knee) — lofted cross-sections ──
-    // Heights from knee (bottom) to hip (top), ascending Y
-    let thigh_heights: [(f32, f32, f32, &[(f32, f32, f32)]); 8] = [
-        // (y, rx, rz, bumps)  — bumps defined for right leg
-        (0.48, 0.055, 0.055, &[
-            (0.0, 0.3, 0.02),            // patella (front)
+    // ── SINGLE CONTINUOUS LEG LOFT (hip → knee → ankle) ──
+    let leg_heights: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
+        // Hip top — wide to overlap with torso
+        (0.92, 0.090, 0.082, vec![
+            (PI, 0.5, 0.015 * m),              // glute transition
         ]),
-        (0.54, 0.060, 0.058, &[
-            (0.0, 0.35, 0.02),           // lower quad
-            (PI + hp + 0.3, 0.3, 0.012), // VM teardrop starting
+        (0.88, 0.094, 0.084, vec![
+            (PI, 0.5, 0.020 * m),              // glute-ham
+            (PI + hp, 0.4, 0.016 * m),         // adductors
         ]),
-        (0.62, 0.075, 0.070, &[
-            (0.0, 0.4, 0.025),           // rectus femoris
-            (hp - 0.3, 0.35, 0.015),     // vastus lateralis
-            (PI + hp + 0.3, 0.3, 0.015), // vastus medialis
-            (PI, 0.5, 0.02),             // hamstrings
-            (PI + hp, 0.35, 0.012),      // adductors
+        (0.84, 0.096, 0.086, vec![
+            (0.0, 0.4, 0.022 * m),             // quads
+            (PI, 0.5, 0.025 * m),              // hamstrings
+            (PI + hp, 0.4, 0.020 * m),         // adductors
         ]),
-        (0.70, 0.085, 0.080, &[
-            (0.0, 0.4, 0.03),            // rectus femoris (peak)
-            (hp - 0.3, 0.35, 0.02),      // vastus lateralis
-            (PI + hp + 0.3, 0.3, 0.012), // vastus medialis
-            (PI, 0.5, 0.025),            // hamstrings (peak)
-            (PI + hp, 0.4, 0.018),       // adductors
-            (hp, 0.2, 0.008),            // IT band
+        (0.78, 0.098, 0.088, vec![
+            (0.0, 0.4, 0.028 * m),             // quads peak
+            (hp - 0.3, 0.35, 0.020 * m),       // VL
+            (PI, 0.5, 0.028 * m),              // hamstrings
+            (PI + hp, 0.4, 0.022 * m),         // adductors
         ]),
-        (0.78, 0.090, 0.082, &[
-            (0.0, 0.4, 0.025),           // quads
-            (hp - 0.3, 0.35, 0.018),     // VL
-            (PI, 0.5, 0.025),            // hamstrings
-            (PI + hp, 0.4, 0.02),        // adductors (peak)
-            (hp, 0.2, 0.008),            // IT band
+        (0.70, 0.094, 0.084, vec![
+            (0.0, 0.4, 0.030 * m),             // rectus femoris (peak)
+            (hp - 0.3, 0.35, 0.024 * m),       // vastus lateralis
+            (PI + hp + 0.3, 0.3, 0.018 * m),   // vastus medialis
+            (PI, 0.5, 0.028 * m),              // hamstrings (peak)
+            (PI + hp, 0.4, 0.020 * m),         // adductors
         ]),
-        (0.84, 0.088, 0.080, &[
-            (0.0, 0.4, 0.02),            // quads tapering
-            (PI, 0.5, 0.02),             // hamstrings tapering
-            (PI + hp, 0.4, 0.018),       // adductors
+        (0.62, 0.084, 0.076, vec![
+            (0.0, 0.4, 0.028 * m),             // rectus femoris
+            (hp - 0.3, 0.35, 0.020 * m),       // vastus lateralis
+            (PI + hp + 0.3, 0.3, 0.016 * m),   // vastus medialis
+            (PI, 0.5, 0.024 * m),              // hamstrings
         ]),
-        (0.88, 0.085, 0.078, &[
-            (PI, 0.5, 0.015),            // glute-ham transition
-            (PI + hp, 0.4, 0.015),       // adductors
+        (0.54, 0.070, 0.064, vec![
+            (0.0, 0.35, 0.022 * m),            // lower quad
+            (PI + hp + 0.3, 0.3, 0.014 * m),   // VM teardrop
         ]),
-        (0.92, 0.080, 0.075, &[
-            (PI, 0.5, 0.01),             // glute transition
+        // Knee — patella on front, popliteal fossa on back
+        (0.50, 0.058, 0.055, vec![
+            (0.0, 0.20, 0.018 * m),            // patella — oval raised form
+            (PI, 0.25, -0.006 * m),            // popliteal fossa (concavity)
+        ]),
+        (0.48, 0.055, 0.052, vec![
+            (0.0, 0.18, 0.016 * m),            // patella
+            (PI, 0.20, -0.005 * m),            // popliteal fossa
+            (PI - 0.4, 0.15, 0.006 * m),       // hamstring tendon (medial)
+            (PI + 0.4, 0.15, 0.006 * m),       // hamstring tendon (lateral)
+        ]),
+        (0.46, 0.058, 0.055, vec![
+            (0.0, 0.15, 0.006),                // tibial tuberosity
+        ]),
+        // Calf — gastrocnemius heart shape, tibial ridge on front
+        (0.42, 0.060, 0.056, vec![
+            (PI, 0.5, 0.020 * m),              // soleus
+            (0.0, 0.10, 0.006),                // tibial ridge (shin bone)
+        ]),
+        (0.36, 0.064, 0.058, vec![
+            (PI - 0.3, 0.30, 0.028 * m),       // gastrocnemius medial (larger, lower)
+            (PI + 0.3, 0.30, 0.020 * m),       // gastrocnemius lateral (smaller)
+            (0.0, 0.30, 0.016 * m),            // tibialis anterior
+            (0.0, 0.08, 0.006),                // tibial ridge
+        ]),
+        (0.30, 0.060, 0.054, vec![
+            (PI - 0.3, 0.30, 0.030 * m),       // gastrocnemius medial (peak)
+            (PI + 0.3, 0.30, 0.024 * m),       // gastrocnemius lateral
+            (0.0, 0.30, 0.018 * m),            // tibialis anterior (peak)
+            (0.0, 0.08, 0.006),                // tibial ridge
+        ]),
+        (0.22, 0.048, 0.044, vec![
+            (PI, 0.4, 0.020 * m),              // soleus taper
+            (0.0, 0.25, 0.012 * m),            // tibialis anterior
+            (0.0, 0.08, 0.005),                // tibial ridge
+        ]),
+        (0.14, 0.040, 0.036, vec![
+            (PI, 0.15, 0.012),                 // Achilles tendon — visible ridge
+            (0.0, 0.08, 0.004),                // tibial ridge (fading)
+        ]),
+        // Ankle — malleoli (ankle bones) + Achilles
+        (0.08, 0.034, 0.032, vec![
+            (hp, 0.15, 0.006),                 // lateral malleolus
+            (PI + hp, 0.15, 0.008),            // medial malleolus (slightly larger)
+            (PI, 0.12, 0.008),                 // Achilles insertion
         ]),
     ];
 
     let hip_y = 0.92;
     let knee_y = 0.48;
-    let thigh_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = thigh_heights.iter().map(|&(y, rx, rz, bumps)| {
-        let t = (hip_y - y) / (hip_y - knee_y); // 0 at hip, 1 at knee
-        let cz = fwd * 0.5 * t; // Z offset from swing
-        (y, limb_ring(lx, cz, rx, rz, side, bumps, n), sk)
-    }).collect();
-
-    mesh::loft_y_tris(tris, &thigh_rings);
-
-    // ── KNEE JOINT ──
-    mesh::sphere_tris(tris, knee[0], knee[1], knee[2], 0.060, 2, sk);
-    // Patella
-    mesh::sphere_tris(tris, knee[0], knee[1], knee[2] - 0.05, 0.028, 0, sk_lt);
-
-    // ── CALF (knee → ankle) — lofted cross-sections ──
-    let calf_heights: [(f32, f32, f32, &[(f32, f32, f32)]); 7] = [
-        (0.08, 0.030, 0.030, &[
-            // Ankle — small, bony
-            (hp, 0.3, 0.012),             // lateral malleolus
-            (PI + hp, 0.3, 0.010),        // medial malleolus
-        ]),
-        (0.14, 0.032, 0.032, &[
-            (PI, 0.3, 0.01),              // Achilles
-        ]),
-        (0.22, 0.040, 0.038, &[
-            (PI, 0.4, 0.018),             // soleus
-            (0.0, 0.3, 0.01),             // tibialis anterior
-        ]),
-        (0.30, 0.050, 0.048, &[
-            (PI - 0.3, 0.35, 0.025),      // gastrocnemius medial
-            (PI + 0.3, 0.35, 0.020),      // gastrocnemius lateral
-            (0.0, 0.35, 0.015),           // tibialis anterior (peak)
-            (hp, 0.3, 0.01),              // peroneus
-        ]),
-        (0.36, 0.055, 0.052, &[
-            (PI - 0.3, 0.35, 0.02),       // gastrocnemius medial
-            (PI + 0.3, 0.35, 0.015),      // gastrocnemius lateral
-            (0.0, 0.35, 0.012),           // tibialis
-            (hp, 0.25, 0.008),            // peroneus
-        ]),
-        (0.42, 0.052, 0.050, &[
-            (PI, 0.5, 0.015),             // soleus
-            (0.0, 0.3, 0.01),             // shin
-        ]),
-        (0.48, 0.052, 0.052, &[
-            // Matches knee
-        ]),
-    ];
-
+    let ankle_y = 0.08;
     let knee_cz = fwd * 0.5;
     let ankle_cz = fwd * 0.25 - knee_bend * 0.4;
-    let calf_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = calf_heights.iter().map(|&(y, rx, rz, bumps)| {
-        let t = (y - 0.08) / (0.48 - 0.08); // 0 at ankle, 1 at knee
-        let cz = ankle_cz * (1.0 - t) + knee_cz * t;
-        (y, limb_ring(lx, cz, rx, rz, side, bumps, n), sk)
+
+    let leg_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = leg_heights.iter().map(|&(ref y, rx, rz, ref bumps)| {
+        let (cz,) = if *y >= knee_y {
+            let t = (hip_y - *y) / (hip_y - knee_y);
+            (knee_cz * t,)
+        } else {
+            let t = (knee_y - *y) / (knee_y - ankle_y);
+            (knee_cz * (1.0 - t) + ankle_cz * t,)
+        };
+        (*y, limb_ring(lx, cz, rx * l, rz * l, side, bumps, n), sk)
     }).collect();
 
-    mesh::loft_y_tris(tris, &calf_rings);
+    mesh::loft_y_tris(tris, &leg_rings);
 
     // ── BARE FOOT ──
     gen_bare_foot(tris, ankle, side, sk);
 }
 
-/// Nude attack arm — punching forward with flexed muscles, lofted cross-sections
-fn gen_nude_attack_arm(tris: &mut Vec<WorldTri>, side: f32, extend: f32, skin: u32) {
+/// Nude attack arm — single continuous loft, no sphere joints
+fn gen_nude_attack_arm(tris: &mut Vec<WorldTri>, side: f32, extend: f32, skin: u32, props: &BodyProportions) {
     let sk = skin;
-    let sk_lt = darken(sk, 1.01);
+    let a = props.arm_rx_scale;
+    let m = props.muscle_def;
 
     use std::f32::consts::PI;
     let hp = PI * 0.5;
     let n = 24;
 
-    let shoulder = [side * 0.28, 1.42, 0.0];
-    let elbow = [side * 0.38, 1.10, -0.15 - extend * 0.20];
-    let wrist = [side * 0.34, 0.92, -0.35 - extend * 0.35];
+    let sx = props.shoulder_joint_x;
+    let shoulder = [side * sx, 1.42, 0.0];
+    let elbow = [side * (sx + 0.10), 1.10, -0.15 - extend * 0.20];
+    let wrist = [side * (sx + 0.06), 0.92, -0.35 - extend * 0.35];
 
-    // ── ARMPIT FILL ──
-    mesh::ellipsoid_tris(tris, shoulder[0] - side * 0.06, shoulder[1] - 0.08, shoulder[2],
-        0.12, 0.12, 0.12, 2, sk);
-
-    // ── UPPER ARM — lofted, flexed muscles more pronounced ──
-    let upper_heights: [(f32, f32, f32, &[(f32, f32, f32)]); 7] = [
-        (1.42, 0.07, 0.07, &[
-            (hp, 0.5, 0.05),              // lateral deltoid
-            (0.7, 0.4, 0.03),             // anterior deltoid
-            (PI - 0.7, 0.4, 0.025),       // posterior deltoid
+    // ── SINGLE CONTINUOUS ATTACK ARM LOFT ──
+    let arm_heights: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
+        (1.42, 0.10, 0.10, vec![
+            (hp, 0.35, 0.035 * m), (0.5, 0.30, 0.022 * m), (PI - 0.5, 0.30, 0.018 * m),
+            (PI + hp, 0.35, 0.035),            // inward overlap
         ]),
-        (1.38, 0.07, 0.07, &[
-            (hp, 0.5, 0.06),              // lateral deltoid (peak)
-            (0.7, 0.4, 0.035),            // anterior deltoid
-            (PI - 0.7, 0.4, 0.03),        // posterior deltoid
+        (1.38, 0.092, 0.088, vec![
+            (hp, 0.35, 0.038 * m), (0.5, 0.30, 0.024 * m), (PI - 0.5, 0.30, 0.020 * m),
+            (PI + hp, 0.40, 0.040),            // pec/lat wrap
         ]),
-        (1.32, 0.068, 0.066, &[
-            (hp, 0.45, 0.03),             // deltoid insertion
+        (1.32, 0.080, 0.074, vec![
+            (hp, 0.30, 0.022 * m),
+            (PI + hp, 0.45, 0.045),            // pec/lat wrap
         ]),
-        (1.28, 0.068, 0.064, &[
-            (0.0, 0.4, 0.035),            // bicep (flexed, larger)
-            (PI, 0.45, 0.025),            // tricep
-            (hp, 0.3, 0.012),             // brachialis
+        (1.28, 0.076, 0.070, vec![
+            (0.0, 0.4, 0.026 * m), (PI, 0.45, 0.020 * m),
+            (PI + hp, 0.45, 0.045),            // pec/lat wrap
         ]),
-        (1.24, 0.072, 0.066, &[
-            (0.0, 0.4, 0.04),             // bicep peak (flexed)
-            (PI, 0.45, 0.03),             // tricep (flexed)
-            (hp, 0.25, 0.015),            // brachialis
+        (1.24, 0.074, 0.068, vec![
+            (0.0, 0.4, 0.030 * m), (PI, 0.45, 0.024 * m),
+            (PI + hp, 0.40, 0.038),            // inner taper
         ]),
-        (1.18, 0.065, 0.060, &[
-            (0.0, 0.35, 0.02),            // bicep taper
-            (PI, 0.4, 0.018),             // tricep taper
+        (1.18, 0.058, 0.054, vec![
+            (0.0, 0.35, 0.016 * m), (PI, 0.4, 0.014 * m),
+            (PI + hp, 0.35, 0.028),            // inner taper
         ]),
-        (1.10, 0.055, 0.055, &[
-            (PI, 0.3, 0.012),             // olecranon
+        // Elbow — continuous through
+        (1.12, 0.048, 0.046, vec![(PI, 0.3, 0.008 * m)]),
+        (1.10, 0.046, 0.044, vec![]),
+        (1.08, 0.048, 0.046, vec![]),
+        // Forearm
+        (1.02, 0.052, 0.048, vec![
+            (hp - 0.3, 0.35, 0.016 * m), (PI + hp + 0.3, 0.3, 0.012 * m),
         ]),
+        (0.96, 0.044, 0.040, vec![
+            (hp - 0.3, 0.35, 0.010 * m),
+        ]),
+        (0.92, 0.036, 0.034, vec![]),
     ];
 
     let shoulder_y = 1.42;
     let elbow_y = 1.10;
-    let upper_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = upper_heights.iter().map(|&(y, rx, rz, bumps)| {
-        let t = (shoulder_y - y) / (shoulder_y - elbow_y);
-        let cx = shoulder[0] * (1.0 - t) + elbow[0] * t;
-        let cz = shoulder[2] * (1.0 - t) + elbow[2] * t;
-        (y, limb_ring(cx, cz, rx, rz, side, bumps, n), sk)
-    }).collect();
-
-    mesh::loft_y_tris(tris, &upper_rings);
-
-    // ── ELBOW ──
-    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.060, 1, sk);
-    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2] + 0.045, 0.025, 0, sk_lt);
-
-    // ── FOREARM — lofted, thicker for punching ──
-    let fore_heights: [(f32, f32, f32, &[(f32, f32, f32)]); 5] = [
-        (0.92, 0.038, 0.036, &[]),
-        (0.96, 0.048, 0.044, &[
-            (hp - 0.3, 0.35, 0.015),      // brachioradialis
-            (PI + hp + 0.3, 0.3, 0.01),   // flexor
-        ]),
-        (1.02, 0.058, 0.052, &[
-            (hp - 0.3, 0.35, 0.022),      // brachioradialis (peak)
-            (PI + hp + 0.3, 0.3, 0.018),  // flexor group
-            (hp + 0.3, 0.3, 0.012),       // extensor group
-        ]),
-        (1.07, 0.056, 0.054, &[
-            (hp - 0.3, 0.3, 0.012),       // brachioradialis tail
-        ]),
-        (1.10, 0.055, 0.055, &[]),
-    ];
-
     let wrist_y = 0.92;
-    let fore_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = fore_heights.iter().map(|&(y, rx, rz, bumps)| {
-        let t = (y - wrist_y) / (elbow_y - wrist_y);
-        let cx = wrist[0] * (1.0 - t) + elbow[0] * t;
-        let cz = wrist[2] * (1.0 - t) + elbow[2] * t;
-        (y, limb_ring(cx, cz, rx, rz, side, bumps, n), sk)
+    let arm_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = arm_heights.iter().map(|&(ref y, rx, rz, ref bumps)| {
+        let (cx, cz) = if *y >= elbow_y {
+            let t_lin = (shoulder_y - *y) / (shoulder_y - elbow_y);
+            let t = t_lin * t_lin * t_lin; // cubic — stays near shoulder longer
+            (shoulder[0] * (1.0 - t) + elbow[0] * t, shoulder[2] * (1.0 - t) + elbow[2] * t)
+        } else {
+            let t = (elbow_y - *y) / (elbow_y - wrist_y);
+            (elbow[0] * (1.0 - t) + wrist[0] * t, elbow[2] * (1.0 - t) + wrist[2] * t)
+        };
+        (*y, limb_ring(cx, cz, rx * a, rz * a, side, bumps, n), sk)
     }).collect();
 
-    mesh::loft_y_tris(tris, &fore_rings);
+    mesh::loft_y_tris(tris, &arm_rings);
 
     // ── FIST ──
-    mesh::sphere_tris(tris, wrist[0], wrist[1] - 0.03, wrist[2] - 0.03, 0.055, 1, sk);
-    push_box(tris, wrist[0], wrist[1] - 0.03, wrist[2] - 0.06, 0.045, 0.040, 0.030, darken(sk, 0.95));
+    push_box(tris, wrist[0], wrist[1] - 0.03, wrist[2] - 0.04, 0.040 * a, 0.035, 0.025 * a, darken(sk, 0.95));
 }
 
-/// Complete nude male player body with animation
+/// Complete nude player body with animation — male or female via BodyProportions
 fn gen_nude_player_body(
     tris: &mut Vec<WorldTri>,
     swing: f32,
@@ -2257,95 +2665,107 @@ fn gen_nude_player_body(
     carrying_item: bool,
     carrying_bin: bool,
     sitting: bool,
+    is_female: bool,
 ) {
+    let props = if is_female { female_proportions() } else { male_proportions() };
     let head_app = NpcAppearance {
         skin, hair,
         hat_type: 0, hat_col: 0, coat_col: 0, vest_col: 0,
         has_coat: false, has_cape: false, has_sash: false,
         has_cross_strap: false, has_bracers: false,
         boot_type: 0, boot_col: 0, sash_col: 0,
-        face_age: 0, is_female: false,
+        face_age: 0, is_female,
     };
 
     if sitting {
-        // Seated nude body — scaled head offset down 0.4
-        let head_base = tris.len();
-        gen_head(tris, &head_app, None);
-        let head_scale = 0.72;
-        let head_cy = 1.70;
-        for tri in &mut tris[head_base..] {
-            for v in &mut tri.v {
-                v[0] *= head_scale;
-                v[1] = head_cy + (v[1] - head_cy) * head_scale;
-                v[2] *= head_scale;
-                v[1] -= 0.4;
-            }
-        }
+        // Seated nude body
+        let body_base = tris.len();
         mesh::tapered_cylinder_tris(tris, 0.0, 1.09, 0.0, 0.08, 0.07, 0.12, 8, skin);
-        // Seated torso (centered lower)
         let torso_base = tris.len();
-        gen_nude_torso(tris, skin);
+        gen_nude_torso(tris, skin, &props);
         for tri in &mut tris[torso_base..] {
             for v in &mut tri.v { v[1] -= 0.4; }
         }
-        gen_glutes(tris, skin);
-        // Horizontal thighs (matching wider stance and thicker proportions)
+        gen_glutes(tris, skin, &props);
         for &side in &[-1.0f32, 1.0] {
-            let hip_s = [side * 0.15, 0.48, 0.0];
-            let knee_s = [side * 0.15, 0.46, -0.42];
-            let ankle_s = [side * 0.15, 0.06, -0.44];
-            mesh::tapered_cylinder_between(tris, hip_s, knee_s, 0.14, 0.090, 10, skin);
-            mesh::sphere_tris(tris, knee_s[0], knee_s[1], knee_s[2], 0.085, 0, skin);
-            mesh::tapered_cylinder_between(tris, knee_s, ankle_s, 0.085, 0.052, 8, skin);
+            let hip_x = side * (props.hip_joint_x + 0.03);
+            let hip_s = [hip_x, 0.48, 0.0];
+            let knee_s = [hip_x, 0.46, -0.42];
+            let ankle_s = [hip_x, 0.06, -0.44];
+            let l = props.leg_rx_scale;
+            mesh::tapered_cylinder_between(tris, hip_s, knee_s, 0.14 * l, 0.090 * l, 10, skin);
+            mesh::sphere_tris(tris, knee_s[0], knee_s[1], knee_s[2], 0.085 * l, 0, skin);
+            mesh::tapered_cylinder_between(tris, knee_s, ankle_s, 0.085 * l, 0.052 * l, 8, skin);
             gen_bare_foot(tris, ankle_s, side, skin);
         }
-        // Arms resting on thighs (matching wider shoulders)
         for &side in &[-1.0f32, 1.0] {
-            let shoulder = [side * 0.32, 0.98, 0.0];
-            let elbow = [side * 0.34, 0.64, -0.15];
-            let wrist = [side * 0.32, 0.48, -0.30];
-            mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2], 0.12, 0.10, 0.10, 1, skin);
-            mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.10, 0.070, 8, skin);
-            mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.066, 0, skin);
-            mesh::tapered_cylinder_between(tris, elbow, wrist, 0.068, 0.048, 7, skin);
+            let sh_x = side * props.shoulder_joint_x;
+            let shoulder = [sh_x, 0.98, 0.0];
+            let elbow = [side * (props.shoulder_joint_x + 0.06), 0.64, -0.15];
+            let wrist = [sh_x, 0.48, -0.30];
+            let aa = props.arm_rx_scale;
+            mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2], 0.12 * aa, 0.10, 0.10 * aa, 1, skin);
+            mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.10 * aa, 0.070 * aa, 8, skin);
+            mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.066 * aa, 0, skin);
+            mesh::tapered_cylinder_between(tris, elbow, wrist, 0.068 * aa, 0.048 * aa, 7, skin);
             gen_hand(tris, wrist[0], wrist[1] - 0.04, wrist[2] - 0.02, side, skin);
+        }
+        // Stretch body
+        let bs = props.body_stretch;
+        let bw = props.body_widen;
+        for tri in &mut tris[body_base..] {
+            for v in &mut tri.v {
+                v[0] *= bw;
+                v[1] *= bs;
+                v[2] *= bw;
+            }
+        }
+        // Head (scaled and positioned on seated neck)
+        let hs = props.head_scale;
+        let hcy = props.head_cy;
+        let head_base = tris.len();
+        gen_head(tris, &head_app, None);
+        for tri in &mut tris[head_base..] {
+            for v in &mut tri.v {
+                v[0] *= hs;
+                v[1] = hcy + (v[1] - hcy) * hs;
+                v[2] *= hs;
+            }
+        }
+        let skull_base = hcy + (1.55 - hcy) * hs;
+        let sit_neck_top = 1.15 * bs;
+        let head_shift = sit_neck_top - skull_base;
+        for tri in &mut tris[head_base..] {
+            for v in &mut tri.v {
+                v[1] += head_shift;
+            }
         }
         return;
     }
 
-    // Scale head to 72% for proper head-to-body proportions (~5.5 heads tall)
-    let head_base = tris.len();
-    gen_head(tris, &head_app, None);
-    let head_scale = 0.72;
-    let head_cy = 1.70;
-    for tri in &mut tris[head_base..] {
-        for v in &mut tri.v {
-            v[0] *= head_scale;
-            v[1] = head_cy + (v[1] - head_cy) * head_scale;
-            v[2] *= head_scale;
-        }
-    }
-    gen_neck(tris, skin);
-    gen_nude_torso(tris, skin);
-    gen_glutes(tris, skin);
+    // ── BODY (neck, torso, limbs) — generated at natural coords, then stretched ──
+    let body_base = tris.len();
+    gen_neck(tris, skin, &props);
+    gen_nude_torso(tris, skin, &props);
+    gen_glutes(tris, skin, &props);
 
-    // ── LEGS ──
+    // Legs
     let l_fwd = -swing * 0.40;
     let r_fwd = swing * 0.40;
     let l_knee = if swing > 0.0 { swing * 0.22 } else { 0.0 };
     let r_knee = if swing < 0.0 { (-swing) * 0.22 } else { 0.0 };
-    gen_nude_leg(tris, -1.0, l_fwd, l_knee, skin);
-    gen_nude_leg(tris, 1.0, r_fwd, r_knee, skin);
+    gen_nude_leg(tris, -1.0, l_fwd, l_knee, skin, &props);
+    gen_nude_leg(tris, 1.0, r_fwd, r_knee, skin, &props);
 
-    // ── ARMS ──
+    // Arms
     if attack_phase > 0.0 {
         let t = (attack_phase / ATTACK_ANIM_DURATION).clamp(0.0, 1.0);
         let extend = 1.0 - (1.0 - t) * (1.0 - t);
-        gen_nude_attack_arm(tris, 1.0, extend, skin);
-        gen_nude_arm(tris, -1.0, -0.2, 0.3, skin);
+        gen_nude_attack_arm(tris, 1.0, extend, skin, &props);
+        gen_nude_arm(tris, -1.0, -0.2, 0.3, skin, &props);
     } else if carrying_item || carrying_bin {
-        gen_nude_arm(tris, -1.0, -0.63, 0.30, skin);
-        gen_nude_arm(tris, 1.0, -0.63, 0.30, skin);
+        gen_nude_arm(tris, -1.0, -0.63, 0.30, skin, &props);
+        gen_nude_arm(tris, 1.0, -0.63, 0.30, skin, &props);
         if carrying_item {
             mesh::beveled_box_tris(tris, 0.0, 0.88, -0.50, 0.30, 0.30, 0.20, 0.02, BAG_COLOR);
             push_box(tris, 0.0, 1.1, -0.37, 0.02, 0.4, 0.02, LEATHER_MED);
@@ -2357,8 +2777,39 @@ fn gen_nude_player_body(
         let r_arm_fwd = -swing * 0.25;
         let l_bend = 0.10 + swing.abs() * 0.14;
         let r_bend = 0.10 + swing.abs() * 0.14;
-        gen_nude_arm(tris, -1.0, l_arm_fwd, l_bend, skin);
-        gen_nude_arm(tris, 1.0, r_arm_fwd, r_bend, skin);
+        gen_nude_arm(tris, -1.0, l_arm_fwd, l_bend, skin, &props);
+        gen_nude_arm(tris, 1.0, r_arm_fwd, r_bend, skin, &props);
+    }
+
+    // Stretch body vertically (taller) and slightly widen (muscular mass)
+    let bs = props.body_stretch;
+    let bw = props.body_widen;
+    for tri in &mut tris[body_base..] {
+        for v in &mut tri.v {
+            v[0] *= bw;
+            v[1] *= bs;
+            v[2] *= bw;
+        }
+    }
+
+    // ── HEAD (generated separately, uniformly scaled, positioned on stretched neck) ──
+    let hs = props.head_scale;
+    let hcy = props.head_cy;
+    let head_base = tris.len();
+    gen_head(tris, &head_app, None);
+    for tri in &mut tris[head_base..] {
+        for v in &mut tri.v {
+            v[0] *= hs;
+            v[1] = hcy + (v[1] - hcy) * hs;
+            v[2] *= hs;
+        }
+    }
+    let skull_base = hcy + (1.55 - hcy) * hs;
+    let head_shift = props.neck_top * bs - skull_base;
+    for tri in &mut tris[head_base..] {
+        for v in &mut tri.v {
+            v[1] += head_shift;
+        }
     }
 }
 
@@ -2375,6 +2826,7 @@ pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
         player.carrying_item,
         player.carrying_bin.is_some(),
         player.sitting,
+        player.is_female,
     );
 
     let (sin_r, cos_r) = player.rot_y.sin_cos();
@@ -2652,10 +3104,10 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         job_hat,
     );
 
-    // Speech bubble (floating above head)
+    // Speech bubble (floating above stretched head)
     if npc.interacting_with.is_some() {
-        mesh::sphere_tris(tris, 0.0, 2.15, -0.15, 0.12, 0, 0xFFFFFFFF);
-        mesh::sphere_tris(tris, 0.0, 2.0, -0.1, 0.04, 0, 0xFFFFFFFF);
+        mesh::sphere_tris(tris, 0.0, 2.85, -0.15, 0.12, 0, 0xFFFFFFFF);
+        mesh::sphere_tris(tris, 0.0, 2.70, -0.1, 0.04, 0, 0xFFFFFFFF);
     }
 
     let (sin_r, cos_r) = npc.rot_y.sin_cos();

@@ -1412,6 +1412,16 @@ pub fn loft_y_tris(
     tris: &mut Vec<WorldTri>,
     rings: &[(f32, Vec<[f32; 2]>, u32)], // (y_height, [(x, z)], color)
 ) {
+    loft_y_tris_caps(tris, rings, true, true);
+}
+
+/// Loft with cap control — skip bottom/top caps for tubes that disappear into other geometry
+pub fn loft_y_tris_caps(
+    tris: &mut Vec<WorldTri>,
+    rings: &[(f32, Vec<[f32; 2]>, u32)],
+    bottom_cap: bool,
+    top_cap: bool,
+) {
     if rings.len() < 2 { return; }
     let n = rings[0].1.len();
 
@@ -1433,8 +1443,7 @@ pub fn loft_y_tris(
         }
     }
 
-    // Bottom cap (triangle fan)
-    {
+    if bottom_cap {
         let yb = rings[0].0;
         let bpts = &rings[0].1;
         let bcol = rings[0].2;
@@ -1449,8 +1458,7 @@ pub fn loft_y_tris(
         }
     }
 
-    // Top cap (triangle fan)
-    {
+    if top_cap {
         let last = rings.last().unwrap();
         let yt = last.0;
         let tpts = &last.1;

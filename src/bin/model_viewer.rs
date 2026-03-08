@@ -223,8 +223,8 @@ fn render_8k_sheet_smooth(
     views: &[([f32; 3], [f32; 3], &str)],
     sheet_label: &str,
 ) -> (Vec<u32>, usize, usize) {
-    let panel_w: usize = 1920;
-    let panel_h: usize = 4320;
+    let panel_w: usize = 960;
+    let panel_h: usize = 2160;
     let n = views.len();
     let sheet_w = panel_w * n;
     let sheet_h = panel_h;
@@ -237,11 +237,11 @@ fn render_8k_sheet_smooth(
         view_fb.clear(0xFF445566);
         render_model_smooth(&mut view_fb, tris, vertex_normals, *eye, *target);
 
-        // Bold labels at 3x scale for 8K
-        for dy in 0..3_usize {
-            for dx in 0..3_usize {
-                draw_label_scaled(&mut view_fb, 16 + dx, 16 + dy, view_name, 3);
-                draw_label_scaled(&mut view_fb, 16 + dx, 52 + dy, &tri_label, 3);
+        // Labels at 2x scale for 4K
+        for dy in 0..2_usize {
+            for dx in 0..2_usize {
+                draw_label_scaled(&mut view_fb, 8 + dx, 8 + dy, view_name, 2);
+                draw_label_scaled(&mut view_fb, 8 + dx, 30 + dy, &tri_label, 2);
             }
         }
 
@@ -264,7 +264,7 @@ fn render_8k_sheet_smooth(
         }
     }
 
-    eprintln!("Rendered 8K smooth: {} ({} tris, {}x{})", sheet_label, tris.len(), sheet_w, sheet_h);
+    eprintln!("Rendered 4K smooth: {} ({} tris, {}x{})", sheet_label, tris.len(), sheet_w, sheet_h);
     (composite, sheet_w, sheet_h)
 }
 
@@ -321,15 +321,15 @@ fn render_model_sheet(
     composite
 }
 
-/// 8K multi-view render: 4 panels side by side, each 1920x4320 (portrait)
+/// 4K multi-view render: 4 panels side by side, each 960x2160 (portrait)
 /// views: array of (eye_position, label)
 fn render_8k_sheet(
     tris: &[state::WorldTri],
     views: &[([f32; 3], [f32; 3], &str)], // (eye, target, label)
     sheet_label: &str,
 ) -> (Vec<u32>, usize, usize) {
-    let panel_w: usize = 1920;
-    let panel_h: usize = 4320;
+    let panel_w: usize = 960;
+    let panel_h: usize = 2160;
     let n = views.len();
     let sheet_w = panel_w * n;
     let sheet_h = panel_h;
@@ -342,11 +342,11 @@ fn render_8k_sheet(
         view_fb.clear(0xFF445566);
         render_model(&mut view_fb, tris, *eye, *target);
 
-        // Bold labels at 3x scale for 8K
-        for dy in 0..3_usize {
-            for dx in 0..3_usize {
-                draw_label_scaled(&mut view_fb, 16 + dx, 16 + dy, view_name, 3);
-                draw_label_scaled(&mut view_fb, 16 + dx, 52 + dy, &tri_label, 3);
+        // Labels at 2x scale for 4K
+        for dy in 0..2_usize {
+            for dx in 0..2_usize {
+                draw_label_scaled(&mut view_fb, 8 + dx, 8 + dy, view_name, 2);
+                draw_label_scaled(&mut view_fb, 8 + dx, 30 + dy, &tri_label, 2);
             }
         }
 
@@ -369,7 +369,7 @@ fn render_8k_sheet(
         }
     }
 
-    eprintln!("Rendered 8K: {} ({} tris, {}x{})", sheet_label, tris.len(), sheet_w, sheet_h);
+    eprintln!("Rendered 4K: {} ({} tris, {}x{})", sheet_label, tris.len(), sheet_w, sheet_h);
     (composite, sheet_w, sheet_h)
 }
 
@@ -600,6 +600,7 @@ fn make_player() -> state::Player {
         damage_shake: 0.0,
         hunger: 0.0, thirst: 0.0,
         wanted_vehicle_hit: false, bounty: 0.0,
+        is_female: false,
     }
 }
 
@@ -1056,8 +1057,8 @@ fn main() {
     let vertex_normals = compute_smooth_normals(&tris);
     eprintln!("Player mesh: {} tris, smooth normals computed", tris.len());
 
-    let cy = 0.90; // hip-level center
-    let d = 2.2;   // camera distance
+    let cy = 1.25; // center of stretched body
+    let d = 3.0;   // camera distance (taller body needs more room)
 
     // Sheet 1: Flat (eye-level) — front, right side, back, left side
     let flat_views: Vec<([f32; 3], [f32; 3], &str)> = vec![
@@ -1093,6 +1094,137 @@ fn main() {
     let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vertex_normals, &vert_views, "Player Vertical");
     save_png(&img, iw, ih, "debug/model_player_vertical.png");
 
+    // ── HEAD CLOSE-UP — 6 views for detailed comparison with ACU bust reference ──
+    // Head Y range after transforms: chin ~1.82, crown ~2.23, center ~2.02
+    {
+        let hcy = 2.00; // head center Y (shows head + upper neck)
+        let hcz = 0.03; // head center Z (cranium extends behind, shift target back)
+        let hd = 0.65;  // camera distance (fits full head with margins)
+        let hdd = hd * 0.707;
+        let head_views: Vec<([f32; 3], [f32; 3], &str)> = vec![
+            ([0.0, hcy, hcz - hd],         [0.0, hcy, hcz], "Front"),
+            ([hdd, hcy, hcz - hdd],         [0.0, hcy, hcz], "3/4 Front-R"),
+            ([hd, hcy, hcz],                [0.0, hcy, hcz], "Right"),
+            ([hdd, hcy, hcz + hdd],          [0.0, hcy, hcz], "3/4 Back-R"),
+            ([0.0, hcy, hcz + hd],           [0.0, hcy, hcz], "Back"),
+            ([0.0, hcy + 0.25, hcz - hd * 0.8], [0.0, hcy - 0.05, hcz], "Below"),
+        ];
+        let head_panel_w: usize = 720;
+        let head_panel_h: usize = 960;
+        let head_n = head_views.len();
+        let head_sheet_w = head_panel_w * head_n;
+        let head_sheet_h = head_panel_h;
+
+        let mut head_fb = raster::Framebuffer::new(head_panel_w, head_panel_h);
+        let mut head_composite = vec![0xFF3A4455u32; head_sheet_w * head_sheet_h];
+
+        let head_tri_label = format!("tris: {}", tris.len());
+        for (vi, (eye, target, label)) in head_views.iter().enumerate() {
+            head_fb.clear(0xFF445566);
+            render_model_smooth(&mut head_fb, &tris, &vertex_normals, *eye, *target);
+
+            for dy in 0..2_usize {
+                for dx in 0..2_usize {
+                    draw_label_scaled(&mut head_fb, 8 + dx, 8 + dy, label, 2);
+                    draw_label_scaled(&mut head_fb, 8 + dx, 30 + dy, &head_tri_label, 2);
+                }
+            }
+
+            let qx = vi * head_panel_w;
+            for y in 0..head_panel_h {
+                for x in 0..head_panel_w {
+                    head_composite[y * head_sheet_w + (qx + x)] = head_fb.pixels[y * head_panel_w + x];
+                }
+            }
+        }
+
+        // Panel separators
+        for pi in 1..head_n {
+            let sx = pi * head_panel_w;
+            for y in 0..head_sheet_h {
+                for dx in 0..2_usize {
+                    if sx + dx < head_sheet_w { head_composite[y * head_sheet_w + sx + dx] = 0xFFFFFFFF; }
+                    if sx >= dx + 1 { head_composite[y * head_sheet_w + sx - 1 - dx] = 0xFFFFFFFF; }
+                }
+            }
+        }
+
+        eprintln!("Rendered head close-up: {} views, {}x{}", head_n, head_sheet_w, head_sheet_h);
+        save_png(&head_composite, head_sheet_w, head_sheet_h, "debug/model_head.png");
+    }
+
+    // ── Female Player: same 3 sheets + head close-up ──
+    {
+        let mut female_player = make_player();
+        female_player.is_female = true;
+        tris.clear();
+        mesh::set_mesh_quality(2, 3);
+        render::gen_player_mesh(&female_player, &mut tris);
+        mesh::set_mesh_quality(0, 1);
+        let vn = compute_smooth_normals(&tris);
+        eprintln!("Female player mesh: {} tris, smooth normals computed", tris.len());
+
+        let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vn, &flat_views, "Female Flat");
+        save_png(&img, iw, ih, "debug/model_player_female_flat.png");
+
+        let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vn, &diag_views, "Female Diagonal");
+        save_png(&img, iw, ih, "debug/model_player_female_diagonal.png");
+
+        let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vn, &vert_views, "Female Vertical");
+        save_png(&img, iw, ih, "debug/model_player_female_vertical.png");
+
+        // Female head close-up
+        let hcy = 2.00;
+        let hcz = 0.03;
+        let hd = 0.65;
+        let hdd = hd * 0.707;
+        let head_views: Vec<([f32; 3], [f32; 3], &str)> = vec![
+            ([0.0, hcy, hcz - hd],         [0.0, hcy, hcz], "Front"),
+            ([hdd, hcy, hcz - hdd],         [0.0, hcy, hcz], "3/4 Front-R"),
+            ([hd, hcy, hcz],                [0.0, hcy, hcz], "Right"),
+            ([hdd, hcy, hcz + hdd],          [0.0, hcy, hcz], "3/4 Back-R"),
+            ([0.0, hcy, hcz + hd],           [0.0, hcy, hcz], "Back"),
+            ([0.0, hcy + 0.25, hcz - hd * 0.8], [0.0, hcy - 0.05, hcz], "Below"),
+        ];
+        let head_panel_w: usize = 720;
+        let head_panel_h: usize = 960;
+        let head_n = head_views.len();
+        let head_sheet_w = head_panel_w * head_n;
+        let head_sheet_h = head_panel_h;
+
+        let mut head_fb = raster::Framebuffer::new(head_panel_w, head_panel_h);
+        let mut head_composite = vec![0xFF3A4455u32; head_sheet_w * head_sheet_h];
+
+        let head_tri_label = format!("tris: {}", tris.len());
+        for (vi, (eye, target, label)) in head_views.iter().enumerate() {
+            head_fb.clear(0xFF445566);
+            render_model_smooth(&mut head_fb, &tris, &vn, *eye, *target);
+            for dy in 0..2_usize {
+                for dx in 0..2_usize {
+                    draw_label_scaled(&mut head_fb, 8 + dx, 8 + dy, label, 2);
+                    draw_label_scaled(&mut head_fb, 8 + dx, 30 + dy, &head_tri_label, 2);
+                }
+            }
+            let qx = vi * head_panel_w;
+            for y in 0..head_panel_h {
+                for x in 0..head_panel_w {
+                    head_composite[y * head_sheet_w + (qx + x)] = head_fb.pixels[y * head_panel_w + x];
+                }
+            }
+        }
+        for pi in 1..head_n {
+            let sx = pi * head_panel_w;
+            for y in 0..head_sheet_h {
+                for dx in 0..2_usize {
+                    if sx + dx < head_sheet_w { head_composite[y * head_sheet_w + sx + dx] = 0xFFFFFFFF; }
+                    if sx >= dx + 1 { head_composite[y * head_sheet_w + sx - 1 - dx] = 0xFFFFFFFF; }
+                }
+            }
+        }
+        eprintln!("Rendered female head close-up: {} views, {}x{}", head_n, head_sheet_w, head_sheet_h);
+        save_png(&head_composite, head_sheet_w, head_sheet_h, "debug/model_head_female.png");
+    }
+
     let vehicle = make_vehicle(0xFFCC3333);
     tris.clear();
     render::gen_vehicle_mesh(&vehicle, &mut tris, false);
@@ -1108,7 +1240,7 @@ fn main() {
     let npc = make_npc(state::NpcJob::Collector);
     tris.clear();
     render::gen_npc_mesh(&npc, &mut tris);
-    let img = render_model_sheet(&tris, 0.7, 3.5, "NPC Collector");
+    let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Collector");
     save_png(&img, IMG_W, IMG_H, "debug/model_npc.png");
 
     let bin = make_trash_bin();
