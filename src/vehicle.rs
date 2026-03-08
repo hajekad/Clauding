@@ -120,10 +120,23 @@ fn drive_vehicle(state: &mut GameState, vi: usize, dt: f32) {
     let vz = state.world.vehicles[vi].z;
     state.world.vehicles[vi].y = state.terrain.height_at(vx, vz);
 
+    // Smooth terrain normal for slope tilting (clamped to 45° max visual tilt)
+    let target_n = crate::math::clamp_normal_tilt(state.terrain.normal_at(vx, vz), 45.0);
+    let lerp_rate = 6.0 * dt;
+    let v = &mut state.world.vehicles[vi];
+    v.terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(v.terrain_normal, target_n, lerp_rate.min(1.0)));
+
+    // Slope speed effect: uphill slows, downhill accelerates
+    let (sr, cr) = state.world.vehicles[vi].rot_y.sin_cos();
+    let fwd_dir = [-sr, 0.0, -cr];
+    let slope_dot = target_n[0] * fwd_dir[0] + target_n[2] * fwd_dir[2]; // positive = facing uphill
+    state.world.vehicles[vi].speed -= slope_dot * 15.0 * dt;
+
     state.player.x = state.world.vehicles[vi].x;
     state.player.y = state.world.vehicles[vi].y;
     state.player.z = state.world.vehicles[vi].z;
     state.player.rot_y = state.world.vehicles[vi].rot_y;
+    state.player.terrain_normal = state.world.vehicles[vi].terrain_normal;
 
     // Speed limit check: player speeding on car road
     if state.world.vehicles[vi].speed.abs() > SPEED_LIMIT {
@@ -496,6 +509,16 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
     world.vehicles[vi].x = world.vehicles[vi].x.clamp(-WORLD_HALF, WORLD_HALF);
     world.vehicles[vi].z = world.vehicles[vi].z.clamp(-WORLD_HALF, WORLD_HALF);
     world.vehicles[vi].y = terrain.height_at(world.vehicles[vi].x, world.vehicles[vi].z);
+
+    // Smooth terrain normal for slope tilting (clamped to 45° max visual tilt)
+    let target_n = crate::math::clamp_normal_tilt(terrain.normal_at(world.vehicles[vi].x, world.vehicles[vi].z), 45.0);
+    let lerp_rate = 6.0 * dt;
+    world.vehicles[vi].terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(world.vehicles[vi].terrain_normal, target_n, lerp_rate.min(1.0)));
+
+    // Slope speed effect: uphill slows, downhill accelerates
+    let (sr, cr) = world.vehicles[vi].rot_y.sin_cos();
+    let slope_dot = target_n[0] * (-sr) + target_n[2] * (-cr);
+    world.vehicles[vi].speed -= slope_dot * 15.0 * dt;
 
     // 12. Gridlock recovery — auto-park vehicles stuck at low speed for too long
     if world.vehicles[vi].speed.abs() < 0.5 {

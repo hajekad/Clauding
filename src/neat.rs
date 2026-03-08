@@ -1017,6 +1017,7 @@ pub fn execute_outputs(
                 world.trash_bins[bi].x = world.npcs[i].x;
                 world.trash_bins[bi].z = world.npcs[i].z;
                 world.trash_bins[bi].y = terrain.height_at(world.npcs[i].x, world.npcs[i].z);
+                world.trash_bins[bi].terrain_normal = terrain.normal_at(world.npcs[i].x, world.npcs[i].z);
                 world.trash_bins[bi].carried_by = None;
                 world.npcs[i].carrying_bin = None;
             }

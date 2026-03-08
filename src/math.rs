@@ -104,3 +104,15 @@ pub fn rot3x3_apply(m: &[f32; 9], p: Vec3) -> Vec3 {
 pub fn v3_lerp(a: Vec3, b: Vec3, t: f32) -> Vec3 {
     [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t, a[2] + (b[2]-a[2])*t]
 }
+
+/// Clamp a terrain normal so tilt from vertical never exceeds `max_deg` degrees.
+/// Preserves horizontal direction, scales magnitude to match max angle.
+pub fn clamp_normal_tilt(n: Vec3, max_deg: f32) -> Vec3 {
+    let max_cos = max_deg.to_radians().cos(); // e.g. cos(35°) = 0.819
+    if n[1] >= max_cos { return n; }
+    let horiz_sq = n[0] * n[0] + n[2] * n[2];
+    if horiz_sq < 0.0001 { return [0.0, 1.0, 0.0]; }
+    let max_sin = max_deg.to_radians().sin();
+    let scale = max_sin / horiz_sq.sqrt();
+    [n[0] * scale, max_cos, n[2] * scale] // already unit: sin²+cos²=1
+}

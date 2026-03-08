@@ -66,6 +66,23 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         npc.on_ground = false;
     }
 
+    // Smooth terrain normal for slope tilting (clamped to 35° max visual tilt)
+    let raw_n = terrain.normal_at(npc.x, npc.z);
+    let target_n = crate::math::clamp_normal_tilt(raw_n, 35.0);
+    let lerp_rate = 8.0 * dt;
+    npc.terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(npc.terrain_normal, target_n, lerp_rate.min(1.0)));
+
+    // Slope sliding: if terrain is steep and NPC is on ground, slide downhill
+    if npc.on_ground {
+        let slope = (1.0 - raw_n[1]).max(0.0); // use real normal, not clamped
+        if slope > 0.15 { // ~22° threshold
+            let slide_force = slope * 6.0 * dt;
+            npc.x -= raw_n[0] * slide_force;
+            npc.z -= raw_n[2] * slide_force;
+            npc.y = terrain.height_at(npc.x, npc.z);
+        }
+    }
+
     // River escape: push NPCs off river toward nearest bank (but not on bridges)
     if on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) {
         let mut best_dist = f32::MAX;
@@ -1067,6 +1084,7 @@ pub fn sys_player_interact(
             world.trash_bins[bi].x = px;
             world.trash_bins[bi].z = pz;
             world.trash_bins[bi].y = terrain.height_at(px, pz);
+            world.trash_bins[bi].terrain_normal = terrain.normal_at(px, pz);
             world.trash_bins[bi].carried_by = None;
         }
         player.carrying_bin = None;
