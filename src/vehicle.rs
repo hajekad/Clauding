@@ -304,8 +304,10 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
         let new_idx = world.vehicles[vi].path_idx;
         if new_idx < world.vehicles[vi].path.len() {
             let wp = world.vehicles[vi].path[new_idx];
-            world.vehicles[vi].ai_target_x = net.nodes[wp.node_idx][0];
-            world.vehicles[vi].ai_target_z = net.nodes[wp.node_idx][1];
+            if wp.node_idx < net.nodes.len() {
+                world.vehicles[vi].ai_target_x = net.nodes[wp.node_idx][0];
+                world.vehicles[vi].ai_target_z = net.nodes[wp.node_idx][1];
+            }
             world.vehicles[vi].current_segment = Some(wp.segment_idx);
         }
         return; // process new waypoint next frame
@@ -525,6 +527,7 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
 
 /// Check if there's cross-traffic at intersection node that we should yield to
 fn check_cross_traffic(vi: usize, world: &WorldData, net: &RoadNetwork, node_idx: usize) -> bool {
+    if node_idx >= net.nodes.len() { return false; }
     let node = net.nodes[node_idx];
     let our_rot = world.vehicles[vi].rot_y;
     let (our_sin, our_cos) = our_rot.sin_cos();

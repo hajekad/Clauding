@@ -37,6 +37,9 @@ fn main() {
     let mut npc_stuck_ticks: Vec<u32> = vec![0; n_npcs];
     let mut npc_river_ticks: Vec<u32> = vec![0; n_npcs];
     let mut npc_total_dist: Vec<f32> = vec![0.0; n_npcs];
+    // Peak stuck data captured before midnight reset (survives across days)
+    let mut peak_stuck_ticks: Vec<u32> = vec![0; n_npcs];
+    let mut peak_river_ticks: Vec<u32> = vec![0; n_npcs];
 
     let mut prev_veh_pos: Vec<(f32, f32)> = game.world.vehicles.iter().map(|v| (v.x, v.z)).collect();
     let mut veh_stuck_ticks: Vec<u32> = vec![0; n_vehicles];
@@ -76,6 +79,14 @@ fn main() {
         ) {
             game.day_count += 1;
             let _ = writeln!(out, "--- DAY {} RESET (gen {}) ---", game.day_count, game.neat_population.generation);
+            // Capture peak stuck/river data before resetting (max across all days)
+            for i in 0..n_npcs {
+                peak_stuck_ticks[i] = peak_stuck_ticks[i].max(npc_stuck_ticks[i]);
+                peak_river_ticks[i] = peak_river_ticks[i].max(npc_river_ticks[i]);
+            }
+            // Reset per-day observer counters so snapshots reflect current day only
+            for t in npc_stuck_ticks.iter_mut() { *t = 0; }
+            for t in npc_river_ticks.iter_mut() { *t = 0; }
         }
 
         // Game systems
@@ -110,7 +121,13 @@ fn main() {
                 let dist = (dx * dx + dz * dz).sqrt();
                 npc_total_dist[i] += dist;
 
-                if dist < 0.05 && npc.state == state::NpcState::Working {
+                let is_mobile_job = matches!(npc.job,
+                    state::NpcJob::Collector | state::NpcJob::GarbageCollector |
+                    state::NpcJob::DeliveryCourier | state::NpcJob::MailCarrier |
+                    state::NpcJob::Paramedic | state::NpcJob::PolicePatrol |
+                    state::NpcJob::TaxiDriver
+                );
+                if dist < 0.05 && npc.state == state::NpcState::Working && is_mobile_job {
                     npc_stuck_ticks[i] += 1;
                 } else {
                     npc_stuck_ticks[i] = 0;
@@ -165,27 +182,41 @@ fn main() {
     // Final analysis
     let _ = writeln!(out, "\n=== FINAL ANALYSIS ({:.1}s real time, {} ticks) ===\n", elapsed, tick);
 
-    // Stuck NPC analysis
-    let _ = writeln!(out, "--- STUCK NPC ANALYSIS (stuck = no movement while Working, 10-tick windows) ---");
+    // Merge final day's data into peak
+    for i in 0..n_npcs {
+        peak_stuck_ticks[i] = peak_stuck_ticks[i].max(npc_stuck_ticks[i]);
+        peak_river_ticks[i] = peak_river_ticks[i].max(npc_river_ticks[i]);
+    }
+
+    // Stuck NPC analysis — only flag mobile jobs (Collector, GarbageCollector, Delivery, etc.)
+    // Jobs like Vendor, Fisherman, Mechanic, Lumberjack, etc. intentionally stand still
+    let _ = writeln!(out, "--- STUCK NPC ANALYSIS (peak stuck score across all days, mobile jobs only) ---");
     let mut stuck_npcs = 0;
     for i in 0..n_npcs {
-        if npc_stuck_ticks[i] > 50 {
+        if peak_stuck_ticks[i] > 50 {
             let npc = &game.world.npcs[i];
+            let is_mobile_job = matches!(npc.job,
+                state::NpcJob::Collector | state::NpcJob::GarbageCollector |
+                state::NpcJob::DeliveryCourier | state::NpcJob::MailCarrier |
+                state::NpcJob::Paramedic | state::NpcJob::PolicePatrol |
+                state::NpcJob::TaxiDriver
+            );
+            if !is_mobile_job { continue; }
             let _ = writeln!(out, "  NPC[{:2}] stuck_score={:4} pos=({:6.1},{:6.1}) total_dist={:6.1}m job={:12}",
-                i, npc_stuck_ticks[i], npc.x, npc.z, npc_total_dist[i], npc_job_name(npc.job));
+                i, peak_stuck_ticks[i], npc.x, npc.z, npc_total_dist[i], npc_job_name(npc.job));
             stuck_npcs += 1;
         }
     }
     if stuck_npcs == 0 { let _ = writeln!(out, "  No stuck NPCs detected!"); }
 
     // River exposure
-    let _ = writeln!(out, "\n--- RIVER EXPOSURE (NPCs on river) ---");
+    let _ = writeln!(out, "\n--- RIVER EXPOSURE (NPCs on river, peak across all days) ---");
     let mut river_npcs = 0;
     for i in 0..n_npcs {
-        if npc_river_ticks[i] > 0 {
+        if peak_river_ticks[i] > 0 {
             let npc = &game.world.npcs[i];
             let _ = writeln!(out, "  NPC[{:2}] river_ticks={:4} pos=({:6.1},{:6.1}) job={:12}",
-                i, npc_river_ticks[i], npc.x, npc.z, npc_job_name(npc.job));
+                i, peak_river_ticks[i], npc.x, npc.z, npc_job_name(npc.job));
             river_npcs += 1;
         }
     }
@@ -322,7 +353,14 @@ fn dump_snapshot(game: &state::GameState, out: &mut String, tick: u64,
     }
 
     let active_items = w.items.iter().filter(|it| it.active).count();
-    let stuck_npcs = npc_stuck.iter().filter(|&&s| s > 30).count();
+    // Only count mobile jobs (Collector, Garbage, Delivery, Mail, Paramedic, Police, Taxi) as stuck
+    let stuck_npcs = (0..w.npcs.len()).filter(|&idx| {
+        npc_stuck[idx] > 30 && matches!(w.npcs[idx].job,
+            state::NpcJob::Collector | state::NpcJob::GarbageCollector |
+            state::NpcJob::DeliveryCourier | state::NpcJob::MailCarrier |
+            state::NpcJob::Paramedic | state::NpcJob::PolicePatrol |
+            state::NpcJob::TaxiDriver)
+    }).count();
     let river_npcs = npc_river.iter().filter(|&&r| r > 0).count();
     let stuck_vehs = veh_stuck.iter().filter(|&&s| s > 10).count();
     let moving_vehs = w.vehicles.iter().filter(|v| v.speed.abs() > 0.5).count();

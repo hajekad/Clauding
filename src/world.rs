@@ -19,7 +19,6 @@ const BALCONY_RAIL_COLOR: u32 = 0xFF444444;
 const FLOWER_BOX_COLOR: u32 = 0xFF886644;
 const FLOWER_COLORS: [u32; 3] = [0xFFCC3344, 0xFFEECC33, 0xFFCC66AA];
 
-const CANOPY_COLORS: [u32; 4] = [0xFF338833, 0xFF228822, 0xFF448844, 0xFF2A7A2A];
 const TRUNK_COLOR: u32 = 0xFF554422;
 const ROCK_COLOR: u32 = 0xFF777777;
 const GROUND_LOW: u32 = 0xFF2A6B2A;  // darker green in valleys
@@ -412,43 +411,6 @@ fn generate_parking_spots(net: &RoadNetwork, buildings: &[Building], terrain: &T
     }
 
     spots
-}
-
-// Generate axis-aligned box triangles centered at (cx, cy, cz) with full extents (w, h, d)
-fn box_tris(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, w: f32, h: f32, d: f32, color: u32) {
-    let (hw, hh, hd) = (w * 0.5, h * 0.5, d * 0.5);
-    let c = [
-        [cx-hw, cy-hh, cz+hd], [cx+hw, cy-hh, cz+hd], [cx+hw, cy+hh, cz+hd], [cx-hw, cy+hh, cz+hd],
-        [cx-hw, cy-hh, cz-hd], [cx+hw, cy-hh, cz-hd], [cx+hw, cy+hh, cz-hd], [cx-hw, cy+hh, cz-hd],
-    ];
-    let faces: [([usize; 4], [f32; 3]); 6] = [
-        ([0,1,2,3], [0.0, 0.0, 1.0]), ([5,4,7,6], [0.0, 0.0,-1.0]),
-        ([4,0,3,7], [-1.0,0.0,0.0]),  ([1,5,6,2], [1.0, 0.0, 0.0]),
-        ([3,2,6,7], [0.0, 1.0, 0.0]), ([4,5,1,0], [0.0,-1.0, 0.0]),
-    ];
-    for (idx, normal) in faces {
-        tris.push(WorldTri { v: [c[idx[0]], c[idx[1]], c[idx[2]]], normal, color });
-        tris.push(WorldTri { v: [c[idx[0]], c[idx[2]], c[idx[3]]], normal, color });
-    }
-}
-
-// 8-sided approximation of a sphere
-fn octahedron_tris(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, r: f32, color: u32) {
-    let top = [cx, cy + r, cz];
-    let bot = [cx, cy - r, cz];
-    let pts = [
-        [cx + r, cy, cz], [cx, cy, cz + r],
-        [cx - r, cy, cz], [cx, cy, cz - r],
-    ];
-    for i in 0..4 {
-        let a = pts[i];
-        let b = pts[(i + 1) % 4];
-        // Reversed winding → CCW screen + outward normals
-        let n_top = normalize_tri_normal(top, b, a);
-        tris.push(WorldTri { v: [top, b, a], normal: n_top, color });
-        let n_bot = normalize_tri_normal(bot, a, b);
-        tris.push(WorldTri { v: [bot, a, b], normal: n_bot, color });
-    }
 }
 
 fn normalize_tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
@@ -2291,7 +2253,7 @@ pub fn generate_world(game: &mut GameState) {
                     let by = ground_y + 2.0 + floor_height;
                     // Diagonal beam as a thin rotated box
                     let diag_len = (1.6_f32 * 1.6 + floor_height * floor_height).sqrt();
-                    let diag_angle = (floor_height).atan2(1.6);
+                    let _diag_angle = (floor_height).atan2(1.6);
                     // Approximate with a thin box (slight tilt baked in position)
                     mesh::box_tris(&mut tris, bx, by + floor_height * 0.5, front_tz,
                         tw, diag_len * 0.8, tw, timber_c);
@@ -2869,14 +2831,19 @@ pub fn generate_world(game: &mut GameState) {
         let mut z;
         let mut attempts = 0;
         loop {
+            // After many failures, spawn near a road node (guaranteed walkable)
+            if attempts > 50 && !game.road_network.nodes.is_empty() {
+                let ni = rng.next() as usize % game.road_network.nodes.len();
+                x = game.road_network.nodes[ni][0] + rng.range(-5.0, 5.0);
+                z = game.road_network.nodes[ni][1] + rng.range(-5.0, 5.0);
+                break;
+            }
             x = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
             z = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
             attempts += 1;
             if on_any_road(x, z, &game.road_network) { continue; }
-            if attempts <= 20 {
-                if check_npc_walk_collision(&game.world, x, z, 0.5, usize::MAX) { continue; }
-                if on_river_not_bridge(x, z, &game.world.river_segments, &game.world.bridges) { continue; }
-            }
+            if check_npc_walk_collision(&game.world, x, z, 0.5, usize::MAX) { continue; }
+            if on_river_not_bridge(x, z, &game.world.river_segments, &game.world.bridges) { continue; }
             break;
         }
         let y = game.terrain.height_at(x, z);

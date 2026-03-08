@@ -69,12 +69,14 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
     // River escape: push NPCs off river toward nearest bank (but not on bridges)
     if on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) {
         let mut best_dist = f32::MAX;
+        let mut best_half_width = 5.0f32;
         let mut push_x = 0.0f32;
         let mut push_z = 0.0f32;
         for seg in &world.river_segments {
             let d = crate::world::point_to_segment_dist(npc.x, npc.z, seg.x1, seg.z1, seg.x2, seg.z2);
             if d < best_dist {
                 best_dist = d;
+                best_half_width = seg.width * 0.5;
                 // Perpendicular direction away from river center
                 let sdx = seg.x2 - seg.x1;
                 let sdz = seg.z2 - seg.z1;
@@ -91,10 +93,31 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         // Strong push outward — must exceed walking speed
         npc.x += push_x * 20.0 * dt;
         npc.z += push_z * 20.0 * dt;
-        // If still on river after push, snap to bank
+        // If still on river after push, snap to bank with escalating distance
         if on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) {
-            npc.x += push_x * best_dist * 1.5;
-            npc.z += push_z * best_dist * 1.5;
+            // Try increasing snap distances until we're off the river
+            for mult in [1.0, 2.0, 3.0] {
+                let snap_dist = (best_half_width + 2.0) * mult;
+                let try_x = npc.x + push_x * snap_dist;
+                let try_z = npc.z + push_z * snap_dist;
+                if !on_river_not_bridge(try_x, try_z, &world.river_segments, &world.bridges) {
+                    npc.x = try_x;
+                    npc.z = try_z;
+                    break;
+                }
+            }
+            // Last resort: if still on river (junction/bend), try perpendicular to push direction
+            if on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) {
+                for &(dx, dz) in &[(push_z, -push_x), (-push_z, push_x)] {
+                    let try_x = npc.x + dx * (best_half_width + 5.0);
+                    let try_z = npc.z + dz * (best_half_width + 5.0);
+                    if !on_river_not_bridge(try_x, try_z, &world.river_segments, &world.bridges) {
+                        npc.x = try_x;
+                        npc.z = try_z;
+                        break;
+                    }
+                }
+            }
         }
     }
 }
@@ -322,6 +345,23 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
             world.npcs[i].z = dest_z;
             world.npcs[i].stuck_timer = 0.0;
             world.npcs[i].detouring = false;
+
+            // Abandon current target — brief cooldown so NPC picks a different one.
+            // Keep short (10s) — path_clear in find_best_item prevents retargeting
+            // unreachable items. Longer values (30s+) cascade and block all items.
+            if let Some(item_idx) = world.npcs[i].target_item {
+                if item_idx < world.items.len() {
+                    world.items[item_idx].claimed_by = None;
+                    world.items[item_idx].skip_until = 10.0;
+                }
+                world.npcs[i].target_item = None;
+            }
+            if let Some(bin_idx) = world.npcs[i].target_bin {
+                if bin_idx < world.trash_bins.len() {
+                    world.trash_bins[bin_idx].carried_by = None;
+                }
+                world.npcs[i].target_bin = None;
+            }
         } else if world.npcs[i].stuck_timer > 3.0 {
             let prev = world.npcs[i].stuck_timer - dt;
             if (world.npcs[i].stuck_timer / 3.0) as u32 != (prev / 3.0) as u32 {
@@ -756,6 +796,7 @@ fn find_best_item(world: &WorldData, npc_idx: usize) -> Option<usize> {
     for (idx, item) in world.items.iter().enumerate() {
         if !item.active { continue; }
         if item.falling { continue; }
+        if item.skip_until > 0.0 { continue; }
         if let Some(claimer) = item.claimed_by {
             if claimer != npc_idx { continue; }
         }
@@ -781,7 +822,7 @@ fn unclaim_item(world: &mut WorldData, npc_idx: usize) {
 // Night sky spawning system
 pub fn sys_night_spawning(
     world: &mut WorldData, terrain: &Terrain, time_of_day: f32,
-    dt: f32, rng: &mut Rng, _road_network: &RoadNetwork,
+    dt: f32, rng: &mut Rng, road_network: &RoadNetwork,
 ) {
     // Update falling items
     for item in &mut world.items {
@@ -816,6 +857,13 @@ pub fn sys_night_spawning(
         let mut z;
         let mut attempts = 0;
         loop {
+            // After many failures, spawn near a road node (guaranteed walkable)
+            if attempts > 30 && !road_network.nodes.is_empty() {
+                let ni = rng.next() as usize % road_network.nodes.len();
+                x = road_network.nodes[ni][0] + rng.range(-5.0, 5.0);
+                z = road_network.nodes[ni][1] + rng.range(-5.0, 5.0);
+                break;
+            }
             // 70% near town, 30% anywhere
             if rng.next() % 10 < 7 {
                 x = rng.range(-150.0, 150.0);
@@ -825,8 +873,6 @@ pub fn sys_night_spawning(
                 z = rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0);
             }
             attempts += 1;
-            // Reject items in collision zones or on river (max 10 attempts, then accept)
-            if attempts >= 10 { break; }
             if check_npc_walk_collision(world, x, z, 0.5, usize::MAX) { continue; }
             if on_river_not_bridge(x, z, &world.river_segments, &world.bridges) { continue; }
             break;
@@ -920,6 +966,17 @@ pub fn sys_midnight_reset(
             npc.police_target = None;
             npc.prev_x = npc.x;
             npc.prev_z = npc.z;
+        }
+
+        // Teleport river-stuck NPCs back to their home building
+        for npc in world.npcs.iter_mut() {
+            if on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) {
+                let home = &world.buildings[npc.home_idx];
+                npc.x = home.x;
+                npc.z = home.z;
+                npc.prev_x = npc.x;
+                npc.prev_z = npc.z;
+            }
         }
 
         // Reset trash bins

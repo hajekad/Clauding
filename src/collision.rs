@@ -273,8 +273,6 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
     for i in 0..nv {
         if world.vehicles[i].speed.abs() < 0.1 { continue; }
         for j in (i + 1)..nv {
-            if world.vehicles[j].speed.abs() < 0.1 && world.vehicles[i].speed.abs() < 0.1 { continue; }
-
             let dx = world.vehicles[j].x - world.vehicles[i].x;
             let dz = world.vehicles[j].z - world.vehicles[i].z;
             if dx.abs() > 10.0 || dz.abs() > 10.0 { continue; }
