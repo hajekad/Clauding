@@ -1,5 +1,5 @@
 // SPIR-V graphics shader binaries (vertex + fragment), built programmatically
-// Vertex: VP transform + GPU-side lighting (sun, ambient, fog) via push constants
+// Vertex: VP transform + GPU-side lighting (sun, ambient, fog, emissive) via push constants
 // Fragment: writes interpolated color to attachment
 
 #![allow(unused)]
@@ -95,16 +95,19 @@ fn header(s: &mut Vec<u32>, bound: u32) {
     s[4] = 0;
 }
 
-/// Vertex shader: VP transform + GPU-side lighting/fog
+/// Vertex shader: VP transform + GPU-side lighting/fog + emissive glow
 ///
 /// Inputs:  location 0 = vec3 position, location 1 = vec4 color (B8G8R8A8_UNORM), location 2 = vec3 normal
 /// Outputs: gl_Position (BuiltIn), location 0 = vec4 fragColor (lit + fogged)
 /// Push constants (128 bytes):
 ///   mat4 VP                          (offset 0,  64 bytes)
 ///   vec4 light_dir_ambient           (offset 64, xyz=light_dir, w=ambient)
-///   vec4 sun_fog_params              (offset 80, x=sun_strength, y=fog_dist_sq_inv)
+///   vec4 sun_fog_params              (offset 80, x=sun_strength, y=fog_dist_sq_inv, z=fwd_x, w=fwd_z)
 ///   vec4 fog_color                   (offset 96, xyz=fog_color normalized 0-1)
 ///   vec4 eye_pos                     (offset 112, xyz=camera position)
+///
+/// Emissive system: alpha < 1.0 signals emissive geometry (windows, lamp globes, vehicle lights).
+/// Emissive verts bypass lighting and glow brighter at night, with reduced fog.
 pub fn build_vertex_shader() -> Vec<u32> {
     let mut s: Vec<u32> = vec![0; 5];
 
@@ -145,6 +148,10 @@ pub fn build_vertex_shader() -> Vec<u32> {
     let c_1f = 28;
     let c_01f = 29;
     let c_13f = 30;
+    // New constants for emissive
+    let c_07f = 70;   // 0.7
+    let c_20f = 71;   // 2.0
+    let c_25f = 72;   // 2.5
 
     // Function IDs
     let main_fn = 31;
@@ -192,8 +199,20 @@ pub fn build_vertex_shader() -> Vec<u32> {
     let r_fog_scaled = 67;
     let r_final_rgb = 68;
     let r_final = 69;
+    // Emissive path (IDs 73+)
+    let r_alpha = 73;
+    let r_emissive_f = 74;    // 1.0 - alpha (0=normal, 1=emissive)
+    let r_sun_x2 = 75;        // sun_strength * 2.0
+    let r_boost_raw = 76;     // 2.0 - sun_x2
+    let r_boost = 77;         // clamp(boost_raw, 1.0, 2.5) — night glow intensity
+    let r_int_alpha = 78;     // intensity * alpha
+    let r_boost_ef = 79;      // boost * emissive_f
+    let r_mixed_int = 80;     // final intensity (normal+emissive blended)
+    let r_ef_07 = 81;         // emissive_f * 0.7
+    let r_fog_reduce = 82;    // 1.0 - ef_07 (fog reduction factor)
+    let r_eff_fog = 83;       // fog_sq * fog_reduce (effective fog for this vertex)
 
-    let bound = 70u32;
+    let bound = 84u32;
 
     // --- Preamble (must follow SPIR-V logical layout order) ---
 
@@ -264,6 +283,9 @@ pub fn build_vertex_shader() -> Vec<u32> {
     emit!(s, OP_CONST, ty_float, c_1f, 0x3F800000u32);          // 1.0
     emit!(s, OP_CONST, ty_float, c_01f, 0.1_f32.to_bits());     // 0.1
     emit!(s, OP_CONST, ty_float, c_13f, 1.3_f32.to_bits());     // 1.3
+    emit!(s, OP_CONST, ty_float, c_07f, 0.7_f32.to_bits());     // 0.7
+    emit!(s, OP_CONST, ty_float, c_20f, 2.0_f32.to_bits());     // 2.0
+    emit!(s, OP_CONST, ty_float, c_25f, 2.5_f32.to_bits());     // 2.5
 
     // --- Function ---
     emit!(s, OP_FN, ty_void, main_fn, 0, ty_fn_void);
@@ -300,25 +322,54 @@ pub fn build_vertex_shader() -> Vec<u32> {
     emit!(s, OP_LOAD, ty_vec4, r_ep_vec, r_ep_ptr);
     emit!(s, OP_VECTOR_SHUFFLE, ty_vec3, r_eye_xyz, r_ep_vec, r_ep_vec, 0, 1, 2);
 
-    // Lighting: intensity = clamp(max(dot(normal, light_dir), 0.0) * sun_strength + ambient, 0.1, 1.3)
+    // === Lighting ===
+    // Normal lighting: intensity = clamp(max(dot(normal, light_dir), 0) * sun + ambient, 0.1, 1.3)
     emit!(s, OP_DOT, ty_float, r_sun_dot, r_normal, r_light_dir);
     emit!(s, OP_EXT_INST, ty_float, r_sun_max, glsl, 40, r_sun_dot, c_0f);   // FMax
     emit!(s, OP_FMUL, ty_float, r_sun_lit, r_sun_max, r_sun_str);
     emit!(s, OP_FADD, ty_float, r_int_raw, r_sun_lit, r_ambient);
     emit!(s, OP_EXT_INST, ty_float, r_intensity, glsl, 43, r_int_raw, c_01f, c_13f); // FClamp
 
-    // Fog: fog_sq = min(dot(eye-pos, eye-pos) * fog_dist_sq_inv, 1.0)
+    // === Fog ===
+    // fog_sq = min(dot(eye-pos, eye-pos) * fog_dist_sq_inv, 1.0)
     emit!(s, OP_FSUB, ty_vec3, r_to_eye, r_eye_xyz, r_pos);
     emit!(s, OP_DOT, ty_float, r_dist_sq, r_to_eye, r_to_eye);
     emit!(s, OP_FMUL, ty_float, r_fog_raw, r_dist_sq, r_fog_inv);
     emit!(s, OP_EXT_INST, ty_float, r_fog_sq, glsl, 37, r_fog_raw, c_1f);    // FMin
 
-    // Final color: mix(color.rgb * intensity, fog_color, fog_sq)
+    // === Emissive system (branchless) ===
+    // alpha = color.w (1.0 = normal, 0.0 = emissive)
+    // emissive_f = 1.0 - alpha (0.0 = normal, 1.0 = emissive)
+    emit!(s, OP_COMPOSITE_EXTRACT, ty_float, r_alpha, r_color, 3);
+    emit!(s, OP_FSUB, ty_float, r_emissive_f, c_1f, r_alpha);
+
+    // Emissive boost: clamp(2.0 - sun_strength*2.0, 1.0, 2.5)
+    // Night (sun=0): boost=2.0, Day (sun=0.65): boost=0.7→clamped to 1.0
+    emit!(s, OP_FMUL, ty_float, r_sun_x2, r_sun_str, c_20f);
+    emit!(s, OP_FSUB, ty_float, r_boost_raw, c_20f, r_sun_x2);
+    emit!(s, OP_EXT_INST, ty_float, r_boost, glsl, 43, r_boost_raw, c_1f, c_25f); // FClamp
+
+    // Blend intensity: intensity*alpha + boost*emissive_f
+    // Normal verts (alpha=1): intensity*1 + boost*0 = intensity
+    // Emissive verts (alpha=0): intensity*0 + boost*1 = boost
+    emit!(s, OP_FMUL, ty_float, r_int_alpha, r_intensity, r_alpha);
+    emit!(s, OP_FMUL, ty_float, r_boost_ef, r_boost, r_emissive_f);
+    emit!(s, OP_FADD, ty_float, r_mixed_int, r_int_alpha, r_boost_ef);
+
+    // Reduce fog for emissive (lights visible through haze):
+    // eff_fog = fog_sq * (1.0 - emissive_f * 0.7)
+    // Normal: fog_sq * 1.0 = full fog
+    // Emissive: fog_sq * 0.3 = 30% fog
+    emit!(s, OP_FMUL, ty_float, r_ef_07, r_emissive_f, c_07f);
+    emit!(s, OP_FSUB, ty_float, r_fog_reduce, c_1f, r_ef_07);
+    emit!(s, OP_FMUL, ty_float, r_eff_fog, r_fog_sq, r_fog_reduce);
+
+    // === Final color: mix(color.rgb * mixed_intensity, fog_color, eff_fog) ===
     emit!(s, OP_VECTOR_SHUFFLE, ty_vec3, r_color_rgb, r_color, r_color, 0, 1, 2);
-    emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_lit_rgb, r_color_rgb, r_intensity);
-    emit!(s, OP_FSUB, ty_float, r_inv_fog, c_1f, r_fog_sq);
+    emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_lit_rgb, r_color_rgb, r_mixed_int);
+    emit!(s, OP_FSUB, ty_float, r_inv_fog, c_1f, r_eff_fog);
     emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_lit_scaled, r_lit_rgb, r_inv_fog);
-    emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_fog_scaled, r_fog_rgb, r_fog_sq);
+    emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_fog_scaled, r_fog_rgb, r_eff_fog);
     emit!(s, OP_FADD, ty_vec3, r_final_rgb, r_lit_scaled, r_fog_scaled);
     emit!(s, OP_COMPOSITE_CONSTRUCT, ty_vec4, r_final, r_final_rgb, c_1f);
 

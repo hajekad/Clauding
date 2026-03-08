@@ -28,7 +28,7 @@ const ROAD_LINE_COLOR: u32 = 0xFFCCCC33;
 const SIDEWALK_COLOR: u32 = 0xFF888888;
 const FIELD_ROAD_COLOR: u32 = 0xFF665544;
 const LAMP_POLE_COLOR: u32 = 0xFF666666;
-const LAMP_GLOW_COLOR: u32 = 0xFFFFEE88;
+const LAMP_GLOW_COLOR: u32 = 0x00FFEE88; // alpha=0 flags emissive (night glow)
 
 const ROAD_SEG_STEP: f32 = 2.0; // subdivision step for terrain-following road strips
 
@@ -141,6 +141,19 @@ fn road_dist_network(x: f32, z: f32, net: &RoadNetwork) -> (f32, RoadTier) {
         }
     }
     (best_dist, best_tier)
+}
+
+/// Check if position is on the driveable road surface (for objects that can be on sidewalks)
+pub fn on_road_surface(x: f32, z: f32, net: &RoadNetwork) -> bool {
+    for seg in &net.segments {
+        let d = point_to_segment_dist(x, z, seg.x0, seg.z0, seg.x1, seg.z1);
+        let half_width = match seg.tier {
+            RoadTier::CarRoad => CAR_ROAD_WIDTH * 0.5 + 0.5,
+            RoadTier::FieldRoad => FIELD_ROAD_WIDTH * 0.5 + 0.3,
+        };
+        if d < half_width { return true; }
+    }
+    false
 }
 
 /// Check if position is on or near any road (for object placement avoidance)
@@ -747,8 +760,16 @@ fn generate_interactibles(
     for i in 0..4 {
         if i >= net.nodes.len() { break; }
         let node = &net.nodes[i.min(net.nodes.len() - 1)];
-        let x = node[0] + rng.range(3.0, 5.0);
-        let z = node[1] + rng.range(3.0, 5.0);
+        let mut x = node[0] + rng.range(3.0, 5.0);
+        let mut z = node[1] + rng.range(3.0, 5.0);
+        for _ in 0..20 {
+            if !on_road_surface(x, z, net) { break; }
+            let angle = rng.range(0.0, std::f32::consts::TAU);
+            let dist = rng.range(6.0, 15.0);
+            x = node[0] + angle.cos() * dist;
+            z = node[1] + angle.sin() * dist;
+        }
+        if on_road_surface(x, z, net) { continue; }
         let y = terrain.height_at(x, z);
         mesh::beveled_box_tris(tris, x, y + 1.1, z, 0.8, 2.2, 0.8, 0.06, PHONE_BOOTH_COLOR);
         // Domed roof
@@ -766,6 +787,7 @@ fn generate_interactibles(
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
         let x = b.x + side * (b.w * 0.5 + 1.2);
         let z = b.z;
+        if on_road_surface(x, z, net) { continue; }
         let y = terrain.height_at(x, z);
         mesh::beveled_box_tris(tris, x, y + 0.75, z, 0.7, 1.5, 0.6, 0.04, VENDING_COLOR);
         // Recessed panel (into body, not flush)
@@ -782,6 +804,7 @@ fn generate_interactibles(
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
         let (x, z) = sidewalk_pos(rng, seg, side);
+        if on_road_surface(x, z, net) { continue; }
         let y = terrain.height_at(x, z);
         // Seat slats (3)
         for si in 0..3 {
@@ -809,6 +832,7 @@ fn generate_interactibles(
         let b = &buildings[bi];
         let x = b.x;
         let z = b.z - b.d * 0.5 - 1.5;
+        if on_road_surface(x, z, net) { continue; }
         let y = terrain.height_at(x, z);
         mesh::beveled_box_tris(tris, x, y + 0.5, z, 1.2, 1.0, 0.8, 0.05, DUMPSTER_COLOR);
         mesh::box_tris(tris, x, y + 1.05, z, 1.25, 0.08, 0.82, 0xFF445599); // lid
@@ -824,6 +848,7 @@ fn generate_interactibles(
         let b = &buildings[bi];
         let x = b.x + b.w * 0.5 + 0.4;
         let z = b.z;
+        if on_road_surface(x, z, net) { continue; }
         let y = terrain.height_at(x, z);
         mesh::beveled_box_tris(tris, x, y + 0.7, z, 0.6, 1.4, 0.3, 0.03, ATM_COLOR);
         // Recessed screen (into body)
@@ -838,8 +863,16 @@ fn generate_interactibles(
     for i in 0..4 {
         let ni = (i + 1) % net.nodes.len().max(1);
         let node = &net.nodes[ni];
-        let x = node[0] - rng.range(3.0, 5.0);
-        let z = node[1] - rng.range(3.0, 5.0);
+        let mut x = node[0] - rng.range(3.0, 5.0);
+        let mut z = node[1] - rng.range(3.0, 5.0);
+        for _ in 0..20 {
+            if !on_road_surface(x, z, net) { break; }
+            let angle = rng.range(0.0, std::f32::consts::TAU);
+            let dist = rng.range(6.0, 15.0);
+            x = node[0] + angle.cos() * dist;
+            z = node[1] + angle.sin() * dist;
+        }
+        if on_road_surface(x, z, net) { continue; }
         let y = terrain.height_at(x, z);
         mesh::beveled_box_tris(tris, x, y + 0.5, z, 0.6, 1.0, 0.4, 0.03, NEWSSTAND_COLOR);
         interactibles.push(Interactible {
@@ -854,6 +887,7 @@ fn generate_interactibles(
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
         let (x, z) = sidewalk_pos(rng, seg, side);
+        if on_road_surface(x, z, net) { continue; }
         let y = terrain.height_at(x, z);
         mesh::beveled_box_tris(tris, x, y + 0.5, z, 0.4, 1.0, 0.3, 0.03, MAILBOX_COLOR);
         // Rounded top
@@ -870,6 +904,7 @@ fn generate_interactibles(
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
         let (x, z) = sidewalk_pos(rng, seg, side);
+        if on_road_surface(x, z, net) { continue; }
         let y = terrain.height_at(x, z);
         // Lathe profile for hydrant shape
         let profile: [[f32;2]; 6] = [
@@ -891,8 +926,16 @@ fn generate_interactibles(
     for i in 0..2 {
         let ni = (i * 2) % net.nodes.len().max(1);
         let node = &net.nodes[ni];
-        let x = node[0] + rng.range(-2.0, 2.0);
-        let z = node[1] + rng.range(5.0, 7.0);
+        let mut x = node[0] + rng.range(-2.0, 2.0);
+        let mut z = node[1] + rng.range(5.0, 7.0);
+        for _ in 0..20 {
+            if !on_road_surface(x, z, net) { break; }
+            let angle = rng.range(0.0, std::f32::consts::TAU);
+            let dist = rng.range(6.0, 15.0);
+            x = node[0] + angle.cos() * dist;
+            z = node[1] + angle.sin() * dist;
+        }
+        if on_road_surface(x, z, net) { continue; }
         let y = terrain.height_at(x, z);
         mesh::beveled_box_tris(tris, x, y + 0.9, z, 0.4, 1.8, 0.3, 0.03, PAYPHONE_COLOR);
         // Recessed screen (into body)
@@ -1340,7 +1383,7 @@ fn generate_parking_lots(
 /// Generate 6-8 market stalls near town center
 fn generate_market_stalls(
     tris: &mut Vec<WorldTri>, terrain: &Terrain, rng: &mut Rng,
-    buildings: &[Building], walls: &mut Vec<Wall>,
+    net: &RoadNetwork, buildings: &[Building], walls: &mut Vec<Wall>,
 ) {
     let stall_count = 6 + rng.next() as usize % 3;
     let angle_step = std::f32::consts::TAU / stall_count as f32;
@@ -1356,6 +1399,7 @@ fn generate_market_stalls(
             (sx - b.x).abs() < b.w * 0.5 + 2.0 && (sz - b.z).abs() < b.d * 0.5 + 2.0
         });
         if overlaps { continue; }
+        if on_road_surface(sx, sz, net) { continue; }
 
         let gy = terrain.height_at(sx, sz);
         let canvas_color = STALL_CANVAS_COLORS[i % 4];
@@ -1863,7 +1907,7 @@ fn generate_suburbs(
                     1.2, 0.12, 0.5, darken_color(color, 0.6));
 
                 // Front windows with shutters and sills
-                let win_color = 0xFF1A1A33;
+                let win_color = 0x00AA7722; // alpha=0 emissive, RRGGBB=AA7722 warm amber
                 for wi in [-1.0f32, 1.0] {
                     let wx = hx + dir_x * wi * (hw * 0.3);
                     let wz = hz + dir_z * wi * (hw * 0.3);
@@ -2148,12 +2192,16 @@ pub fn generate_world(game: &mut GameState) {
 
         // --- ACU-style building with rich facade detail ---
         let bevel = 0.15_f32.min(w * 0.1).min(d * 0.1);
-        mesh::beveled_box_tris(&mut tris, x, ground_y + h * 0.5, z, w, h, d, bevel, color);
+        let recess_depth = 0.15;
+        // Shrink inner box so wall faces sit behind window glass panels.
+        // wall_with_holes_tris facades cover the exterior at full dimensions.
+        let wall_inset = recess_depth + 0.02;
+        mesh::beveled_box_tris(&mut tris, x, ground_y + h * 0.5, z,
+            w - wall_inset * 2.0, h, d - wall_inset * 2.0, bevel, color);
 
-        let win_color = 0xFF1A1A33;
+        let win_color = 0x00AA7722; // alpha=0 emissive, RRGGBB=AA7722 warm amber
         let win_h = 1.2;
         let win_w = 0.8;
-        let recess_depth = 0.15;
         let floor_height = 3.0;
         let floors = ((h - 1.0) / floor_height) as i32;
         let cols = ((w - 1.0) / 2.0) as i32;
@@ -2271,7 +2319,7 @@ pub fn generate_world(game: &mut GameState) {
             // Shop window (large glass, recessed)
             let shop_win_w = (w - 2.0).max(1.0);
             mesh::box_tris(&mut tris, x + 0.5, ground_y + 1.4, shop_front_z - 0.04,
-                shop_win_w * 0.5, 1.2, 0.04, 0xFF445566);
+                shop_win_w * 0.5, 1.2, 0.04, 0x00BBAA44); // emissive shop (cooler white)
             // Door opening
             mesh::box_tris(&mut tris, x - w * 0.25, ground_y + 1.1, shop_front_z - 0.04,
                 0.9, 2.0, 0.06, 0xFF332211);
@@ -2524,8 +2572,13 @@ pub fn generate_world(game: &mut GameState) {
 
     // Rocks — perturbed icospheres
     for ri in 0..NUM_ROCKS {
-        let x = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
-        let z = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
+        let mut x = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
+        let mut z = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
+        for _ in 0..20 {
+            if !on_any_road(x, z, &game.road_network) { break; }
+            x = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
+            z = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
+        }
         let ground_y = game.terrain.height_at(x, z);
         let size = rng.range(0.5, 1.5);
         mesh::perturbed_sphere_tris(&mut tris, x, ground_y + size * 0.4, z,
@@ -2577,8 +2630,16 @@ pub fn generate_world(game: &mut GameState) {
     let mut bin_count = 0;
     for node in &game.road_network.nodes {
         if bin_count >= NUM_TRASH_BINS { break; }
-        let bx = node[0] + 4.0;
-        let bz = node[1] + 4.0;
+        let mut bx = node[0] + 4.0;
+        let mut bz = node[1] + 4.0;
+        for _ in 0..20 {
+            if !on_road_surface(bx, bz, &game.road_network) { break; }
+            let angle = rng.range(0.0, std::f32::consts::TAU);
+            let dist = rng.range(5.0, 10.0);
+            bx = node[0] + angle.cos() * dist;
+            bz = node[1] + angle.sin() * dist;
+        }
+        if on_road_surface(bx, bz, &game.road_network) { continue; }
         let by = game.terrain.height_at(bx, bz);
         game.world.trash_bins.push(TrashBin {
             x: bx, y: by, z: bz, items_held: 0, carried_by: None, terrain_normal: [0.0, 1.0, 0.0],
@@ -2586,7 +2647,9 @@ pub fn generate_world(game: &mut GameState) {
         bin_count += 1;
     }
     // Fill remaining bins along road segments
-    while bin_count < NUM_TRASH_BINS && !car_segments.is_empty() {
+    let mut seg_attempts = 0;
+    while bin_count < NUM_TRASH_BINS && !car_segments.is_empty() && seg_attempts < 200 {
+        seg_attempts += 1;
         let seg_idx = rng.next() as usize % car_segments.len();
         let seg = &car_segments[seg_idx];
         let t = rng.range(0.2, 0.8);
@@ -2602,6 +2665,7 @@ pub fn generate_world(game: &mut GameState) {
         let side = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
         let bx = sx + perp_x * offset * side;
         let bz = sz + perp_z * offset * side;
+        if on_road_surface(bx, bz, &game.road_network) { continue; }
         let by = game.terrain.height_at(bx, bz);
         game.world.trash_bins.push(TrashBin {
             x: bx, y: by, z: bz, items_held: 0, carried_by: None, terrain_normal: [0.0, 1.0, 0.0],
@@ -2644,7 +2708,7 @@ pub fn generate_world(game: &mut GameState) {
 
     // Market stalls near town center
     generate_market_stalls(&mut tris, &game.terrain, &mut rng,
-        &game.world.buildings, &mut game.world.walls);
+        &game.road_network, &game.world.buildings, &mut game.world.walls);
 
     // Bus stops along major roads
     generate_bus_stops(&mut tris, &game.terrain, &mut rng,
@@ -2860,12 +2924,6 @@ pub fn generate_world(game: &mut GameState) {
             spin_phase: rng.range(0.0, 6.0),
             falling: false, vel_y: 0.0, claimed_by: None, skip_until: 0.0,
         });
-    }
-
-    // Verify item placement
-    let items_on_road = game.world.items.iter().filter(|it| on_any_road(it.x, it.z, &game.road_network)).count();
-    if items_on_road > 0 {
-        eprintln!("WARNING: {} items spawned on roads!", items_on_road);
     }
 
     // Set player spawn height

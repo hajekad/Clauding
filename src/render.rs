@@ -17,10 +17,6 @@ const NEAR_W: f32 = 0.1;
 
 // Body proportion scaling: ~6.5 heads tall heroic proportions
 const BODY_STRETCH: f32 = 1.25;  // moderate vertical stretch (less distortion)
-const BODY_WIDEN: f32 = 1.0;     // no horizontal scale (chest was too massive)
-const HEAD_SCALE: f32 = 0.62;    // Loomis proportions: deeper/wider head needs smaller scale
-const HEAD_CY: f32 = 1.70;       // head's natural Y center
-const NECK_TOP: f32 = 1.50;      // natural neck top Y
 
 // ── Parameterized body proportions (from GLTF reference scans) ──
 #[allow(dead_code)]
@@ -404,16 +400,6 @@ fn push_seam(tris: &mut Vec<WorldTri>, x: f32, y0: f32, y1: f32, z: f32, color: 
     push_box(tris, x, (y0+y1)*0.5, z, 0.004, (y1-y0).abs(), 0.003, color);
 }
 
-/// Horizontal seam
-fn push_hseam(tris: &mut Vec<WorldTri>, x0: f32, x1: f32, y: f32, z: f32, color: u32) {
-    push_box(tris, (x0+x1)*0.5, y, z, (x1-x0).abs(), 0.004, 0.003, color);
-}
-
-/// Linearly interpolate between two 3D points
-fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t, a[2] + (b[2]-a[2])*t]
-}
-
 // Sky/fog/light colors for time of day
 struct TimeColors {
     sky: u32,
@@ -424,24 +410,33 @@ struct TimeColors {
 }
 
 fn time_colors(hour: f32) -> TimeColors {
-    let (sky, amb, sun) = if hour < 5.0 {
-        (lerp_color(0xFF0A0A20, 0xFF0A0A20, 0.0), 0.15, 0.0)
+    let (sky, amb, sun) = if hour < 4.5 {
+        (0xFF0C0C24, 0.12, 0.0)
+    } else if hour < 5.5 {
+        let t = (hour - 4.5) / 1.0;
+        (lerp_color(0xFF0C0C24, 0xFF553366, t), 0.12 + t * 0.15, t * 0.1)
     } else if hour < 6.5 {
-        let t = (hour - 5.0) / 1.5;
-        (lerp_color(0xFF0A0A20, 0xFFDD8844, t), 0.15 + t * 0.3, t * 0.4)
+        let t = (hour - 5.5) / 1.0;
+        (lerp_color(0xFF553366, 0xFFEE9944, t), 0.27 + t * 0.2, 0.1 + t * 0.35)
     } else if hour < 8.0 {
         let t = (hour - 6.5) / 1.5;
-        (lerp_color(0xFFDD8844, 0xFF87CEEB, t), 0.45 + t * 0.2, 0.4 + t * 0.25)
+        (lerp_color(0xFFEE9944, 0xFF88CCEE, t), 0.47 + t * 0.18, 0.45 + t * 0.2)
     } else if hour < 16.0 {
-        (0xFF87CEEB, 0.65, 0.65)
-    } else if hour < 18.0 {
-        let t = (hour - 16.0) / 2.0;
-        (lerp_color(0xFF87CEEB, 0xFFDD6633, t), 0.65 - t * 0.2, 0.65 - t * 0.25)
+        (0xFF88CCEE, 0.65, 0.65)
+    } else if hour < 17.5 {
+        let t = (hour - 16.0) / 1.5;
+        (lerp_color(0xFF88CCEE, 0xFFEEAA55, t), 0.65 - t * 0.1, 0.65 - t * 0.15)
+    } else if hour < 18.5 {
+        let t = (hour - 17.5) / 1.0;
+        (lerp_color(0xFFEEAA55, 0xFFCC4422, t), 0.55 - t * 0.15, 0.50 - t * 0.2)
     } else if hour < 19.5 {
-        let t = (hour - 18.0) / 1.5;
-        (lerp_color(0xFFDD6633, 0xFF1A1A40, t), 0.45 - t * 0.3, 0.4 - t * 0.4)
+        let t = (hour - 18.5) / 1.0;
+        (lerp_color(0xFFCC4422, 0xFF332244, t), 0.40 - t * 0.2, 0.30 - t * 0.25)
+    } else if hour < 20.5 {
+        let t = (hour - 19.5) / 1.0;
+        (lerp_color(0xFF332244, 0xFF0C0C24, t), 0.20 - t * 0.08, 0.05 - t * 0.05)
     } else {
-        (0xFF0A0A20, 0.15, 0.0)
+        (0xFF0C0C24, 0.12, 0.0)
     };
 
     let fr = ((sky >> 16) & 0xFF) as f32;
@@ -1020,206 +1015,6 @@ fn gen_neck(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions, n: usi
     mesh::loft_y_tris(tris, &rings);
 }
 
-/// Generate layered torso clothing: anatomical base → waistcoat → coat
-/// V-taper silhouette: wide shoulders, narrow waist. Ellipsoid muscle groups visible under shirt.
-fn gen_torso(tris: &mut Vec<WorldTri>, app: &NpcAppearance, vest_col: u32, swing: f32) {
-    // ── ANATOMICAL BODY BASE — ellipsoid ribcage + abdomen for V-taper ──
-    // Ribcage (wide barrel shape, shoulder width)
-    mesh::ellipsoid_tris(tris, 0.0, 1.28, 0.0, 0.22, 0.20, 0.16, 1, SHIRT_LINEN);
-    // Abdomen (narrower waist)
-    mesh::ellipsoid_tris(tris, 0.0, 1.04, 0.0, 0.18, 0.14, 0.14, 1, SHIRT_LINEN);
-    // Pectoral muscles (visible shape under shirt)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.09, 1.30, -0.13, 0.08, 0.06, 0.05, 0, darken(SHIRT_LINEN, 0.95));
-    }
-    // Trapezius / upper back (wide, connecting to shoulders)
-    mesh::ellipsoid_tris(tris, 0.0, 1.38, 0.08, 0.20, 0.06, 0.10, 0, darken(SHIRT_LINEN, 0.92));
-    // Latissimus dorsi (V-taper side muscles)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.17, 1.22, 0.05, 0.06, 0.15, 0.07, 0, darken(SHIRT_LINEN, 0.93));
-    }
-    // Serratus anterior (ribcage side definition)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.20, 1.18, -0.02, 0.04, 0.10, 0.05, 0, darken(SHIRT_LINEN, 0.94));
-    }
-
-    // Collar V-opening with folded fabric
-    push_box(tris, -0.04, 1.42, -0.14, 0.05, 0.04, 0.04, SHIRT_LINEN);
-    push_box(tris, 0.04, 1.42, -0.14, 0.05, 0.04, 0.04, SHIRT_LINEN);
-    push_box(tris, -0.07, 1.425, -0.12, 0.015, 0.035, 0.02, darken(SHIRT_LINEN, 0.9));
-    push_box(tris, 0.07, 1.425, -0.12, 0.015, 0.035, 0.02, darken(SHIRT_LINEN, 0.9));
-    // Jabot ruffle at chest opening
-    for ri in 0..4 {
-        let ry = 1.35 - ri as f32 * 0.035;
-        let rw = 0.04 - ri as f32 * 0.005;
-        push_box(tris, 0.0, ry, -0.17, rw, 0.012, 0.01, darken(SHIRT_LINEN, 0.92 + ri as f32 * 0.02));
-    }
-    // Shirt fabric wrinkles
-    push_box(tris, -0.03, 1.3, -0.15, 0.003, 0.04, 0.003, darken(SHIRT_LINEN, 0.85));
-    push_box(tris, 0.025, 1.28, -0.15, 0.003, 0.035, 0.003, darken(SHIRT_LINEN, 0.85));
-
-    // ── WAISTCOAT / VEST (wider, structured, over shirt) ──
-    mesh::beveled_box_tris(tris, 0.0, 1.18, 0.0, 0.44, 0.54, 0.30, 0.03, vest_col);
-    // V-neckline edges
-    push_box(tris, -0.06, 1.34, -0.16, 0.04, 0.14, 0.005, darken(vest_col, 0.80));
-    push_box(tris, 0.06, 1.34, -0.16, 0.04, 0.14, 0.005, darken(vest_col, 0.80));
-    // Double-breasted buttons (2×4)
-    for bi in 0..4 {
-        let by = 1.34 - bi as f32 * 0.07;
-        mesh::sphere_tris(tris, -0.04, by, -0.16, 0.009, 0, BUTTON_BRASS);
-        mesh::sphere_tris(tris, 0.04, by, -0.16, 0.009, 0, BUTTON_BRASS);
-    }
-    // Pocket flaps + welts
-    push_box(tris, -0.10, 1.10, -0.16, 0.05, 0.012, 0.01, darken(vest_col, 0.80));
-    push_box(tris, 0.10, 1.10, -0.16, 0.05, 0.012, 0.01, darken(vest_col, 0.80));
-    push_box(tris, -0.10, 1.092, -0.162, 0.05, 0.003, 0.005, darken(vest_col, 0.70));
-    push_box(tris, 0.10, 1.092, -0.162, 0.05, 0.003, 0.005, darken(vest_col, 0.70));
-    // Back adjustment strap
-    push_box(tris, 0.0, 1.12, 0.155, 0.12, 0.02, 0.005, darken(vest_col, 0.78));
-    mesh::sphere_tris(tris, -0.06, 1.12, 0.16, 0.006, 0, BUCKLE_BRASS);
-    mesh::sphere_tris(tris, 0.06, 1.12, 0.16, 0.006, 0, BUCKLE_BRASS);
-    // Seam lines
-    push_seam(tris, -0.16, 0.92, 1.40, -0.13, STITCH_DARK);
-    push_seam(tris, 0.16, 0.92, 1.40, -0.13, STITCH_DARK);
-    push_seam(tris, 0.0, 0.92, 1.40, 0.155, STITCH_DARK);
-
-    if app.has_coat {
-        gen_coat(tris, app, swing);
-    }
-}
-
-/// Generate the long coat — ACU-style with collar, lapels, tails, seams
-fn gen_coat(tris: &mut Vec<WorldTri>, app: &NpcAppearance, swing: f32) {
-    let coat = app.coat_col;
-    let coat_dk = darken(coat, 0.82);
-    let _coat_lt = darken(coat, 1.12);
-    let lining = darken(coat, 1.2);
-
-    // ── COAT BODY — organic shape using stacked ellipsoids for human silhouette ──
-    // Upper chest / shoulder yoke (widest part)
-    mesh::ellipsoid_tris(tris, 0.0, 1.34, 0.0, 0.30, 0.12, 0.20, 1, coat);
-    // Mid chest
-    mesh::ellipsoid_tris(tris, 0.0, 1.22, 0.0, 0.28, 0.14, 0.19, 1, coat);
-    // Lower chest / ribs
-    mesh::ellipsoid_tris(tris, 0.0, 1.08, 0.0, 0.26, 0.14, 0.18, 1, coat);
-    // Waist area (narrower)
-    mesh::ellipsoid_tris(tris, 0.0, 0.94, 0.0, 0.23, 0.10, 0.17, 0, coat);
-    // Shoulder construction — wide structured pads
-    mesh::beveled_box_tris(tris, 0.0, 1.40, 0.0, 0.64, 0.14, 0.38, 0.04, coat);
-    // Shoulder joint covers (rounded transitions to arms)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.28, 1.40, 0.0, 0.08, 0.06, 0.10, 0, coat);
-    }
-
-    // ── STANDING COLLAR with fold ──
-    // Collar stand (vertical part)
-    mesh::cylinder_tris(tris, 0.0, 1.45, 0.0, 0.2, 0.05, 10, coat_dk);
-    // Collar fold (folded-over part, darker)
-    push_box(tris, 0.0, 1.47, 0.0, 0.38, 0.03, 0.28, darken(coat, 0.75));
-    // Collar edge detail
-    push_box(tris, 0.0, 1.475, 0.0, 0.39, 0.004, 0.29, darken(coat, 0.65));
-
-    // ── WIDE LAPELS (triangular, following chest contour) ──
-    // Left lapel
-    push_box(tris, -0.1, 1.34, -0.165, 0.09, 0.18, 0.015, coat_dk);
-    push_box(tris, -0.08, 1.34, -0.168, 0.07, 0.16, 0.005, darken(coat, 0.88));
-    // Right lapel
-    push_box(tris, 0.1, 1.34, -0.165, 0.09, 0.18, 0.015, coat_dk);
-    push_box(tris, 0.08, 1.34, -0.168, 0.07, 0.16, 0.005, darken(coat, 0.88));
-    // Lapel buttonhole (on left)
-    push_box(tris, -0.06, 1.36, -0.17, 0.015, 0.006, 0.003, darken(coat, 0.5));
-
-    // ── DOUBLE-BREASTED BUTTONS (2 columns × 4) ──
-    for bi in 0..4 {
-        let by = 1.3 - bi as f32 * 0.08;
-        mesh::sphere_tris(tris, -0.06, by, -0.17, 0.01, 0, BUTTON_BRASS);
-        mesh::sphere_tris(tris, 0.06, by, -0.17, 0.01, 0, BUTTON_BRASS);
-        // Button thread detail
-        push_box(tris, -0.06, by, -0.175, 0.003, 0.003, 0.002, darken(BUTTON_BRASS, 0.6));
-        push_box(tris, 0.06, by, -0.175, 0.003, 0.003, 0.002, darken(BUTTON_BRASS, 0.6));
-    }
-
-    // ── COAT POCKET FLAPS ──
-    for &side in &[-1.0f32, 1.0] {
-        // Hip pocket flap
-        push_box(tris, side * 0.14, 1.0, -0.165, 0.08, 0.018, 0.015, coat_dk);
-        // Pocket flap edge stitch
-        push_hseam(tris, side * 0.1, side * 0.18, 0.99, -0.168, STITCH_DARK);
-        // Chest pocket (smaller)
-        push_box(tris, side * 0.12, 1.25, -0.165, 0.04, 0.012, 0.01, coat_dk);
-    }
-
-    // ── COAT SEAM LINES (stitching detail) ──
-    // Center back seam
-    push_seam(tris, 0.0, 0.85, 1.42, 0.17, darken(coat, 0.7));
-    // Side seams
-    push_seam(tris, -0.24, 0.85, 1.38, 0.0, darken(coat, 0.75));
-    push_seam(tris, 0.24, 0.85, 1.38, 0.0, darken(coat, 0.75));
-    // Shoulder seams
-    push_hseam(tris, -0.1, -0.27, 1.42, 0.0, darken(coat, 0.72));
-    push_hseam(tris, 0.1, 0.27, 1.42, 0.0, darken(coat, 0.72));
-
-    // ── EPAULETTES (shoulder tabs) ──
-    for &side in &[-1.0f32, 1.0] {
-        push_box(tris, side * 0.27, 1.43, 0.0, 0.06, 0.015, 0.09, coat_dk);
-        push_box(tris, side * 0.27, 1.435, 0.0, 0.065, 0.005, 0.095, darken(coat, 0.65));
-        mesh::sphere_tris(tris, side * 0.27, 1.44, -0.04, 0.006, 0, BUTTON_BRASS);
-    }
-
-    // ── COAT TAILS — 4 separate panels, sway with walk ──
-    let ts = swing * 0.1; // tail sway
-    // Back-left tail panel
-    push_box(tris, -0.1, 0.55, 0.11 + ts, 0.13, 0.55, 0.08, coat);
-    push_box(tris, -0.1, 0.55, 0.07 + ts, 0.12, 0.52, 0.005, lining); // lining
-    push_seam(tris, -0.1, 0.3, 0.82, 0.15 + ts, darken(coat, 0.7)); // center seam
-    // Back-right tail panel
-    push_box(tris, 0.1, 0.55, 0.11 - ts, 0.13, 0.55, 0.08, coat);
-    push_box(tris, 0.1, 0.55, 0.07 - ts, 0.12, 0.52, 0.005, lining);
-    push_seam(tris, 0.1, 0.3, 0.82, 0.15 - ts, darken(coat, 0.7));
-    // Back vent pleat (between the two back panels)
-    push_box(tris, 0.0, 0.65, 0.1, 0.015, 0.35, 0.06, coat_dk);
-    // Front-left skirt panel
-    push_box(tris, -0.12, 0.62, -0.1, 0.12, 0.4, 0.07, coat);
-    push_box(tris, -0.12, 0.62, -0.065, 0.11, 0.38, 0.005, lining);
-    // Front-right skirt panel
-    push_box(tris, 0.12, 0.62, -0.1, 0.12, 0.4, 0.07, coat);
-    push_box(tris, 0.12, 0.62, -0.065, 0.11, 0.38, 0.005, lining);
-    // Tail hem stitching
-    push_hseam(tris, -0.17, -0.03, 0.28, 0.15 + ts, darken(coat, 0.65));
-    push_hseam(tris, 0.03, 0.17, 0.28, 0.15 - ts, darken(coat, 0.65));
-    push_hseam(tris, -0.18, -0.06, 0.42, -0.13, darken(coat, 0.65));
-    push_hseam(tris, 0.06, 0.18, 0.42, -0.13, darken(coat, 0.65));
-
-    // ── SHOULDER CAPE / MANTLE (if enabled) — ACU-style wide leather drape ──
-    if app.has_cape {
-        let cape_col = darken(coat, 0.88);
-        let cape_edge = darken(coat, 0.7);
-        let cape_dk = darken(coat, 0.75);
-        // Front cape panels (wider, thicker leather) — drape over shoulders
-        mesh::ellipsoid_tris(tris, -0.18, 1.28, -0.15, 0.15, 0.14, 0.06, 0, cape_col);
-        mesh::ellipsoid_tris(tris, 0.18, 1.28, -0.15, 0.15, 0.14, 0.06, 0, cape_col);
-        // Front cape edges (folded leather)
-        push_box(tris, -0.18, 1.18, -0.17, 0.14, 0.006, 0.04, cape_dk);
-        push_box(tris, 0.18, 1.18, -0.17, 0.14, 0.006, 0.04, cape_dk);
-        // Back cape (larger mantle, extends lower)
-        mesh::ellipsoid_tris(tris, 0.0, 1.22, 0.15, 0.30, 0.22, 0.05, 1, cape_col);
-        // Back cape lower section
-        push_box(tris, 0.0, 1.02, 0.16, 0.50, 0.16, 0.05, cape_col);
-        // Cape edge hem stitching
-        push_hseam(tris, -0.25, 0.25, 0.94, 0.17, cape_edge);
-        push_hseam(tris, -0.28, -0.05, 1.17, -0.18, cape_edge);
-        push_hseam(tris, 0.05, 0.28, 1.17, -0.18, cape_edge);
-        // Cape shoulder seam
-        push_hseam(tris, -0.15, -0.30, 1.39, -0.02, cape_edge);
-        push_hseam(tris, 0.15, 0.30, 1.39, -0.02, cape_edge);
-        // Cape collar overlap (wider)
-        push_box(tris, 0.0, 1.42, 0.02, 0.40, 0.04, 0.28, cape_col);
-        // Cape fold creases
-        push_box(tris, -0.12, 1.25, 0.17, 0.003, 0.10, 0.003, cape_dk);
-        push_box(tris, 0.12, 1.25, 0.17, 0.003, 0.10, 0.003, cape_dk);
-    }
-}
-
 /// Generate hat/headwear with high detail
 fn gen_hat(tris: &mut Vec<WorldTri>, app: &NpcAppearance, _hair: u32) -> bool {
     let hat_col = app.hat_col;
@@ -1349,200 +1144,6 @@ fn gen_job_hat(tris: &mut Vec<WorldTri>, color: u32) {
     mesh::cylinder_tris(tris, 0.0, 1.9, 0.0, 0.175, 0.012, 8, darken(color, 0.6));
 }
 
-/// Belt system: leather belt, sash, cross-strap, pouches
-fn gen_belt_system(tris: &mut Vec<WorldTri>, app: &NpcAppearance, pants_col: u32) {
-    // ── PELVIS / HIP AREA — organic shape connecting torso to thighs ──
-    mesh::ellipsoid_tris(tris, 0.0, 0.88, 0.0, 0.22, 0.08, 0.16, 0, pants_col);
-    // Hip sockets (where thighs connect)
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.14, 0.86, 0.0, 0.06, 0.06, 0.06, 0, pants_col);
-    }
-    mesh::cylinder_tris(tris, 0.0, 0.87, 0.0, 0.22, 0.06, 10, pants_col);
-
-    // ── MAIN LEATHER BELT ──
-    mesh::cylinder_tris(tris, 0.0, 0.87, 0.0, 0.215, 0.025, 12, LEATHER_DARK);
-    // Belt edge stitching
-    mesh::cylinder_tris(tris, 0.0, 0.885, 0.0, 0.218, 0.003, 12, STITCH_DARK);
-    mesh::cylinder_tris(tris, 0.0, 0.855, 0.0, 0.218, 0.003, 12, STITCH_DARK);
-    // Belt buckle — rectangular with prong detail
-    push_box(tris, 0.0, 0.87, -0.22, 0.035, 0.022, 0.008, BUCKLE_BRASS);
-    push_box(tris, 0.0, 0.87, -0.225, 0.025, 0.015, 0.003, darken(BUCKLE_BRASS, 0.7)); // inner
-    push_box(tris, 0.0, 0.87, -0.228, 0.003, 0.015, 0.003, darken(BUCKLE_BRASS, 0.5)); // prong
-
-    // ── BELT POUCHES ──
-    // Right hip pouch
-    push_box(tris, 0.19, 0.84, -0.02, 0.06, 0.07, 0.05, LEATHER_MED);
-    push_box(tris, 0.19, 0.88, -0.02, 0.062, 0.01, 0.052, darken(LEATHER_MED, 0.82)); // flap
-    mesh::sphere_tris(tris, 0.19, 0.875, -0.045, 0.005, 0, BUCKLE_BRASS); // flap button
-    // Left hip pouch (smaller)
-    push_box(tris, -0.2, 0.84, 0.02, 0.04, 0.05, 0.04, LEATHER_MED);
-    push_box(tris, -0.2, 0.87, 0.02, 0.042, 0.008, 0.042, darken(LEATHER_MED, 0.82));
-    // Back pouch
-    push_box(tris, -0.08, 0.84, 0.16, 0.05, 0.06, 0.04, LEATHER_MED);
-    push_box(tris, -0.08, 0.875, 0.16, 0.052, 0.008, 0.042, darken(LEATHER_MED, 0.82));
-
-    // ── RED SASH / CUMMERBUND ──
-    if app.has_sash {
-        let sc = app.sash_col;
-        // Wrapped around waist (slightly angled)
-        mesh::cylinder_tris(tris, 0.0, 0.88, 0.0, 0.225, 0.04, 12, sc);
-        // Sash tail hanging on left side
-        push_box(tris, -0.22, 0.75, 0.0, 0.04, 0.2, 0.03, sc);
-        push_box(tris, -0.23, 0.68, 0.0, 0.03, 0.06, 0.025, darken(sc, 0.9));
-        // Fabric folds in sash
-        push_box(tris, 0.05, 0.88, -0.18, 0.03, 0.025, 0.004, darken(sc, 0.8));
-        push_box(tris, -0.08, 0.89, -0.15, 0.02, 0.02, 0.004, darken(sc, 0.75));
-    }
-
-    // ── CROSS-BODY LEATHER STRAP ──
-    if app.has_cross_strap {
-        let strap_col = LEATHER_MED;
-        // Diagonal from right shoulder to left hip
-        for si in 0..12 {
-            let t = si as f32 / 11.0;
-            let sx = 0.18 - t * 0.36;
-            let sy = 0.87 + (1.0 - t) * 0.55;
-            let sz = -0.13 - (t * (1.0 - t)) * 0.08;
-            push_box(tris, sx, sy, sz, 0.04, 0.05, 0.012, strap_col);
-        }
-        // Strap buckle at chest
-        push_box(tris, 0.0, 1.14, -0.165, 0.025, 0.02, 0.008, BUCKLE_BRASS);
-        // Strap edge stitching
-        for si in [2, 5, 8] {
-            let t = si as f32 / 11.0;
-            let sx = 0.18 - t * 0.36;
-            let sy = 0.87 + (1.0 - t) * 0.55;
-            let sz = -0.13 - (t * (1.0 - t)) * 0.08;
-            push_box(tris, sx, sy, sz - 0.008, 0.042, 0.003, 0.002, STITCH_DARK);
-        }
-    }
-}
-
-/// Generate a single arm with joint-based positioning.
-/// Shoulder → elbow → wrist chain creates visible angular bends at joints.
-/// Each segment has distinct muscle definition (deltoid, bicep, tricep, forearm).
-fn gen_arm(
-    tris: &mut Vec<WorldTri>, side: f32, fwd: f32, bend: f32,
-    sleeve_col: u32, skin: u32, app: &NpcAppearance,
-) {
-    let coat = app.coat_col;
-
-    // ── JOINT POSITIONS — shoulder → elbow → wrist chain ──
-    // Elbow offset creates visible angular bend between upper/lower arm
-    let shoulder = [side * 0.30, 1.42, 0.0];
-    let elbow = [side * 0.33, 1.08, fwd * 0.35];
-    let wrist = [side * 0.31, 0.82, fwd * 0.15 - bend];
-
-    // ── DELTOID — large 3-head muscle mass bridging shoulder to upper arm ──
-    mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2],
-        0.10, 0.08, 0.09, 1, sleeve_col);
-    // Anterior deltoid head
-    mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1] - 0.04, shoulder[2] - 0.04,
-        0.06, 0.05, 0.04, 0, darken(sleeve_col, 0.93));
-    // Posterior deltoid head
-    mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1] - 0.04, shoulder[2] + 0.04,
-        0.05, 0.05, 0.04, 0, darken(sleeve_col, 0.91));
-
-    // ── UPPER ARM (shoulder → elbow) — angled segment with muscle bulges ──
-    mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.09, 0.065, 10, sleeve_col);
-    // Bicep (anterior mass, peaks at 45% length)
-    let bicep = lerp3(shoulder, elbow, 0.45);
-    mesh::ellipsoid_tris(tris, bicep[0] - side * 0.01, bicep[1], bicep[2] - 0.03,
-        0.045, 0.06, 0.04, 0, darken(sleeve_col, 0.94));
-    // Tricep (posterior, longer muscle belly)
-    let tricep = lerp3(shoulder, elbow, 0.50);
-    mesh::ellipsoid_tris(tris, tricep[0], tricep[1], tricep[2] + 0.03,
-        0.04, 0.07, 0.035, 0, darken(sleeve_col, 0.91));
-    // Sleeve fabric compression wrinkles
-    let sw1 = lerp3(shoulder, elbow, 0.30);
-    push_box(tris, sw1[0] + side * 0.02, sw1[1], sw1[2], 0.004, 0.04, 0.02, darken(sleeve_col, 0.83));
-    let sw2 = lerp3(shoulder, elbow, 0.65);
-    push_box(tris, sw2[0] - side * 0.015, sw2[1], sw2[2], 0.004, 0.035, 0.018, darken(sleeve_col, 0.84));
-
-    // ── ELBOW JOINT — distinct ball joint, visually separates upper/lower arm ──
-    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.064, 1, darken(sleeve_col, 0.92));
-    // Olecranon process (bony posterior point)
-    mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2] + 0.038, 0.025, 0, darken(sleeve_col, 0.84));
-    // Medial epicondyle (inner bump)
-    mesh::sphere_tris(tris, elbow[0] - side * 0.04, elbow[1], elbow[2], 0.017, 0, darken(sleeve_col, 0.86));
-
-    // ── FOREARM (elbow → wrist) — angled segment, muscular ──
-    mesh::tapered_cylinder_between(tris, elbow, wrist, 0.065, 0.048, 8, skin);
-    // Brachioradialis (lateral forearm mass near elbow)
-    let brach = lerp3(elbow, wrist, 0.25);
-    mesh::ellipsoid_tris(tris, brach[0] + side * 0.015, brach[1], brach[2] - 0.015,
-        0.035, 0.05, 0.03, 0, darken(skin, 0.96));
-    // Flexor group (medial, palm side)
-    let flex = lerp3(elbow, wrist, 0.30);
-    mesh::ellipsoid_tris(tris, flex[0] - side * 0.01, flex[1] - 0.01, flex[2],
-        0.03, 0.045, 0.025, 0, darken(skin, 0.94));
-    // Extensor group (dorsal, back-of-hand side)
-    let ext = lerp3(elbow, wrist, 0.35);
-    mesh::ellipsoid_tris(tris, ext[0], ext[1] + 0.01, ext[2] + 0.015,
-        0.025, 0.04, 0.025, 0, darken(skin, 0.95));
-    // Forearm tendon ridges (visible near wrist)
-    let tendon_area = lerp3(elbow, wrist, 0.70);
-    push_box(tris, tendon_area[0] - side * 0.01, tendon_area[1], tendon_area[2] - 0.02,
-        0.003, 0.04, 0.003, darken(skin, 0.88));
-    push_box(tris, tendon_area[0] + side * 0.005, tendon_area[1], tendon_area[2] - 0.018,
-        0.003, 0.035, 0.003, darken(skin, 0.89));
-
-    // ── COAT CUFF — follows arm direction via tapered_cylinder_between ──
-    if app.has_coat {
-        let cuff_s = lerp3(elbow, wrist, 0.22);
-        let cuff_e = lerp3(elbow, wrist, 0.42);
-        let cuff_col = darken(coat, 0.78);
-        let cuff_lining = darken(coat, 1.25);
-        mesh::tapered_cylinder_between(tris, cuff_s, cuff_e, 0.074, 0.072, 8, cuff_col);
-        mesh::tapered_cylinder_between(tris, cuff_s, cuff_e, 0.068, 0.066, 8, cuff_lining);
-        // Cuff edge
-        let cuff_edge_pos = lerp3(elbow, wrist, 0.41);
-        mesh::cylinder_tris(tris, cuff_edge_pos[0], cuff_edge_pos[1], cuff_edge_pos[2],
-            0.076, 0.005, 8, darken(cuff_col, 0.68));
-        // Cuff buttons (3)
-        for ci in 0..3 {
-            let t = 0.25 + ci as f32 * 0.05;
-            let bp = lerp3(elbow, wrist, t);
-            mesh::sphere_tris(tris, bp[0] + side * 0.073, bp[1], bp[2] - 0.02, 0.007, 0, BUTTON_BRASS);
-        }
-    }
-
-    // ── SHIRT RUFFLE CUFF (visible below coat cuff) ──
-    let sc = lerp3(elbow, wrist, 0.62);
-    mesh::cylinder_tris(tris, sc[0], sc[1], sc[2], 0.050, 0.028, 6, SHIRT_LINEN);
-    mesh::cylinder_tris(tris, sc[0], sc[1] - 0.013, sc[2], 0.054, 0.010, 6, darken(SHIRT_LINEN, 0.92));
-
-    // ── LEATHER BRACER / GAUNTLET ──
-    if app.has_bracers {
-        let br_s = lerp3(elbow, wrist, 0.38);
-        let br_e = lerp3(elbow, wrist, 0.68);
-        mesh::tapered_cylinder_between(tris, br_s, br_e, 0.062, 0.056, 8, LEATHER_DARK);
-        // Edge ribs
-        let br_top = lerp3(elbow, wrist, 0.39);
-        let br_bot = lerp3(elbow, wrist, 0.67);
-        mesh::cylinder_tris(tris, br_top[0], br_top[1], br_top[2], 0.065, 0.008, 8, darken(LEATHER_DARK, 0.78));
-        mesh::cylinder_tris(tris, br_bot[0], br_bot[1], br_bot[2], 0.060, 0.008, 8, darken(LEATHER_DARK, 0.78));
-        // Straps with buckles
-        for si in 0..2 {
-            let t = 0.46 + si as f32 * 0.12;
-            let sp = lerp3(elbow, wrist, t);
-            mesh::cylinder_tris(tris, sp[0], sp[1], sp[2], 0.066, 0.01, 8, LEATHER_MED);
-            mesh::sphere_tris(tris, sp[0] - side * 0.063, sp[1], sp[2] - 0.02, 0.006, 0, BUCKLE_BRASS);
-        }
-        // Bracer stitching
-        let stitch_mid = lerp3(elbow, wrist, 0.53);
-        push_seam(tris, stitch_mid[0] + side * 0.058, br_s[1], br_e[1], stitch_mid[2], STITCH_DARK);
-    }
-
-    // ── WRIST JOINT — defined transition ──
-    mesh::sphere_tris(tris, wrist[0], wrist[1], wrist[2], 0.042, 0, darken(skin, 0.95));
-    // Ulnar styloid (bony bump)
-    mesh::sphere_tris(tris, wrist[0] + side * 0.033, wrist[1], wrist[2] + 0.01, 0.014, 0, darken(skin, 0.90));
-
-    // ── HAND ──
-    gen_hand(tris, wrist[0], wrist[1] - 0.05, wrist[2] - 0.02, side, skin);
-}
-
 /// Generate a detailed hand — larger proportions, thicker fingers, muscle pads
 fn gen_hand(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, side: f32, skin: u32) {
     let palm_dk = darken(skin, 0.93);
@@ -1612,385 +1213,6 @@ fn gen_hand(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, side: f32, skin
         0.006, 0.002, 0.007, nail_col);
 }
 
-/// Generate a single leg with joint-based positioning.
-/// Hip → knee → ankle chain creates visible angular bends.
-/// Thick breeches with muscle definition, distinct knee joint.
-fn gen_leg(
-    tris: &mut Vec<WorldTri>, side: f32, fwd: f32, knee_bend: f32,
-    pants_col: u32, app: &NpcAppearance,
-) {
-    // ── JOINT POSITIONS — hip → knee → ankle chain ──
-    let lx = side * 0.14;
-    let hip = [lx, 0.86, 0.0];
-    let knee = [lx, 0.44, fwd * 0.5];
-    let ankle = [lx, 0.08, fwd * 0.25 - knee_bend * 0.4];
-
-    // ── THIGH (hip → knee) — puffy ACU breeches with muscle definition ──
-    mesh::tapered_cylinder_between(tris, hip, knee, 0.14, 0.085, 12, pants_col);
-    // Quadriceps (anterior thigh mass)
-    let quad = lerp3(hip, knee, 0.40);
-    mesh::ellipsoid_tris(tris, quad[0], quad[1], quad[2] - 0.04,
-        0.06, 0.10, 0.05, 0, darken(pants_col, 0.95));
-    // Vastus lateralis (outer thigh)
-    let vlat = lerp3(hip, knee, 0.35);
-    mesh::ellipsoid_tris(tris, vlat[0] + side * 0.04, vlat[1], vlat[2],
-        0.04, 0.08, 0.04, 0, darken(pants_col, 0.93));
-    // Hamstring (posterior thigh)
-    let ham = lerp3(hip, knee, 0.50);
-    mesh::ellipsoid_tris(tris, ham[0], ham[1], ham[2] + 0.035,
-        0.05, 0.08, 0.04, 0, darken(pants_col, 0.91));
-    // Adductor (inner thigh)
-    let add = lerp3(hip, knee, 0.35);
-    mesh::ellipsoid_tris(tris, add[0] - side * 0.03, add[1], add[2],
-        0.04, 0.07, 0.04, 0, darken(pants_col, 0.93));
-    // Breeches outer seam
-    push_seam(tris, hip[0] + side * 0.11, knee[1], hip[1], (hip[2] + knee[2]) * 0.5, darken(pants_col, 0.74));
-    // Breeches inner seam
-    push_seam(tris, hip[0] - side * 0.04, knee[1], hip[1], (hip[2] + knee[2]) * 0.5, darken(pants_col, 0.74));
-    // Fly buttons
-    if side < 0.0 {
-        for bi in 0..2 {
-            let t = 0.15 + bi as f32 * 0.10;
-            let bp = lerp3(hip, knee, t);
-            mesh::sphere_tris(tris, bp[0] + 0.06, bp[1], bp[2] - 0.05, 0.006, 0, BUTTON_BRASS);
-        }
-    }
-
-    // ── KNEE JOINT — distinct ball joint, visually separates thigh from calf ──
-    mesh::sphere_tris(tris, knee[0], knee[1], knee[2], 0.090, 1, pants_col);
-    // Patella (kneecap — prominent anterior bump)
-    mesh::sphere_tris(tris, knee[0], knee[1], knee[2] - 0.055, 0.035, 0, darken(pants_col, 0.95));
-    // Breeches knee band (gathered, with buttons)
-    mesh::cylinder_tris(tris, knee[0], knee[1] - 0.01, knee[2], 0.088, 0.025, 10, darken(pants_col, 0.82));
-    // 3 knee buttons (period detail)
-    for bi in 0..3 {
-        let ba = (bi as f32 / 3.0) * 0.6 - 0.3;
-        mesh::sphere_tris(tris, knee[0] + side * 0.085, knee[1] - 0.01, knee[2] + ba * 0.06, 0.007, 0, BUCKLE_BRASS);
-    }
-
-    // ── BOOT / CALF (knee → ankle) ──
-    gen_boot(tris, knee, ankle, side, app);
-}
-
-/// Generate boot + calf from knee to ankle joint positions.
-/// Uses tapered_cylinder_between for proper leg angle. Includes calf muscles.
-fn gen_boot(tris: &mut Vec<WorldTri>, knee: [f32; 3], ankle: [f32; 3], side: f32, app: &NpcAppearance) {
-    let lx = knee[0];
-    let bc = app.boot_col;
-    let bc_dk = darken(bc, 0.8);
-    let bc_lt = darken(bc, 1.15);
-
-    // ── CALF SEGMENT (knee → ankle) — angled, with muscle definition ──
-    mesh::tapered_cylinder_between(tris, knee, ankle, 0.085, 0.060, 10, bc);
-    // Gastrocnemius (calf muscle, posterior — the "calf bulge")
-    let calf_muscle = lerp3(knee, ankle, 0.25);
-    mesh::ellipsoid_tris(tris, calf_muscle[0], calf_muscle[1], calf_muscle[2] + 0.03,
-        0.04, 0.07, 0.04, 0, darken(bc, 0.94));
-    // Soleus (deeper calf muscle)
-    let soleus = lerp3(knee, ankle, 0.40);
-    mesh::ellipsoid_tris(tris, soleus[0], soleus[1], soleus[2] + 0.02,
-        0.035, 0.05, 0.03, 0, darken(bc, 0.92));
-    // Tibialis anterior (shin, anterior)
-    let shin = lerp3(knee, ankle, 0.30);
-    mesh::ellipsoid_tris(tris, shin[0], shin[1], shin[2] - 0.025,
-        0.03, 0.06, 0.025, 0, darken(bc, 0.96));
-    // Shin ridge (visible through leather)
-    let shin_ridge = lerp3(knee, ankle, 0.35);
-    push_box(tris, shin_ridge[0], shin_ridge[1], shin_ridge[2] - 0.04,
-        0.01, 0.12, 0.006, darken(bc, 0.87));
-
-    // ── ANKLE JOINT ──
-    mesh::sphere_tris(tris, ankle[0], ankle[1], ankle[2], 0.050, 0, darken(bc, 0.93));
-    // Malleolus bumps (ankle bones)
-    mesh::sphere_tris(tris, ankle[0] + side * 0.04, ankle[1] + 0.01, ankle[2], 0.016, 0, darken(bc, 0.87));
-    mesh::sphere_tris(tris, ankle[0] - side * 0.035, ankle[1] + 0.015, ankle[2], 0.014, 0, darken(bc, 0.87));
-
-    match app.boot_type {
-        0 => {
-            // BUCKLED SHOES — low shoes with stockings visible
-            let stocking_top = lerp3(knee, ankle, 0.10);
-            mesh::tapered_cylinder_between(tris, stocking_top, ankle, 0.068, 0.058, 7, 0xFFCCBBAA);
-            // Garter
-            mesh::cylinder_tris(tris, stocking_top[0], stocking_top[1], stocking_top[2],
-                0.071, 0.014, 6, darken(0xFFCCBBAA_u32, 0.78));
-            // Shoe body (wider)
-            mesh::beveled_box_tris(tris, lx, 0.035, ankle[2] - 0.02, 0.10, 0.07, 0.16, 0.015, bc);
-            // Shoe tongue
-            push_box(tris, lx, 0.07, ankle[2] - 0.05, 0.05, 0.025, 0.04, bc_lt);
-            // Shoe heel
-            push_box(tris, lx, 0.018, ankle[2] + 0.04, 0.07, 0.035, 0.035, bc_dk);
-            // Shoe sole
-            push_box(tris, lx, 0.005, ankle[2] - 0.02, 0.09, 0.01, 0.16, darken(bc, 0.5));
-            // Shoe buckle
-            push_box(tris, lx, 0.055, ankle[2] - 0.085, 0.03, 0.022, 0.007, BUCKLE_BRASS);
-        }
-        1 => {
-            // MID-CALF BOOTS
-            let cuff_pos = lerp3(knee, ankle, 0.25);
-            mesh::cylinder_tris(tris, cuff_pos[0], cuff_pos[1], cuff_pos[2],
-                0.080, 0.030, 8, bc_lt);
-            mesh::cylinder_tris(tris, cuff_pos[0], cuff_pos[1] + 0.015, cuff_pos[2],
-                0.083, 0.005, 8, bc_dk);
-            // Boot vamp
-            mesh::beveled_box_tris(tris, lx, 0.035, ankle[2] - 0.02, 0.10, 0.07, 0.15, 0.015, bc);
-            // Heel
-            push_box(tris, lx, 0.018, ankle[2] + 0.04, 0.07, 0.035, 0.035, bc_dk);
-            // Sole
-            push_box(tris, lx, 0.005, ankle[2] - 0.02, 0.09, 0.01, 0.15, darken(bc, 0.5));
-            // Strap with buckle
-            let strap_pos = lerp3(knee, ankle, 0.50);
-            mesh::cylinder_tris(tris, strap_pos[0], strap_pos[1], strap_pos[2],
-                0.080, 0.012, 8, LEATHER_MED);
-            mesh::sphere_tris(tris, strap_pos[0] - 0.077, strap_pos[1], strap_pos[2],
-                0.007, 0, BUCKLE_BRASS);
-            // Pull tab
-            let pull = lerp3(knee, ankle, 0.22);
-            push_box(tris, pull[0], pull[1], pull[2] + 0.06, 0.018, 0.03, 0.01, bc_dk);
-            // Front seam
-            push_seam(tris, lx, ankle[1], cuff_pos[1], (ankle[2] + cuff_pos[2]) * 0.5 - 0.05, STITCH_DARK);
-        }
-        _ => {
-            // TALL KNEE-HIGH BOOTS — ACU assassin style
-            let cuff_pos = lerp3(knee, ankle, 0.08);
-            // Wide turned-down cuff
-            mesh::cylinder_tris(tris, cuff_pos[0], cuff_pos[1], cuff_pos[2],
-                0.090, 0.040, 8, bc_lt);
-            mesh::cylinder_tris(tris, cuff_pos[0], cuff_pos[1] + 0.020, cuff_pos[2],
-                0.093, 0.005, 8, bc_dk);
-            // Cuff lining visible
-            mesh::cylinder_tris(tris, cuff_pos[0], cuff_pos[1], cuff_pos[2],
-                0.084, 0.035, 8, darken(bc, 1.3));
-            // Boot vamp
-            mesh::beveled_box_tris(tris, lx, 0.035, ankle[2] - 0.02, 0.10, 0.07, 0.15, 0.015, bc);
-            // Toe cap
-            push_box(tris, lx, 0.04, ankle[2] - 0.09, 0.09, 0.006, 0.012, bc_dk);
-            // Heel
-            push_box(tris, lx, 0.02, ankle[2] + 0.04, 0.07, 0.04, 0.035, bc_dk);
-            // Sole
-            push_box(tris, lx, 0.005, ankle[2] - 0.02, 0.09, 0.01, 0.15, darken(bc, 0.45));
-            // Boot straps (3 horizontal with buckles)
-            for si in 0..3 {
-                let t = 0.30 + si as f32 * 0.18;
-                let sp = lerp3(knee, ankle, t);
-                mesh::cylinder_tris(tris, sp[0], sp[1], sp[2], 0.083, 0.012, 8, LEATHER_MED);
-                mesh::sphere_tris(tris, sp[0] - 0.080, sp[1], sp[2] - 0.02, 0.006, 0, BUCKLE_BRASS);
-            }
-            // Boot seams (front and back)
-            push_seam(tris, lx, ankle[1], cuff_pos[1], (ankle[2] + cuff_pos[2]) * 0.5 - 0.06, STITCH_DARK);
-            push_seam(tris, lx, ankle[1], cuff_pos[1], (ankle[2] + cuff_pos[2]) * 0.5 + 0.06, STITCH_DARK);
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// MAIN CHARACTER BODY — assembles all parts
-// ═══════════════════════════════════════════════════════════════════════════
-
-fn gen_character_body(
-    tris: &mut Vec<WorldTri>,
-    swing: f32,
-    app: &NpcAppearance,
-    shirt_col: u32,
-    pants_col: u32,
-    attack_phase: f32,
-    carrying_item: bool,
-    carrying_bin: bool,
-    sitting: bool,
-    is_job_hat: Option<u32>,
-) {
-    let skin = app.skin;
-    let vest_col = app.vest_col;
-    let arm_outer = if app.has_coat { app.coat_col } else { shirt_col };
-
-    if sitting {
-        gen_seated_body(tris, app, shirt_col, pants_col, is_job_hat);
-        return;
-    }
-
-    // ── BODY (neck, torso, limbs) — generate then stretch for heroic proportions ──
-    let body_base = tris.len();
-    gen_neck(tris, skin, &male_proportions(), 24);
-    gen_torso(tris, app, vest_col, swing);
-    gen_belt_system(tris, app, pants_col);
-
-    let l_fwd = -swing * 0.40;
-    let r_fwd = swing * 0.40;
-    let l_knee = if swing > 0.0 { swing * 0.22 } else { 0.0 };
-    let r_knee = if swing < 0.0 { (-swing) * 0.22 } else { 0.0 };
-    gen_leg(tris, -1.0, l_fwd, l_knee, pants_col, app);
-    gen_leg(tris, 1.0, r_fwd, r_knee, pants_col, app);
-
-    if attack_phase > 0.0 {
-        gen_attack_arms(tris, attack_phase, arm_outer, skin, app);
-    } else if carrying_item {
-        gen_carry_arms(tris, arm_outer, skin, app);
-        mesh::beveled_box_tris(tris, 0.0, 0.88, -0.50, 0.30, 0.30, 0.20, 0.02, BAG_COLOR);
-        push_box(tris, 0.0, 1.1, -0.37, 0.02, 0.4, 0.02, LEATHER_MED);
-    } else if carrying_bin {
-        gen_carry_arms(tris, arm_outer, skin, app);
-        mesh::cylinder_tris(tris, 0.0, 0.78, -0.55, 0.2, 0.55, 8, BIN_COLOR);
-    } else {
-        let l_arm_fwd = swing * 0.25;
-        let r_arm_fwd = -swing * 0.25;
-        let l_bend = 0.10 + swing.abs() * 0.14;
-        let r_bend = 0.10 + swing.abs() * 0.14;
-        gen_arm(tris, -1.0, l_arm_fwd, l_bend, arm_outer, skin, app);
-        gen_arm(tris, 1.0, r_arm_fwd, r_bend, arm_outer, skin, app);
-    }
-
-    // Stretch body vertically and widen
-    for tri in &mut tris[body_base..] {
-        for v in &mut tri.v {
-            v[0] *= BODY_WIDEN;
-            v[1] *= BODY_STRETCH;
-            v[2] *= BODY_WIDEN;
-        }
-    }
-
-    // ── HEAD (separate, uniformly scaled, positioned on stretched neck) ──
-    let head_base = tris.len();
-    gen_head(tris, app, is_job_hat);
-    for tri in &mut tris[head_base..] {
-        for v in &mut tri.v {
-            v[0] *= HEAD_SCALE;
-            v[1] = HEAD_CY + (v[1] - HEAD_CY) * HEAD_SCALE;
-            v[2] *= HEAD_SCALE;
-        }
-    }
-    // Head sits on spine at skull base (y≈1.55), NOT at the chin.
-    // Chin hangs below, overlapping upper neck.
-    let skull_base = HEAD_CY + (1.55 - HEAD_CY) * HEAD_SCALE;
-    let head_shift = NECK_TOP * BODY_STRETCH - skull_base;
-    for tri in &mut tris[head_base..] {
-        for v in &mut tri.v {
-            v[1] += head_shift;
-        }
-    }
-}
-
-fn gen_attack_arms(
-    tris: &mut Vec<WorldTri>, attack_phase: f32,
-    arm_outer: u32, skin: u32, app: &NpcAppearance,
-) {
-    let t = (attack_phase / ATTACK_ANIM_DURATION).clamp(0.0, 1.0);
-    let extend = 1.0 - (1.0 - t) * (1.0 - t);
-
-    // Right arm — punching forward, joint-based
-    let r_shoulder = [0.32, 1.42, 0.0];
-    let r_elbow = [0.34, 1.10, -0.15 - extend * 0.20];
-    let r_wrist = [0.33, 0.92, -0.35 - extend * 0.35];
-    mesh::ellipsoid_tris(tris, r_shoulder[0], r_shoulder[1], r_shoulder[2], 0.10, 0.07, 0.09, 1, arm_outer);
-    mesh::tapered_cylinder_between(tris, r_shoulder, r_elbow, 0.09, 0.065, 10, arm_outer);
-    mesh::sphere_tris(tris, r_elbow[0], r_elbow[1], r_elbow[2], 0.066, 1, arm_outer);
-    mesh::tapered_cylinder_between(tris, r_elbow, r_wrist, 0.065, 0.048, 8, skin);
-    // Fist
-    mesh::sphere_tris(tris, r_wrist[0], r_wrist[1] - 0.03, r_wrist[2] - 0.03, 0.055, 1, skin);
-    push_box(tris, r_wrist[0], r_wrist[1] - 0.03, r_wrist[2] - 0.06, 0.045, 0.04, 0.03, darken(skin, 0.85));
-
-    // Left arm — guard position, joint-based
-    let l_shoulder = [-0.30, 1.42, 0.0];
-    let l_elbow = [-0.33, 1.10, -0.05];
-    let l_wrist = [-0.32, 0.90, -0.14];
-    mesh::ellipsoid_tris(tris, l_shoulder[0], l_shoulder[1], l_shoulder[2], 0.10, 0.07, 0.09, 1, arm_outer);
-    mesh::tapered_cylinder_between(tris, l_shoulder, l_elbow, 0.09, 0.065, 10, arm_outer);
-    mesh::sphere_tris(tris, l_elbow[0], l_elbow[1], l_elbow[2], 0.066, 1, arm_outer);
-    mesh::tapered_cylinder_between(tris, l_elbow, l_wrist, 0.065, 0.048, 8, skin);
-    mesh::sphere_tris(tris, l_wrist[0], l_wrist[1] - 0.03, l_wrist[2], 0.052, 0, skin);
-
-    // Bracers visible during combat
-    if app.has_bracers {
-        let r_bracer = lerp3(r_elbow, r_wrist, 0.40);
-        mesh::cylinder_tris(tris, r_bracer[0], r_bracer[1], r_bracer[2], 0.060, 0.12, 7, LEATHER_DARK);
-        let l_bracer = lerp3(l_elbow, l_wrist, 0.40);
-        mesh::cylinder_tris(tris, l_bracer[0], l_bracer[1], l_bracer[2], 0.060, 0.12, 7, LEATHER_DARK);
-    }
-}
-
-fn gen_carry_arms(
-    tris: &mut Vec<WorldTri>,
-    arm_outer: u32, skin: u32, _app: &NpcAppearance,
-) {
-    // Both arms forward, holding object — joint-based
-    for &side in &[-1.0f32, 1.0] {
-        let shoulder = [side * 0.30, 1.42, 0.0];
-        let elbow = [side * 0.28, 1.10, -0.22];
-        let wrist = [side * 0.26, 0.88, -0.40];
-        mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2], 0.10, 0.07, 0.09, 1, arm_outer);
-        mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.09, 0.065, 10, arm_outer);
-        mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.066, 1, arm_outer);
-        mesh::tapered_cylinder_between(tris, elbow, wrist, 0.065, 0.048, 8, skin);
-        gen_hand(tris, wrist[0], wrist[1] - 0.05, wrist[2] - 0.02, side, skin);
-    }
-}
-
-fn gen_seated_body(
-    tris: &mut Vec<WorldTri>,
-    app: &NpcAppearance, shirt_col: u32, pants_col: u32,
-    is_job_hat: Option<u32>,
-) {
-    let skin = app.skin;
-    let coat = app.coat_col;
-    let arm_outer = if app.has_coat { coat } else { shirt_col };
-    let vest = app.vest_col;
-
-    // Head (offset down for seated height)
-    let head_base = tris.len();
-    gen_head(tris, app, is_job_hat);
-    for tri in &mut tris[head_base..] {
-        for v in &mut tri.v { v[1] -= 0.4; }
-    }
-
-    // Neck (thicker)
-    mesh::tapered_cylinder_tris(tris, 0.0, 1.09, 0.0, 0.08, 0.07, 0.12, 8, skin);
-
-    // Torso (wider, anatomical)
-    mesh::ellipsoid_tris(tris, 0.0, 0.88, 0.0, 0.21, 0.20, 0.15, 1, SHIRT_LINEN);
-    mesh::ellipsoid_tris(tris, 0.0, 0.68, 0.0, 0.17, 0.14, 0.13, 0, SHIRT_LINEN);
-    mesh::beveled_box_tris(tris, 0.0, 0.78, 0.0, 0.44, 0.52, 0.30, 0.03, vest);
-    if app.has_coat {
-        mesh::beveled_box_tris(tris, 0.0, 0.78, 0.0, 0.56, 0.58, 0.36, 0.04, coat);
-    }
-    mesh::cylinder_tris(tris, 0.0, 0.52, 0.0, 0.22, 0.03, 10, LEATHER_DARK);
-
-    // Seated thighs (horizontal, forward — joint-based)
-    let l_hip = [-0.14, 0.44, 0.0];
-    let l_knee_s = [-0.14, 0.42, -0.38];
-    let r_hip = [0.14, 0.44, 0.0];
-    let r_knee_s = [0.14, 0.42, -0.38];
-    mesh::tapered_cylinder_between(tris, l_hip, l_knee_s, 0.10, 0.08, 8, pants_col);
-    mesh::tapered_cylinder_between(tris, r_hip, r_knee_s, 0.10, 0.08, 8, pants_col);
-    // Knee joints
-    mesh::sphere_tris(tris, l_knee_s[0], l_knee_s[1], l_knee_s[2], 0.078, 0, pants_col);
-    mesh::sphere_tris(tris, r_knee_s[0], r_knee_s[1], r_knee_s[2], 0.078, 0, pants_col);
-
-    // Shins (hanging from knees — joint-based)
-    let bc = app.boot_col;
-    let l_ankle_s = [-0.14, 0.06, -0.40];
-    let r_ankle_s = [0.14, 0.06, -0.40];
-    if app.boot_type >= 2 {
-        mesh::tapered_cylinder_between(tris, l_knee_s, l_ankle_s, 0.072, 0.056, 7, bc);
-        mesh::tapered_cylinder_between(tris, r_knee_s, r_ankle_s, 0.072, 0.056, 7, bc);
-    } else {
-        mesh::tapered_cylinder_between(tris, l_knee_s, l_ankle_s, 0.066, 0.052, 6, 0xFFCCBBAA);
-        mesh::tapered_cylinder_between(tris, r_knee_s, r_ankle_s, 0.066, 0.052, 6, 0xFFCCBBAA);
-    }
-
-    // Shoes (wider)
-    mesh::beveled_box_tris(tris, -0.14, 0.02, -0.44, 0.10, 0.06, 0.14, 0.015, bc);
-    mesh::beveled_box_tris(tris, 0.14, 0.02, -0.44, 0.10, 0.06, 0.14, 0.015, bc);
-
-    // Arms resting on thighs — joint-based
-    for &side in &[-1.0f32, 1.0] {
-        let shoulder = [side * 0.32, 0.98, 0.0];
-        let elbow = [side * 0.34, 0.64, -0.15];
-        let wrist = [side * 0.30, 0.48, -0.30];
-        mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2], 0.09, 0.06, 0.08, 0, arm_outer);
-        mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.07, 0.055, 7, arm_outer);
-        mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.056, 0, arm_outer);
-        mesh::tapered_cylinder_between(tris, elbow, wrist, 0.055, 0.042, 6, skin);
-        gen_hand(tris, wrist[0], wrist[1] - 0.04, wrist[2] - 0.02, side, skin);
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ANATOMICALLY ACCURATE NUDE MALE BODY — lofted cross-section surfaces
@@ -3291,6 +2513,7 @@ fn gen_nude_player_body(
     sitting: bool,
     is_female: bool,
     clothing: Option<(&NpcAppearance, u32, u32)>, // (appearance, shirt_col, pants_col)
+    job_hat: Option<u32>,
 ) {
     let props = if is_female { female_proportions() } else { male_proportions() };
     let head_app = if let Some((app, _, _)) = clothing {
@@ -3353,7 +2576,7 @@ fn gen_nude_player_body(
         let hs = props.head_scale;
         let hcy = props.head_cy;
         let head_base = tris.len();
-        gen_head(tris, &head_app, None);
+        gen_head(tris, &head_app, job_hat);
         for tri in &mut tris[head_base..] {
             for v in &mut tri.v {
                 v[0] *= hs;
@@ -3432,7 +2655,7 @@ fn gen_nude_player_body(
     let hs = props.head_scale;
     let hcy = props.head_cy;
     let head_base = tris.len();
-    gen_head(tris, &head_app, None);
+    gen_head(tris, &head_app, job_hat);
     for tri in &mut tris[head_base..] {
         for v in &mut tri.v {
             v[0] *= hs;
@@ -3452,6 +2675,7 @@ fn gen_nude_player_body(
 pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
     let skin = if player.hit_flash > 0.0 { 0xFFFF4444 } else { SKIN_COLOR };
+    let app = player_appearance(player.is_female);
 
     gen_nude_player_body(
         tris,
@@ -3463,22 +2687,19 @@ pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
         player.carrying_bin.is_some(),
         player.sitting,
         player.is_female,
+        Some((&app, PLAYER_SHIRT, PLAYER_PANTS)),
         None,
     );
 
-    let (sin_r, cos_r) = player.rot_y.sin_cos();
+    let rot = terrain_rot3x3(player.terrain_normal, player.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
-            let rx = v[0] * cos_r + v[2] * sin_r;
-            let rz = -v[0] * sin_r + v[2] * cos_r;
-            v[0] = rx + player.x;
-            v[1] += player.y;
-            v[2] = rz + player.z;
+            let rv = rot3x3_apply(&rot, *v);
+            v[0] = rv[0] + player.x;
+            v[1] = rv[1] + player.y;
+            v[2] = rv[2] + player.z;
         }
-        let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
-        let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
-        tri.normal[0] = nx;
-        tri.normal[2] = nz;
+        tri.normal = rot3x3_apply(&rot, tri.normal);
     }
 }
 
@@ -3490,6 +2711,7 @@ pub fn gen_clothed_player_body(tris: &mut Vec<WorldTri>, is_female: bool) {
         tris, 0.0, SKIN_COLOR, 0xFF332211,
         0.0, false, false, false, is_female,
         Some((&app, PLAYER_SHIRT, PLAYER_PANTS)),
+        None,
     );
 }
 
@@ -3617,16 +2839,16 @@ pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bo
     // Headlights (recessed with bezel)
     for &hx in &[-0.6f32, 0.6] {
         push_box(tris, hx, 0.45, -1.81, 0.3, 0.14, 0.04, 0xFF333333); // housing
-        mesh::sphere_tris(tris, hx, 0.45, -1.83, 0.1, 0, 0xFFFFEE88); // bulb
+        mesh::sphere_tris(tris, hx, 0.45, -1.83, 0.1, 0, 0x00FFEE88); // emissive
     }
     // Turn signal indicators (small amber lights)
-    push_box(tris, -0.85, 0.45, -1.79, 0.08, 0.05, 0.03, 0xFFFFAA22);
-    push_box(tris, 0.85, 0.45, -1.79, 0.08, 0.05, 0.03, 0xFFFFAA22);
+    push_box(tris, -0.85, 0.45, -1.79, 0.08, 0.05, 0.03, 0x00FFAA22); // emissive
+    push_box(tris, 0.85, 0.45, -1.79, 0.08, 0.05, 0.03, 0x00FFAA22); // emissive
 
     // Tail lights (larger, with reflector housing)
     for &tx in &[-0.6f32, 0.6] {
         push_box(tris, tx, 0.45, 1.81, 0.28, 0.12, 0.04, 0xFF441111); // housing
-        mesh::sphere_tris(tris, tx, 0.45, 1.83, 0.08, 0, 0xFFFF2222); // bulb
+        mesh::sphere_tris(tris, tx, 0.45, 1.83, 0.08, 0, 0x00FF2222); // emissive
     }
     // Reverse lights (small white)
     push_box(tris, -0.25, 0.38, 1.82, 0.08, 0.06, 0.03, 0xFFDDDDDD);
@@ -3676,19 +2898,15 @@ pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bo
         push_box(tris, 0.0, 1.1, -0.45, 0.2, 0.06, 0.02, 0xFF667788);
     }
 
-    let (sin_r, cos_r) = v.rot_y.sin_cos();
+    let rot = terrain_rot3x3(v.terrain_normal, v.rot_y);
     for tri in &mut tris[base..] {
         for vert in &mut tri.v {
-            let rx = vert[0] * cos_r + vert[2] * sin_r;
-            let rz = -vert[0] * sin_r + vert[2] * cos_r;
-            vert[0] = rx + v.x;
-            vert[1] += v.y;
-            vert[2] = rz + v.z;
+            let rv = rot3x3_apply(&rot, *vert);
+            vert[0] = rv[0] + v.x;
+            vert[1] = rv[1] + v.y;
+            vert[2] = rv[2] + v.z;
         }
-        let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
-        let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
-        tri.normal[0] = nx;
-        tri.normal[2] = nz;
+        tri.normal = rot3x3_apply(&rot, tri.normal);
     }
 }
 
@@ -3707,58 +2925,122 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
     let shirt = if npc.hit_flash > 0.0 { 0xFFFF4444 } else { job_shirt_color(npc) };
     let app = npc_appearance(npc.brain_idx as u32);
 
-    // Ragdoll rendering: sphere joints + cylinder limb segments
+    // Ragdoll rendering: actual character model oriented by ragdoll joints
     if npc.ragdoll_active {
+        let base = tris.len();
         let p = &npc.ragdoll_points;
-        let arm_col = if app.has_coat { app.coat_col } else { shirt };
-        // Torso with coat color
-        mesh::cylinder_between(tris, p[0], p[1], 0.22, 6, arm_col);
-        // Head
-        mesh::lathe_tris(tris, p[2][0], p[2][1], p[2][2],
-            &[[0.0, -0.15], [0.12, -0.08], [0.16, 0.02], [0.12, 0.12], [0.0, 0.16]], 6, app.skin);
-        // Neck
-        mesh::cylinder_between(tris, p[1], p[2], 0.07, 4, app.skin);
-        // Arms (thicker)
-        mesh::cylinder_between(tris, p[1], p[3], 0.07, 5, arm_col);
-        mesh::cylinder_between(tris, p[1], p[4], 0.07, 5, arm_col);
-        push_box(tris, p[3][0], p[3][1], p[3][2], 0.06, 0.05, 0.06, app.skin);
-        push_box(tris, p[4][0], p[4][1], p[4][2], 0.06, 0.05, 0.06, app.skin);
-        // Legs (thicker)
-        mesh::cylinder_between(tris, p[0], p[5], 0.10, 6, npc.pants_color);
-        mesh::cylinder_between(tris, p[0], p[6], 0.10, 6, npc.pants_color);
-        mesh::beveled_box_tris(tris, p[5][0], p[5][1], p[5][2], 0.07, 0.05, 0.12, 0.01, BOOT_BROWN);
-        mesh::beveled_box_tris(tris, p[6][0], p[6][1], p[6][2], 0.07, 0.05, 0.12, 0.01, BOOT_BROWN);
+        // hips=0, chest=1, head=2, l_hand=3, r_hand=4, l_foot=5, r_foot=6
+
+        // Compute body orientation from ragdoll joint positions
+        // "Up" axis: hips → head (spine direction)
+        let ux = p[2][0] - p[0][0];
+        let uy = p[2][1] - p[0][1];
+        let uz = p[2][2] - p[0][2];
+        let ulen = (ux * ux + uy * uy + uz * uz).sqrt().max(0.01);
+        let up = [ux / ulen, uy / ulen, uz / ulen];
+
+        // "Right" axis: left_foot → right_foot, orthogonalized against up
+        let rx = p[6][0] - p[5][0];
+        let ry = p[6][1] - p[5][1];
+        let rz = p[6][2] - p[5][2];
+        let dot_ru = rx * up[0] + ry * up[1] + rz * up[2];
+        let rx = rx - dot_ru * up[0];
+        let ry = ry - dot_ru * up[1];
+        let rz = rz - dot_ru * up[2];
+        let rlen = (rx * rx + ry * ry + rz * rz).sqrt().max(0.01);
+        let right = [rx / rlen, ry / rlen, rz / rlen];
+
+        // "Forward" = cross(right, up)
+        let fwd = [
+            right[1] * up[2] - right[2] * up[1],
+            right[2] * up[0] - right[0] * up[2],
+            right[0] * up[1] - right[1] * up[0],
+        ];
+
+        let job_hat = match npc.job {
+            NpcJob::PolicePatrol => Some(0xFF2233AA),
+            NpcJob::Firefighter => Some(0xFFCC3322),
+            NpcJob::Paramedic => Some(0xFFDDDDDD),
+            NpcJob::ConstructionWorker => Some(0xFFDDAA22),
+            NpcJob::MailCarrier => Some(0xFF3344CC),
+            _ => None,
+        };
+
+        gen_nude_player_body(
+            tris, 0.0, app.skin, app.hair, 0.0, false, false, false,
+            app.is_female,
+            Some((&app, shirt, npc.pants_color)),
+            job_hat,
+        );
+
+        // Transform from local space (standing, feet at y=0) to ragdoll orientation.
+        // Map local origin to the midpoint between ragdoll feet.
+        let foot_mid = [
+            (p[5][0] + p[6][0]) * 0.5,
+            (p[5][1] + p[6][1]) * 0.5,
+            (p[5][2] + p[6][2]) * 0.5,
+        ];
+        for tri in &mut tris[base..] {
+            for v in &mut tri.v {
+                let lx = v[0];
+                let ly = v[1];
+                let lz = v[2];
+                v[0] = right[0] * lx + up[0] * ly + fwd[0] * lz + foot_mid[0];
+                v[1] = right[1] * lx + up[1] * ly + fwd[1] * lz + foot_mid[1];
+                v[2] = right[2] * lx + up[2] * ly + fwd[2] * lz + foot_mid[2];
+            }
+            let nx = tri.normal[0];
+            let ny = tri.normal[1];
+            let nz = tri.normal[2];
+            tri.normal[0] = right[0] * nx + up[0] * ny + fwd[0] * nz;
+            tri.normal[1] = right[1] * nx + up[1] * ny + fwd[1] * nz;
+            tri.normal[2] = right[2] * nx + up[2] * ny + fwd[2] * nz;
+        }
         return;
     }
 
     let base = tris.len();
 
-    // KO pose — body flat on ground
+    // KO pose — actual character model lying face-down on the ground
     if npc.state == NpcState::KnockedOut {
-        let arm_col = if app.has_coat { app.coat_col } else { shirt };
-        mesh::cylinder_tris(tris, 0.0, 0.15, 0.0, 0.19, 0.65, 6, arm_col);
-        mesh::lathe_tris(tris, 0.0, 0.15, -0.52,
-            &[[0.0, -0.15], [0.12, -0.08], [0.16, 0.02], [0.12, 0.12], [0.0, 0.16]], 6, app.skin);
-        mesh::cylinder_tris(tris, -0.45, 0.1, 0.15, 0.05, 0.55, 4, app.skin);
-        mesh::cylinder_tris(tris, 0.45, 0.1, -0.08, 0.05, 0.55, 4, app.skin);
-        mesh::cylinder_tris(tris, -0.14, 0.1, 0.45, 0.065, 0.6, 5, npc.pants_color);
-        mesh::cylinder_tris(tris, 0.14, 0.1, 0.45, 0.065, 0.6, 5, npc.pants_color);
-        mesh::beveled_box_tris(tris, -0.14, 0.03, 0.72, 0.07, 0.05, 0.12, 0.01, BOOT_BROWN);
-        mesh::beveled_box_tris(tris, 0.14, 0.03, 0.72, 0.07, 0.05, 0.12, 0.01, BOOT_BROWN);
+        let job_hat = match npc.job {
+            NpcJob::PolicePatrol => Some(0xFF2233AA),
+            NpcJob::Firefighter => Some(0xFFCC3322),
+            NpcJob::Paramedic => Some(0xFFDDDDDD),
+            NpcJob::ConstructionWorker => Some(0xFFDDAA22),
+            NpcJob::MailCarrier => Some(0xFF3344CC),
+            _ => None,
+        };
 
+        gen_nude_player_body(
+            tris, 0.0, app.skin, app.hair, 0.0, false, false, false,
+            app.is_female,
+            Some((&app, shirt, npc.pants_color)),
+            job_hat,
+        );
+
+        // Rotate 90° around X to lie face-down: (x, y, z) → (x, z, -y)
+        // Then offset Y so body rests on ground surface (y ≈ 0.15)
         let (sin_r, cos_r) = npc.rot_y.sin_cos();
         for tri in &mut tris[base..] {
             for v in &mut tri.v {
-                let rx = v[0] * cos_r + v[2] * sin_r;
-                let rz = -v[0] * sin_r + v[2] * cos_r;
+                // First: rotate -90° around X axis (face-down)
+                let lx = v[0];
+                let ly = v[2];       // y' = old_z
+                let lz = -v[1];      // z' = -old_y
+                // Then: rotate around Y by heading + translate to world
+                let rx = lx * cos_r + lz * sin_r;
+                let rz = -lx * sin_r + lz * cos_r;
                 v[0] = rx + npc.x;
-                v[1] += npc.y;
+                v[1] = ly + npc.y + 0.15; // slight offset above ground
                 v[2] = rz + npc.z;
             }
-            let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
-            let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
-            tri.normal[0] = nx;
-            tri.normal[2] = nz;
+            let nx = tri.normal[0];
+            let ny = tri.normal[2];
+            let nz = -tri.normal[1];
+            let rnx = nx * cos_r + nz * sin_r;
+            let rnz = -nx * sin_r + nz * cos_r;
+            tri.normal = [rnx, ny, rnz];
         }
         return;
     }
@@ -3773,16 +3055,17 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         _ => None,
     };
 
-    gen_character_body(
+    gen_nude_player_body(
         tris,
         npc.walk_phase.sin() * 0.4,
-        &app,
-        shirt,
-        npc.pants_color,
+        app.skin,
+        app.hair,
         npc.attack_phase,
         npc.carrying_item,
         npc.carrying_bin.is_some(),
         false,
+        app.is_female,
+        Some((&app, shirt, npc.pants_color)),
         job_hat,
     );
 
@@ -3792,19 +3075,15 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         mesh::sphere_tris(tris, 0.0, 2.70, -0.1, 0.04, 0, 0xFFFFFFFF);
     }
 
-    let (sin_r, cos_r) = npc.rot_y.sin_cos();
+    let rot = terrain_rot3x3(npc.terrain_normal, npc.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
-            let rx = v[0] * cos_r + v[2] * sin_r;
-            let rz = -v[0] * sin_r + v[2] * cos_r;
-            v[0] = rx + npc.x;
-            v[1] += npc.y;
-            v[2] = rz + npc.z;
+            let rv = rot3x3_apply(&rot, *v);
+            v[0] = rv[0] + npc.x;
+            v[1] = rv[1] + npc.y;
+            v[2] = rv[2] + npc.z;
         }
-        let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
-        let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
-        tri.normal[0] = nx;
-        tri.normal[2] = nz;
+        tri.normal = rot3x3_apply(&rot, tri.normal);
     }
 }
 
@@ -3878,15 +3157,24 @@ pub fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
 }
 
 pub fn gen_trash_bin_mesh(bin: &TrashBin, tris: &mut Vec<WorldTri>) {
-    // Cylinder body with beveled rim + lid
-    mesh::cylinder_tris(tris, bin.x, bin.y + 0.4, bin.z, 0.22, 0.8, 6, BIN_COLOR);
-    // Rim at top
-    mesh::cylinder_tris(tris, bin.x, bin.y + 0.82, bin.z, 0.25, 0.06, 6, BIN_LID_COLOR);
-    // Lid
-    mesh::cylinder_tris(tris, bin.x, bin.y + 0.87, bin.z, 0.24, 0.04, 6, BIN_LID_COLOR);
-    // Overflow pile if more than half full
+    let base = tris.len();
+    // Generate at origin, transform after
+    mesh::cylinder_tris(tris, 0.0, 0.4, 0.0, 0.22, 0.8, 6, BIN_COLOR);
+    mesh::cylinder_tris(tris, 0.0, 0.82, 0.0, 0.25, 0.06, 6, BIN_LID_COLOR);
+    mesh::cylinder_tris(tris, 0.0, 0.87, 0.0, 0.24, 0.04, 6, BIN_LID_COLOR);
     if bin.items_held > 5 {
-        mesh::sphere_tris(tris, bin.x, bin.y + 0.95, bin.z, 0.15, 0, BAG_COLOR);
+        mesh::sphere_tris(tris, 0.0, 0.95, 0.0, 0.15, 0, BAG_COLOR);
+    }
+    // Terrain-aligned transform
+    let rot = terrain_rot3x3(bin.terrain_normal, 0.0);
+    for tri in &mut tris[base..] {
+        for v in &mut tri.v {
+            let rv = rot3x3_apply(&rot, *v);
+            v[0] = rv[0] + bin.x;
+            v[1] = rv[1] + bin.y;
+            v[2] = rv[2] + bin.z;
+        }
+        tri.normal = rot3x3_apply(&rot, tri.normal);
     }
 }
 
@@ -3945,6 +3233,44 @@ fn view_cull(eye: Vec3, fwd_x: f32, fwd_z: f32, ex: f32, ez: f32, fog_dist_sq: f
     if dot > 0.259 { Some(dist_sq) } else { None } // cos(75°)
 }
 
+/// Medium-detail NPC: simplified body with correct clothing colors (~200 tris)
+pub fn gen_npc_mesh_mid(npc: &Npc, tris: &mut Vec<WorldTri>) {
+    let shirt = if npc.hit_flash > 0.0 { 0xFFFF4444 } else { job_shirt_color(npc) };
+    let app = npc_appearance(npc.brain_idx as u32);
+    let arm_col = if app.has_coat { app.coat_col } else { shirt };
+    let base = tris.len();
+
+    // Head — small sphere (lowered to reduce gap)
+    mesh::sphere_tris(tris, 0.0, 1.52, 0.0, 0.14, 0, app.skin);
+    // Neck — short cylinder connecting torso to head
+    mesh::cylinder_tris(tris, 0.0, 1.30, 0.0, 0.06, 0.30, 4, app.skin);
+    // Torso — tapered cylinder (shirt/coat color)
+    mesh::tapered_cylinder_tris(tris, 0.0, 0.85, 0.0, 0.22, 0.16, 0.70, 5, arm_col);
+    // Arms — two thin cylinders
+    let swing = npc.walk_phase.sin() * 0.2;
+    mesh::cylinder_tris(tris, -0.24, 1.10, swing * 0.1, 0.05, 0.45, 4, arm_col);
+    mesh::cylinder_tris(tris,  0.24, 1.10, -swing * 0.1, 0.05, 0.45, 4, arm_col);
+    // Legs — two cylinders with walk animation
+    mesh::cylinder_tris(tris, -0.09, 0.30, -swing * 0.15, 0.06, 0.45, 4, npc.pants_color);
+    mesh::cylinder_tris(tris,  0.09, 0.30,  swing * 0.15, 0.06, 0.45, 4, npc.pants_color);
+    // Boots
+    push_box(tris, -0.09, 0.04, -swing * 0.15, 0.05, 0.05, 0.08, BOOT_BROWN);
+    push_box(tris,  0.09, 0.04,  swing * 0.15, 0.05, 0.05, 0.08, BOOT_BROWN);
+
+    // Apply body stretch + world transform
+    let rot = terrain_rot3x3(npc.terrain_normal, npc.rot_y);
+    for tri in &mut tris[base..] {
+        for v in &mut tri.v {
+            v[1] *= BODY_STRETCH;
+            let rv = rot3x3_apply(&rot, *v);
+            v[0] = rv[0] + npc.x;
+            v[1] = rv[1] + npc.y;
+            v[2] = rv[2] + npc.z;
+        }
+        tri.normal = rot3x3_apply(&rot, tri.normal);
+    }
+}
+
 /// Low-detail NPC: 3 colored boxes (~36 tris vs ~14K full detail)
 fn gen_npc_mesh_lod(npc: &Npc, tris: &mut Vec<WorldTri>) {
     let app = npc_appearance(npc.brain_idx as u32);
@@ -3953,25 +3279,22 @@ fn gen_npc_mesh_lod(npc: &Npc, tris: &mut Vec<WorldTri>) {
     push_box(tris, 0.0, 0.75, 0.0, 0.20, 0.55, 0.12, body_col);
     push_box(tris, 0.0, 0.25, 0.0, 0.13, 0.25, 0.10, npc.pants_color);
     push_box(tris, 0.0, 1.55, 0.0, 0.10, 0.12, 0.10, app.skin);
-    let (sin_r, cos_r) = npc.rot_y.sin_cos();
+    let rot = terrain_rot3x3(npc.terrain_normal, npc.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
-            let rx = v[0] * cos_r + v[2] * sin_r;
-            let rz = -v[0] * sin_r + v[2] * cos_r;
-            v[0] = rx + npc.x;
-            v[1] += npc.y;
-            v[2] = rz + npc.z;
+            let rv = rot3x3_apply(&rot, *v);
+            v[0] = rv[0] + npc.x;
+            v[1] = rv[1] + npc.y;
+            v[2] = rv[2] + npc.z;
         }
-        let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
-        let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
-        tri.normal[0] = nx;
-        tri.normal[2] = nz;
+        tri.normal = rot3x3_apply(&rot, tri.normal);
     }
 }
 
 // LOD distance thresholds (squared)
 const LOD_NPC_FULL_SQ: f32 = 625.0;    // < 25m: full detail
-const LOD_NPC_LOW_SQ: f32 = 40000.0;   // 25-200m: low detail boxes
+const LOD_NPC_MID_SQ: f32 = 6400.0;    // 25-80m: medium detail (~200 tris)
+const LOD_NPC_LOW_SQ: f32 = 40000.0;   // 80-200m: low detail boxes
 const LOD_VEH_FULL_SQ: f32 = 2500.0;   // < 50m: full detail vehicle
 const LOD_VEH_DIST_SQ: f32 = 40000.0;  // > 200m: skip vehicles
 
@@ -3980,19 +3303,15 @@ fn gen_vehicle_mesh_lod(v: &Vehicle, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
     push_box(tris, 0.0, 0.35, 0.0, 1.8, 0.5, 3.6, v.color);
     push_box(tris, 0.0, 0.95, 0.2, 1.4, 0.45, 1.8, darken(v.color, 0.85));
-    let (sin_r, cos_r) = v.rot_y.sin_cos();
+    let rot = terrain_rot3x3(v.terrain_normal, v.rot_y);
     for tri in &mut tris[base..] {
         for vert in &mut tri.v {
-            let rx = vert[0] * cos_r + vert[2] * sin_r;
-            let rz = -vert[0] * sin_r + vert[2] * cos_r;
-            vert[0] = rx + v.x;
-            vert[1] += v.y;
-            vert[2] = rz + v.z;
+            let rv = rot3x3_apply(&rot, *vert);
+            vert[0] = rv[0] + v.x;
+            vert[1] = rv[1] + v.y;
+            vert[2] = rv[2] + v.z;
         }
-        let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
-        let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
-        tri.normal[0] = nx;
-        tri.normal[2] = nz;
+        tri.normal = rot3x3_apply(&rot, tri.normal);
     }
 }
 
@@ -4037,6 +3356,8 @@ pub fn generate_dynamic_gpu_vertices(
         };
         if dist_sq < LOD_NPC_FULL_SQ {
             gen_npc_mesh(npc, scratch);
+        } else if dist_sq < LOD_NPC_MID_SQ {
+            gen_npc_mesh_mid(npc, scratch);
         } else if dist_sq < LOD_NPC_LOW_SQ {
             gen_npc_mesh_lod(npc, scratch);
         }
