@@ -161,26 +161,26 @@ impl FaceSliders {
     }
     pub fn male_default() -> Self {
         FaceSliders {
-            skull_width: 0.55, skull_depth: 0.50,
-            jaw_width: 0.60, jaw_definition: 0.65,
-            chin_projection: 0.65, chin_width: 0.60,
-            brow_ridge: 0.70, cheekbone: 0.45,
-            nose_size: 0.60, nose_bridge: 0.55,
-            lip_fullness: 0.40,
-            eye_spacing: 0.50, eye_size: 0.45, eye_depth: 0.55,
-            forehead_height: 0.50, ear_size: 0.50, masseter: 0.60,
+            skull_width: 0.58, skull_depth: 0.52,
+            jaw_width: 0.65, jaw_definition: 0.72,
+            chin_projection: 0.68, chin_width: 0.62,
+            brow_ridge: 0.78, cheekbone: 0.40,
+            nose_size: 0.65, nose_bridge: 0.60,
+            lip_fullness: 0.35,
+            eye_spacing: 0.50, eye_size: 0.42, eye_depth: 0.65,
+            forehead_height: 0.48, ear_size: 0.52, masseter: 0.68,
         }
     }
     pub fn female_default() -> Self {
         FaceSliders {
-            skull_width: 0.45, skull_depth: 0.48,
-            jaw_width: 0.30, jaw_definition: 0.30,
-            chin_projection: 0.40, chin_width: 0.35,
-            brow_ridge: 0.20, cheekbone: 0.70,
-            nose_size: 0.35, nose_bridge: 0.40,
-            lip_fullness: 0.65,
-            eye_spacing: 0.50, eye_size: 0.60, eye_depth: 0.40,
-            forehead_height: 0.55, ear_size: 0.45, masseter: 0.20,
+            skull_width: 0.42, skull_depth: 0.46,
+            jaw_width: 0.22, jaw_definition: 0.20,
+            chin_projection: 0.35, chin_width: 0.30,
+            brow_ridge: 0.12, cheekbone: 0.78,
+            nose_size: 0.30, nose_bridge: 0.35,
+            lip_fullness: 0.72,
+            eye_spacing: 0.50, eye_size: 0.62, eye_depth: 0.32,
+            forehead_height: 0.58, ear_size: 0.42, masseter: 0.12,
         }
     }
 
@@ -636,130 +636,146 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     let f = &app.face;
 
     // Map face sliders (0.0–1.0) to concrete geometric parameters
-    let skw = sl(0.85, 1.15, f.skull_width);   // skull rx multiplier
-    let skd = sl(0.85, 1.15, f.skull_depth);    // skull rz multiplier
-    let jaw_w = sl(0.004, 0.018, f.jaw_width);
-    let jawline = sl(0.004, 0.022, f.jaw_width);
-    let gonial = sl(0.004, 0.030, f.jaw_definition);
-    let masseter = sl(0.002, 0.018, f.masseter);
-    let brow_shelf = sl(0.003, 0.028, f.brow_ridge);
-    let brow_boss = sl(0.002, 0.016, f.brow_ridge);
-    let glabella = sl(0.001, 0.012, f.brow_ridge);
-    let supraorb = sl(0.002, 0.014, f.brow_ridge);
-    let cheek = sl(0.010, 0.042, f.cheekbone);
-    let chin_proj = sl(0.012, 0.062, f.chin_projection);
-    let chin_w = sl(0.035, 0.080, f.chin_width);
-    let nose_size = sl(0.018, 0.048, f.nose_size);
-    let nose_br = sl(0.008, 0.018, f.nose_bridge);
+    // Wider ranges than v1 for more dramatic differentiation
+    let skw = sl(0.85, 1.15, f.skull_width);
+    let skd = sl(0.85, 1.15, f.skull_depth);
+    let jaw_w = sl(0.004, 0.020, f.jaw_width);
+    let jawline = sl(0.004, 0.024, f.jaw_width);
+    let gonial = sl(0.003, 0.035, f.jaw_definition);
+    let masseter = sl(0.002, 0.020, f.masseter);
+    let brow_shelf = sl(0.002, 0.035, f.brow_ridge);
+    let brow_boss = sl(0.002, 0.020, f.brow_ridge);
+    let glabella = sl(0.001, 0.015, f.brow_ridge);
+    let supraorb = sl(0.002, 0.018, f.brow_ridge);
+    let cheek = sl(0.008, 0.050, f.cheekbone);
+    let chin_proj = sl(0.010, 0.070, f.chin_projection);
+    let chin_w = sl(0.045, 0.080, f.chin_width);  // min 0.045 prevents spike chin
+    let nose_size = sl(0.018, 0.050, f.nose_size);
+    let nose_br = sl(0.008, 0.020, f.nose_bridge);
     let lip_full = sl(0.6, 1.6, f.lip_fullness);
     let eye_x = sl(0.060, 0.100, f.eye_spacing);
     let eye_r = sl(0.018, 0.034, f.eye_size);
-    let eye_z = sl(-0.175, -0.220, f.eye_depth);
+    let eye_z = sl(-0.220, -0.270, f.eye_depth);
     let fh_off = sl(-0.03, 0.03, f.forehead_height);
     let ear_s = sl(0.70, 1.30, f.ear_size);
-    // Lip colors: blend between masculine and feminine based on lip_fullness
     let fem = app.is_female;
 
+    // Orbital socket depth — negative displacement at eye positions
+    // Creates concavity that eyeballs sit inside
+    let orb_depth = sl(-0.012, -0.035, f.eye_depth);
+
     // ══════════════════════════════════════════════════════════════
-    // SKULL LOFT — continuous head surface from chin to crown
-    // Ring rx/rz scaled by skull_width/skull_depth sliders
+    // SKULL LOFT — anatomically structured head surface
+    // Key features: orbital sockets, prominent brow, zygomatic arch,
+    // nasal bridge, occipital curve, frontal eminences
     // ══════════════════════════════════════════════════════════════
-    let orbital_indent = sl(-0.005, -0.010, f.eye_depth);
     let rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
         // ── CHIN — forward-projecting mental protuberance ──
         (1.46, body_ring(0.0, -0.06 * skd, chin_w, 0.09 * skd, &[
             (0.0, 0.3, chin_proj),
         ], n), sk),
-        (1.49, body_ring(0.0, -0.04 * skd, 0.10 * skw, 0.11 * skd, &[
-            (0.0, 0.3, chin_proj * 0.8),
+        (1.49, body_ring(0.0, -0.04 * skd, (chin_w + 0.10 * skw) * 0.5, 0.11 * skd, &[
+            (0.0, 0.3, chin_proj * 0.7),
         ], n), sk),
         (1.52, body_ring(0.0, -0.02 * skd, 0.13 * skw, 0.13 * skd, &[
-            (0.0, 0.3, chin_proj * 0.5),
+            (0.0, 0.3, chin_proj * 0.4),
         ], n), sk),
         // Labiomental fold
-        (1.55, body_ring(0.0, 0.0, 0.15 * skw, 0.14 * skd, &[
-            (0.0, 0.20, -0.020),
+        (1.55, body_ring(0.0, 0.0, 0.15 * skw, 0.15 * skd, &[
+            (0.0, 0.20, -0.022),
             (hp, 0.25, jaw_w), (le, 0.25, jaw_w),
         ], n), sk),
 
-        // ── JAW ──
-        (1.58, body_ring(0.0, 0.01 * skd, 0.19 * skw, 0.17 * skd, &[
+        // ── JAW — mandible with defined gonial angle ──
+        (1.58, body_ring(0.0, 0.01 * skd, 0.19 * skw, 0.18 * skd, &[
             (hp, 0.25, jawline), (le, 0.25, jawline),
-            (0.0, 0.3, 0.008),
+            (0.0, 0.3, 0.012),
         ], n), sk),
-        (1.61, body_ring(0.0, 0.02 * skd, 0.20 * skw, 0.18 * skd, &[
-            (hp, 0.18, gonial), (le, 0.18, gonial),
+        (1.61, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.19 * skd, &[
+            (hp, 0.15, gonial), (le, 0.15, gonial),
             (hp - 0.3, 0.2, masseter), (le + 0.3, 0.2, masseter),
         ], n), sk),
-        (1.63, body_ring(0.0, 0.02 * skd, 0.20 * skw, 0.18 * skd, &[
-            (hp, 0.18, gonial * 0.8), (le, 0.18, gonial * 0.8),
-            (hp - 0.3, 0.2, masseter), (le + 0.3, 0.2, masseter),
+        (1.63, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.19 * skd, &[
+            (hp, 0.15, gonial * 0.7), (le, 0.15, gonial * 0.7),
+            (hp - 0.3, 0.2, masseter * 0.9), (le + 0.3, 0.2, masseter * 0.9),
         ], n), sk),
 
-        // ── MOUTH LEVEL ──
-        (1.65, body_ring(0.0, 0.03 * skd, 0.195 * skw, 0.19 * skd, &[
-            (0.0, 0.20, 0.008),
+        // ── MOUTH LEVEL — face center shifted forward (cz=0.01) ──
+        (1.65, body_ring(0.0, 0.01 * skd, 0.195 * skw, 0.21 * skd, &[
+            (0.0, 0.20, 0.012),
+            (0.20, 0.08, -0.004), (TAU - 0.20, 0.08, -0.004),
         ], n), sk),
-        (1.67, body_ring(0.0, 0.03 * skd, 0.20 * skw, 0.20 * skd, &[
-            (0.0, 0.25, 0.012),
-            (hp - 0.3, 0.2, masseter * 0.8), (le + 0.3, 0.2, masseter * 0.8),
-        ], n), sk),
-
-        // ── NOSE BASE ──
-        (1.69, body_ring(0.0, 0.03 * skd, 0.205 * skw, 0.21 * skd, &[
-            (0.0, 0.12, 0.014),
-            (0.20, 0.10, -0.006), (TAU - 0.20, 0.10, -0.006),
-        ], n), sk),
-        (1.72, body_ring(0.0, 0.04 * skd, 0.21 * skw, 0.22 * skd, &[
-            (0.0, 0.07, nose_size),
-            (0.12, 0.06, nose_br * 0.7), (TAU - 0.12, 0.06, nose_br * 0.7),
-            (0.25, 0.10, -0.006), (TAU - 0.25, 0.10, -0.006),
-        ], n), sk),
-        // Nose bridge + cheekbones
-        (1.75, body_ring(0.0, 0.04 * skd, 0.22 * skw, 0.23 * skd, &[
-            (0.0, 0.06, nose_size * 0.7),
-            (0.55, 0.2, cheek), (TAU - 0.55, 0.2, cheek),
-            (0.30, 0.12, orbital_indent), (TAU - 0.30, 0.12, orbital_indent),
+        (1.67, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.23 * skd, &[
+            (0.0, 0.25, 0.016),
+            (hp - 0.3, 0.2, masseter * 0.7), (le + 0.3, 0.2, masseter * 0.7),
+            (0.22, 0.08, -0.008), (TAU - 0.22, 0.08, -0.008),
         ], n), sk),
 
-        // ── EYE LEVEL ──
-        (1.77, body_ring(0.0, 0.05 * skd, 0.215 * skw, 0.24 * skd, &[
-            (0.0, 0.07, nose_br),
-            (re, 0.08, 0.006), (le, 0.08, 0.006),
-            (0.55, 0.15, cheek * 0.5), (TAU - 0.55, 0.15, cheek * 0.5),
+        // ── NOSE BASE — piriform aperture ──
+        (1.69, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.24 * skd, &[
+            (0.0, 0.10, 0.020),
+            (0.22, 0.08, -0.008), (TAU - 0.22, 0.08, -0.008),
         ], n), sk),
-        (1.80, body_ring(0.0, 0.05 * skd, 0.21 * skw, 0.24 * skd, &[
-            (0.0, 0.07, nose_br * 0.8),
+        // Nose mid — tip + alar projection
+        (1.72, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.25 * skd, &[
+            (0.0, 0.06, nose_size * 1.2),
+            (0.12, 0.05, nose_br * 0.8), (TAU - 0.12, 0.05, nose_br * 0.8),
+            (0.25, 0.08, -0.008), (TAU - 0.25, 0.08, -0.008),
         ], n), sk),
 
-        // ── BROW RIDGE ──
-        (1.82, body_ring(0.0, 0.06 * skd, 0.205 * skw, 0.25 * skd, &[
-            (0.0, 0.45, brow_shelf),
+        // ── INFRAORBITAL / CHEEKBONE — zygomatic arch, orbital socket begins ──
+        (1.74, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.26 * skd, &[
+            (0.0, 0.06, nose_size * 0.8),
+            (0.55, 0.18, cheek * 1.1), (TAU - 0.55, 0.18, cheek * 1.1),
+            (re, 0.12, orb_depth * 0.5), (le, 0.12, orb_depth * 0.5),
+        ], n), sk),
+
+        // ── ORBITAL SOCKET — deepest recess at eye level ──
+        (1.77, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.27 * skd, &[
+            (0.0, 0.06, nose_br * 1.1),
+            (re, 0.12, orb_depth), (le, 0.12, orb_depth),
+            (0.55, 0.15, cheek * 0.6), (TAU - 0.55, 0.15, cheek * 0.6),
+        ], n), sk),
+        // Upper orbital — socket recovering toward brow
+        (1.80, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.27 * skd, &[
+            (0.0, 0.06, nose_br * 0.8),
+            (re, 0.12, orb_depth * 0.4), (le, 0.12, orb_depth * 0.4),
+        ], n), sk),
+
+        // ── BROW RIDGE — supraorbital torus, projects forward over eye sockets ──
+        (1.82, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.28 * skd, &[
+            (0.0, 0.50, brow_shelf),
             (0.0, 0.10, glabella),
-            (re, 0.12, supraorb), (le, 0.12, supraorb),
+            (re, 0.10, supraorb), (le, 0.10, supraorb),
         ], n), sk),
-        (1.84, body_ring(0.0, 0.06 * skd, 0.21 * skw, 0.25 * skd, &[
-            (0.0, 0.5, brow_boss),
+        (1.84, body_ring(0.0, 0.02 * skd, 0.20 * skw, 0.28 * skd, &[
+            (0.0, 0.50, brow_boss * 0.8),
         ], n), sk),
 
-        // ── FOREHEAD ── (Y offset by forehead_height slider)
-        (1.87 + fh_off, body_ring(0.0, 0.07 * skd, 0.215 * skw, 0.26 * skd, &[
+        // ── FOREHEAD — frontal eminences ──
+        (1.87 + fh_off, body_ring(0.0, 0.04 * skd, 0.21 * skw, 0.27 * skd, &[
+            (0.25, 0.15, 0.008), (TAU - 0.25, 0.15, 0.008),
             (PI, 0.4, 0.010),
         ], n), sk),
 
         // ── CRANIAL VAULT ──
-        (1.91 + fh_off, body_ring(0.0, 0.08 * skd, 0.22 * skw, 0.27 * skd, &[
-            (PI, 0.4, 0.015),
+        (1.91 + fh_off, body_ring(0.0, 0.07 * skd, 0.21 * skw, 0.27 * skd, &[
+            (PI, 0.35, 0.025),
+            (hp, 0.3, 0.008), (le, 0.3, 0.008),
         ], n), sk),
-        (1.95 + fh_off, body_ring(0.0, 0.08 * skd, 0.22 * skw, 0.27 * skd, &[(PI, 0.4, 0.015)], n), sk),
-        (1.99 + fh_off, body_ring(0.0, 0.08 * skd, 0.22 * skw, 0.27 * skd, &[(PI, 0.4, 0.015)], n), sk),
+        (1.95 + fh_off, body_ring(0.0, 0.08 * skd, 0.21 * skw, 0.28 * skd, &[
+            (PI, 0.35, 0.030),
+        ], n), sk),
+        (1.99 + fh_off, body_ring(0.0, 0.08 * skd, 0.21 * skw, 0.27 * skd, &[
+            (PI, 0.35, 0.025),
+        ], n), sk),
 
         // ── CROWN ──
-        (2.03 + fh_off, body_ring(0.0, 0.07 * skd, 0.20 * skw, 0.24 * skd, &[], n), sk),
-        (2.06 + fh_off, body_ring(0.0, 0.06 * skd, 0.17 * skw, 0.20 * skd, &[], n), sk),
-        (2.08 + fh_off, body_ring(0.0, 0.05 * skd, 0.13 * skw, 0.16 * skd, &[], n), sk),
-        (2.10 + fh_off, body_ring(0.0, 0.04 * skd, 0.09 * skw, 0.11 * skd, &[], n), sk),
-        (2.12 + fh_off, body_ring(0.0, 0.03 * skd, 0.04 * skw, 0.05 * skd, &[], n), sk),
+        (2.03 + fh_off, body_ring(0.0, 0.06 * skd, 0.19 * skw, 0.24 * skd, &[], n), sk),
+        (2.06 + fh_off, body_ring(0.0, 0.05 * skd, 0.16 * skw, 0.20 * skd, &[], n), sk),
+        (2.08 + fh_off, body_ring(0.0, 0.04 * skd, 0.12 * skw, 0.16 * skd, &[], n), sk),
+        (2.10 + fh_off, body_ring(0.0, 0.03 * skd, 0.08 * skw, 0.11 * skd, &[], n), sk),
+        (2.12 + fh_off, body_ring(0.0, 0.02 * skd, 0.04 * skw, 0.05 * skd, &[], n), sk),
     ];
     mesh::loft_y_tris(tris, &rings);
 
@@ -778,77 +794,99 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
         // Pupil
         mesh::sphere_tris(tris, ex, ey, ez - eye_r * 0.92, eye_r * 0.23, 0, 0xFF111100);
 
-        // Upper eyelid — scales with eye size
-        let lid_w = eye_r * 1.38;
-        mesh::ellipsoid_tris(tris, ex, ey + eye_r * 0.54, ez + 0.006, lid_w, eye_r * 0.46, eye_r * 1.08, 1, sk);
+        // Upper eyelid — center slightly forward of eye so lid front covers eyeball
+        let lid_w = eye_r * 1.10;
+        mesh::ellipsoid_tris(tris, ex, ey + eye_r * 0.50, ez - 0.002, lid_w, eye_r * 0.44, eye_r * 0.92, 1, sk);
 
         // Lower eyelid
-        mesh::ellipsoid_tris(tris, ex, ey - eye_r * 0.62, ez + 0.006, lid_w * 0.89, eye_r * 0.31, eye_r * 0.92, 1, sk);
+        mesh::ellipsoid_tris(tris, ex, ey - eye_r * 0.58, ez - 0.002, lid_w * 0.90, eye_r * 0.28, eye_r * 0.80, 1, sk);
     }
 
-    // ── EYEBROWS — thickness from brow_ridge slider ──
+    // ── EYEBROWS — follow brow ridge curvature ──
     for &side in &[-1.0f32, 1.0] {
         let brow_thick = sl(0.003, 0.007, f.brow_ridge);
-        mesh::ellipsoid_tris(tris, side * (eye_x - 0.005), 1.82, -0.205,
-            0.040, brow_thick, 0.012, 0, darken(hair, 0.85));
-        mesh::ellipsoid_tris(tris, side * (eye_x + 0.025), 1.825, -0.20,
-            0.018, brow_thick * 0.6, 0.008, 0, darken(hair, 0.80));
+        // Inner brow — narrower to stay on skull surface
+        mesh::ellipsoid_tris(tris, side * eye_x, 1.82, -0.280,
+            0.028, brow_thick, 0.010, 0, darken(hair, 0.85));
+        // Brow tail — small, hugging skull surface
+        mesh::ellipsoid_tris(tris, side * (eye_x + 0.014), 1.823, -0.258,
+            0.010, brow_thick * 0.5, 0.006, 0, darken(hair, 0.80));
     }
 
     // ══════════════════════════════════════════════════════════════
-    // NOSE — scaled by nose_size and nose_bridge sliders
+    // NOSE — anatomically defined: bridge with plane changes, defined
+    // alar wings, visible columella, enclosed nostrils
     // ══════════════════════════════════════════════════════════════
     let ns = nose_size;
     let nb = nose_br;
-    // Nasal bone
-    mesh::ellipsoid_tris(tris, 0.0, 1.76, -0.235, nb * 0.7, 0.035, 0.015, 1, sk);
-    // Lateral walls
+    // Nasal bone — tall ridge forming the bridge
+    mesh::ellipsoid_tris(tris, 0.0, 1.76, -0.290, nb * 1.2, 0.040, nb * 1.0, 1, sk);
+    // Dorsum — continuous bridge from nasion to tip
+    mesh::ellipsoid_tris(tris, 0.0, 1.74, -0.285, nb * 1.0, 0.030, nb * 0.8, 1, sk);
+    // Lateral walls — defined planes flanking the bridge
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * nb * 0.8, 1.73, -0.225,
-            nb * 0.7, 0.035, 0.012, 0, sk);
+        mesh::ellipsoid_tris(tris, side * nb * 1.2, 1.73, -0.268,
+            nb * 0.7, 0.038, nb * 0.6, 0, sk);
     }
-    // Nose tip
-    mesh::ellipsoid_tris(tris, 0.0, 1.715, -0.255, ns * 0.5, 0.012, ns * 0.5, 1, darken(sk, 0.97));
-    // Alar wings
+    // Nose tip — defined ball
+    mesh::ellipsoid_tris(tris, 0.0, 1.715, -0.300, ns * 0.50, 0.016, ns * 0.50, 1, darken(sk, 0.96));
+    // Alar wings — fleshy lateral flaps
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * ns * 0.63, 1.712, -0.235,
-            ns * 0.51, 0.014, ns * 0.51, 1, sk);
-        mesh::ellipsoid_tris(tris, side * ns * 0.46, 1.705, -0.240,
-            ns * 0.46, 0.008, ns * 0.40, 0, darken(sk, 0.90));
+        mesh::ellipsoid_tris(tris, side * ns * 0.70, 1.712, -0.278,
+            ns * 0.55, 0.018, ns * 0.45, 1, sk);
+        // Alar crease
+        mesh::ellipsoid_tris(tris, side * ns * 0.80, 1.710, -0.265,
+            ns * 0.22, 0.012, ns * 0.16, 0, darken(sk, 0.88));
+        // Wing underside
+        mesh::ellipsoid_tris(tris, side * ns * 0.50, 1.705, -0.285,
+            ns * 0.42, 0.008, ns * 0.32, 0, darken(sk, 0.88));
     }
-    // Columella
-    mesh::ellipsoid_tris(tris, 0.0, 1.704, -0.248, 0.006, 0.010, 0.008, 0, darken(sk, 0.94));
-    // Nostrils
+    // Columella — central pillar between nostrils
+    mesh::ellipsoid_tris(tris, 0.0, 1.706, -0.292, 0.008, 0.013, 0.012, 0, darken(sk, 0.93));
+    // Nostrils — dark openings
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * ns * 0.34, 1.702, -0.242,
-            ns * 0.26, 0.006, 0.008, 0, darken(sk, 0.30));
+        mesh::ellipsoid_tris(tris, side * ns * 0.35, 1.703, -0.282,
+            ns * 0.26, 0.008, 0.010, 0, darken(sk, 0.25));
     }
-    // Philtrum ridges
+    // ── PHILTRUM — two visible ridges from columella to Cupid's bow ──
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.006, 1.695, -0.215,
-            0.003, 0.020, 0.005, 0, sk_sh);
+        mesh::ellipsoid_tris(tris, side * 0.007, 1.695, -0.255,
+            0.005, 0.022, 0.008, 0, sk_sh);
     }
+    // Philtrum groove
+    mesh::ellipsoid_tris(tris, 0.0, 1.695, -0.257,
+        0.004, 0.020, 0.004, 0, darken(sk, 0.88));
 
     // ══════════════════════════════════════════════════════════════
-    // MOUTH — lip_fullness slider controls volume, colors from gender
+    // MOUTH — Cupid's bow upper lip, full lower lip, vermilion borders
     // ══════════════════════════════════════════════════════════════
     let lip_col = if fem { 0xFFCC8888 } else { 0xFFBB8877 };
     let lo_lip_col = if fem { 0xFFDD9999 } else { 0xFFCC9988 };
+    let lf = lip_full;
 
     // Upper lip — two halves for Cupid's bow
-    mesh::ellipsoid_tris(tris, -0.012, 1.676, -0.210, 0.025, 0.005 * lip_full, 0.010 * lip_full, 0, lip_col);
-    mesh::ellipsoid_tris(tris,  0.012, 1.676, -0.210, 0.025, 0.005 * lip_full, 0.010 * lip_full, 0, lip_col);
+    mesh::ellipsoid_tris(tris, -0.013, 1.676, -0.248, 0.028, 0.006 * lf, 0.012 * lf, 0, lip_col);
+    mesh::ellipsoid_tris(tris,  0.013, 1.676, -0.248, 0.028, 0.006 * lf, 0.012 * lf, 0, lip_col);
+    // Cupid's bow peak
+    mesh::ellipsoid_tris(tris, 0.0, 1.680, -0.251, 0.008, 0.004 * lf, 0.006 * lf, 0, lip_col);
 
-    // Lower lip — single wide form
-    mesh::ellipsoid_tris(tris, 0.0, 1.656, -0.208, 0.038, 0.010 * lip_full, 0.012 * lip_full, 1, lo_lip_col);
+    // Lower lip
+    mesh::ellipsoid_tris(tris, 0.0, 1.654, -0.245, 0.040, 0.012 * lf, 0.014 * lf, 1, lo_lip_col);
+    // Vermilion border
+    mesh::ellipsoid_tris(tris, 0.0, 1.665, -0.251, 0.042, 0.002, 0.004, 0, darken(lip_col, 0.80));
 
-    // Mouth line — dark crease between lips
-    push_box(tris, 0.0, 1.666, -0.215, 0.034, 0.001, 0.002, darken(sk, 0.45));
+    // Mouth line
+    push_box(tris, 0.0, 1.666, -0.253, 0.036, 0.001, 0.003, darken(sk, 0.40));
+    // Commissures
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.035, 1.664, -0.247,
+            0.006, 0.004, 0.004, 0, darken(sk, 0.55));
+    }
 
     // Nasolabial folds
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.032, 1.69, -0.208,
-            0.004, 0.022, 0.004, 0, sk_sh);
+        mesh::ellipsoid_tris(tris, side * 0.034, 1.69, -0.250,
+            0.005, 0.025, 0.005, 0, darken(sk, 0.86));
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -856,7 +894,7 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     // ══════════════════════════════════════════════════════════════
     let es = ear_s;
     for &side in &[-1.0f32, 1.0] {
-        let ear_base_x = side * 0.22 * skw;
+        let ear_base_x = side * 0.21 * skw;
         let ez = 0.05 * skd;
         let s = side;
 
