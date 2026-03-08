@@ -1225,6 +1225,40 @@ fn main() {
         save_png(&head_composite, head_sheet_w, head_sheet_h, "debug/model_head_female.png");
     }
 
+    // ── Clothed Player (ACU outfit): 3 sheets ──
+    {
+        tris.clear();
+        mesh::set_mesh_quality(2, 3);
+        render::gen_clothed_player_body(&mut tris, false);
+        mesh::set_mesh_quality(0, 1);
+        let vn = compute_smooth_normals(&tris);
+        eprintln!("Clothed player mesh: {} tris", tris.len());
+
+        let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vn, &flat_views, "Clothed Flat");
+        save_png(&img, iw, ih, "debug/model_clothed_player_flat.png");
+        let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vn, &diag_views, "Clothed Diagonal");
+        save_png(&img, iw, ih, "debug/model_clothed_player_diagonal.png");
+        let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vn, &vert_views, "Clothed Vertical");
+        save_png(&img, iw, ih, "debug/model_clothed_player_vertical.png");
+    }
+
+    // ── Clothed Female Player (ACU outfit): 3 sheets ──
+    {
+        tris.clear();
+        mesh::set_mesh_quality(2, 3);
+        render::gen_clothed_player_body(&mut tris, true);
+        mesh::set_mesh_quality(0, 1);
+        let vn = compute_smooth_normals(&tris);
+        eprintln!("Clothed female player mesh: {} tris", tris.len());
+
+        let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vn, &flat_views, "Clothed Female Flat");
+        save_png(&img, iw, ih, "debug/model_clothed_female_flat.png");
+        let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vn, &diag_views, "Clothed Female Diagonal");
+        save_png(&img, iw, ih, "debug/model_clothed_female_diagonal.png");
+        let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vn, &vert_views, "Clothed Female Vertical");
+        save_png(&img, iw, ih, "debug/model_clothed_female_vertical.png");
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     // FACE VARIATION GRID — 12 slider presets, front + 3/4 views per face
     // ══════════════════════════════════════════════════════════════════════
