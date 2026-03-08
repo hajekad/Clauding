@@ -18,9 +18,6 @@ const H: usize = 1080;
 fn bytemuck_cast(data: &[f32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) }
 }
-fn bytemuck_cast_mut(data: &mut [f32]) -> &mut [u8] {
-    unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, data.len() * 4) }
-}
 
 fn save_png(pixels: &[u32], w: usize, h: usize, path: &str) {
     use std::io::Write;
@@ -124,20 +121,21 @@ fn render_screenshot(
     };
     render::generate_dynamic_gpu_vertices(
         &game.world, &game.player, &fake_cam,
-        time_of_day, render_scratch, dynamic_verts,
+        render_scratch, dynamic_verts,
     );
 
-    // Build VP matrix
+    // Build VP matrix + lighting push constants
     let aspect = fb.w as f32 / fb.h as f32;
     let view = math::m4_look_at(eye, target, [0.0, 1.0, 0.0]);
     let proj = math::m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.1, 500.0);
     let vp = math::m4_mul(&proj, &view);
+    let push = render::gpu_push_constants(time_of_day, eye, &vp);
 
     let clear = render::sky_color_f32(time_of_day);
-    ctx.render_frame(dynamic_verts, &vp, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
+    ctx.render_frame(dynamic_verts, &push, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
 
     // The GPU pipeline uses double-buffering — render a second frame to get actual output
-    ctx.render_frame(dynamic_verts, &vp, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
+    ctx.render_frame(dynamic_verts, &push, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
 }
 
 fn main() {
@@ -205,7 +203,7 @@ fn main() {
 
     // Init GPU
     let mut ctx = match gpu::GpuContext::try_new() {
-        Some(mut c) => {
+        Some(c) => {
             eprintln!("GPU: {}", c.device_name);
             let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
             let buf = c.create_buffer(data.len() * 4);
@@ -247,8 +245,8 @@ fn main() {
 
     // Upload static geometry to GPU
     let mut gpu_static_verts: Vec<gpu::GpuVertex> = Vec::with_capacity(1024 * 1024);
-    let eye_default = [0.0f32, 50.0, -50.0];
-    render::generate_static_gpu_vertices(&game.world, eye_default, time_of_day, &mut gpu_static_verts);
+    let _eye_default = [0.0f32, 50.0, -50.0];
+    render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
     ctx.upload_static_vertices(&gpu_static_verts);
     eprintln!("Static GPU verts: {} ({:.1}MB)", gpu_static_verts.len(),
         gpu_static_verts.len() as f64 * 28.0 / 1_000_000.0);
@@ -263,7 +261,7 @@ fn main() {
             let look = custom_look.unwrap_or([0.0, 0.0, 0.0]);
 
             // Re-upload static verts with correct eye for lighting/fog
-            render::generate_static_gpu_vertices(&game.world, pos, time_of_day, &mut gpu_static_verts);
+            render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
             ctx.upload_static_vertices(&gpu_static_verts);
 
             let cam = CameraSpec { pos, look };
@@ -278,7 +276,7 @@ fn main() {
                 let pos = [angle.cos() * radius, height, angle.sin() * radius];
                 let look = [0.0, 0.0, 0.0];
 
-                render::generate_static_gpu_vertices(&game.world, pos, time_of_day, &mut gpu_static_verts);
+                render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
                 ctx.upload_static_vertices(&gpu_static_verts);
 
                 let cam = CameraSpec { pos, look };
@@ -314,7 +312,7 @@ fn main() {
                     _ => time_of_day,
                 };
 
-                render::generate_static_gpu_vertices(&game.world, *pos, t, &mut gpu_static_verts);
+                render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
                 ctx.upload_static_vertices(&gpu_static_verts);
 
                 let cam = CameraSpec { pos: *pos, look: *look };
@@ -330,7 +328,7 @@ fn main() {
                 ("buildings", [25.0, 10.0, -25.0], [25.0, 5.0, -10.0]),
             ];
             for (name, pos, look) in &shots {
-                render::generate_static_gpu_vertices(&game.world, *pos, time_of_day, &mut gpu_static_verts);
+                render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
                 ctx.upload_static_vertices(&gpu_static_verts);
 
                 let cam = CameraSpec { pos: *pos, look: *look };

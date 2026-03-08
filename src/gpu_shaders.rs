@@ -1,5 +1,5 @@
 // SPIR-V graphics shader binaries (vertex + fragment), built programmatically
-// Vertex: push-constant VP matrix transform + color pass-through
+// Vertex: VP transform + GPU-side lighting (sun, ambient, fog) via push constants
 // Fragment: writes interpolated color to attachment
 
 #![allow(unused)]
@@ -34,6 +34,8 @@ macro_rules! emit_str {
 
 // SPIR-V opcodes
 const OP_CAP: u16 = 17;
+const OP_EXT_INST_IMPORT: u16 = 11;
+const OP_EXT_INST: u16 = 12;
 const OP_MEM_MODEL: u16 = 14;
 const OP_ENTRY: u16 = 15;
 const OP_EXEC_MODE: u16 = 16;
@@ -57,7 +59,14 @@ const OP_LOAD: u16 = 61;
 const OP_STORE: u16 = 62;
 const OP_RETURN: u16 = 253;
 const OP_COMPOSITE_CONSTRUCT: u16 = 80;
+const OP_COMPOSITE_EXTRACT: u16 = 81;
+const OP_VECTOR_SHUFFLE: u16 = 79;
 const OP_MAT_TIMES_VEC: u16 = 145;
+const OP_VEC_TIMES_SCALAR: u16 = 142;
+const OP_DOT: u16 = 148;
+const OP_FMUL: u16 = 133;
+const OP_FADD: u16 = 129;
+const OP_FSUB: u16 = 131;
 
 // Decoration values
 const DEC_BUILTIN: u32 = 11;
@@ -86,67 +95,142 @@ fn header(s: &mut Vec<u32>, bound: u32) {
     s[4] = 0;
 }
 
-/// Vertex shader: VP matrix transform + color pass-through
+/// Vertex shader: VP transform + GPU-side lighting/fog
 ///
-/// Inputs:  location 0 = vec3 position, location 1 = vec4 color (B8G8R8A8_UNORM auto-unpacked)
-/// Outputs: gl_Position (BuiltIn), location 0 = vec4 fragColor
-/// Push constants: mat4 VP (64 bytes)
+/// Inputs:  location 0 = vec3 position, location 1 = vec4 color (B8G8R8A8_UNORM), location 2 = vec3 normal
+/// Outputs: gl_Position (BuiltIn), location 0 = vec4 fragColor (lit + fogged)
+/// Push constants (128 bytes):
+///   mat4 VP                          (offset 0,  64 bytes)
+///   vec4 light_dir_ambient           (offset 64, xyz=light_dir, w=ambient)
+///   vec4 sun_fog_params              (offset 80, x=sun_strength, y=fog_dist_sq_inv)
+///   vec4 fog_color                   (offset 96, xyz=fog_color normalized 0-1)
+///   vec4 eye_pos                     (offset 112, xyz=camera position)
 pub fn build_vertex_shader() -> Vec<u32> {
     let mut s: Vec<u32> = vec![0; 5];
 
-    // ID assignments
-    let ty_void = 1u32;
-    let ty_fn_void = 2;
-    let ty_float = 3;
-    let ty_uint = 4;
-    let ty_vec3 = 5;
-    let ty_vec4 = 6;
-    let ty_mat4 = 7;
-    let ty_ptr_in_vec3 = 8;
-    let ty_ptr_in_vec4 = 9;
-    let ty_ptr_out_vec4 = 10;
-    let ty_pc_struct = 11;
-    let ty_ptr_pc = 12;
-    let ty_ptr_pc_mat4 = 13;
-    let in_pos = 14;
-    let in_color = 15;
-    let gl_position = 16;
-    let out_frag_color = 17;
-    let pc_var = 18;
-    let c_0u = 19;
-    let c_1f = 20;
-    let main_fn = 21;
-    let lbl_entry = 22;
-    // Temps
-    let r_pos = 23u32;       // loaded vec3 position
-    let r_pos4 = 24;         // vec4(pos, 1.0)
-    let r_vp_ptr = 25;       // pointer to VP matrix
-    let r_vp = 26;           // loaded VP matrix
-    let r_clip_pos = 27;     // VP * pos4
-    let r_color = 28;        // loaded color
-    let bound = 29u32;
+    // GLSL.std.450 import
+    let glsl = 1u32;
 
-    // Capability: Shader
-    emit!(s, OP_CAP, 1);
+    // Type IDs
+    let ty_void = 2u32;
+    let ty_fn_void = 3;
+    let ty_float = 4;
+    let ty_uint = 5;
+    let ty_vec3 = 6;
+    let ty_vec4 = 7;
+    let ty_mat4 = 8;
+    let ty_ptr_in_vec3 = 9;
+    let ty_ptr_in_vec4 = 10;
+    let ty_ptr_out_vec4 = 11;
+    let ty_pc_struct = 12;
+    let ty_ptr_pc = 13;
+    let ty_ptr_pc_mat4 = 14;
+    let ty_ptr_pc_vec4 = 15;
 
-    // Memory model: Logical, GLSL450
+    // Variable IDs
+    let in_pos = 16;
+    let in_color = 17;
+    let in_normal = 18;
+    let gl_position = 19;
+    let out_frag_color = 20;
+    let pc_var = 21;
+
+    // Constant IDs
+    let c_0u = 22;
+    let c_1u = 23;
+    let c_2u = 24;
+    let c_3u = 25;
+    let c_4u = 26;
+    let c_0f = 27;
+    let c_1f = 28;
+    let c_01f = 29;
+    let c_13f = 30;
+
+    // Function IDs
+    let main_fn = 31;
+    let lbl_entry = 32;
+
+    // Temp result IDs
+    let r_pos = 33u32;
+    let r_color = 34;
+    let r_normal = 35;
+    let r_pos4 = 36;
+    let r_vp_ptr = 37;
+    let r_vp = 38;
+    let r_clip_pos = 39;
+    // Push constant loads
+    let r_ld_ptr = 40;
+    let r_ld_vec = 41;
+    let r_light_dir = 42;
+    let r_ambient = 43;
+    let r_sf_ptr = 44;
+    let r_sf_vec = 45;
+    let r_sun_str = 46;
+    let r_fog_inv = 47;
+    let r_fc_ptr = 48;
+    let r_fc_vec = 49;
+    let r_fog_rgb = 50;
+    let r_ep_ptr = 51;
+    let r_ep_vec = 52;
+    let r_eye_xyz = 53;
+    // Lighting
+    let r_sun_dot = 54;
+    let r_sun_max = 55;
+    let r_sun_lit = 56;
+    let r_int_raw = 57;
+    let r_intensity = 58;
+    // Fog
+    let r_to_eye = 59;
+    let r_dist_sq = 60;
+    let r_fog_raw = 61;
+    let r_fog_sq = 62;
+    // Color mixing
+    let r_color_rgb = 63;
+    let r_lit_rgb = 64;
+    let r_inv_fog = 65;
+    let r_lit_scaled = 66;
+    let r_fog_scaled = 67;
+    let r_final_rgb = 68;
+    let r_final = 69;
+
+    let bound = 70u32;
+
+    // --- Preamble (must follow SPIR-V logical layout order) ---
+
+    // 1. Capability
+    emit!(s, OP_CAP, 1); // Shader
+
+    // 2. ExtInstImport
+    emit_str!(s, OP_EXT_INST_IMPORT, [glsl], "GLSL.std.450", []);
+
+    // 3. Memory model: Logical, GLSL450
     emit!(s, OP_MEM_MODEL, 0, 1);
 
-    // Entry point: Vertex shader
-    // ExecutionModel 0 = Vertex
-    emit_str!(s, OP_ENTRY, [0, main_fn], "main", [in_pos, in_color, gl_position, out_frag_color]);
+    // 4. Entry point: Vertex shader
+    emit_str!(s, OP_ENTRY, [0, main_fn], "main",
+        [in_pos, in_color, in_normal, gl_position, out_frag_color]);
 
-    // Decorations
+    // --- Decorations ---
     emit!(s, OP_DECORATE, in_pos, DEC_LOCATION, 0);
     emit!(s, OP_DECORATE, in_color, DEC_LOCATION, 1);
+    emit!(s, OP_DECORATE, in_normal, DEC_LOCATION, 2);
     emit!(s, OP_DECORATE, gl_position, DEC_BUILTIN, BI_POSITION);
     emit!(s, OP_DECORATE, out_frag_color, DEC_LOCATION, 0);
     emit!(s, OP_DECORATE, ty_pc_struct, DEC_BLOCK);
+    // Member 0: mat4 VP
     emit!(s, OP_MEMBER_DEC, ty_pc_struct, 0, DEC_OFFSET, 0);
     emit!(s, OP_MEMBER_DEC, ty_pc_struct, 0, DEC_COL_MAJOR);
     emit!(s, OP_MEMBER_DEC, ty_pc_struct, 0, DEC_MAT_STRIDE, 16);
+    // Member 1: vec4 light_dir_ambient
+    emit!(s, OP_MEMBER_DEC, ty_pc_struct, 1, DEC_OFFSET, 64);
+    // Member 2: vec4 sun_fog_params
+    emit!(s, OP_MEMBER_DEC, ty_pc_struct, 2, DEC_OFFSET, 80);
+    // Member 3: vec4 fog_color
+    emit!(s, OP_MEMBER_DEC, ty_pc_struct, 3, DEC_OFFSET, 96);
+    // Member 4: vec4 eye_pos
+    emit!(s, OP_MEMBER_DEC, ty_pc_struct, 4, DEC_OFFSET, 112);
 
-    // Types
+    // --- Types ---
     emit!(s, OP_TYPE_VOID, ty_void);
     emit!(s, OP_TYPE_FN, ty_fn_void, ty_void);
     emit!(s, OP_TYPE_FLOAT, ty_float, 32);
@@ -157,42 +241,88 @@ pub fn build_vertex_shader() -> Vec<u32> {
     emit!(s, OP_TYPE_PTR, ty_ptr_in_vec3, SC_INPUT, ty_vec3);
     emit!(s, OP_TYPE_PTR, ty_ptr_in_vec4, SC_INPUT, ty_vec4);
     emit!(s, OP_TYPE_PTR, ty_ptr_out_vec4, SC_OUTPUT, ty_vec4);
-    emit!(s, OP_TYPE_STRUCT, ty_pc_struct, ty_mat4);
+    emit!(s, OP_TYPE_STRUCT, ty_pc_struct, ty_mat4, ty_vec4, ty_vec4, ty_vec4, ty_vec4);
     emit!(s, OP_TYPE_PTR, ty_ptr_pc, SC_PUSH_CONST, ty_pc_struct);
     emit!(s, OP_TYPE_PTR, ty_ptr_pc_mat4, SC_PUSH_CONST, ty_mat4);
+    emit!(s, OP_TYPE_PTR, ty_ptr_pc_vec4, SC_PUSH_CONST, ty_vec4);
 
-    // Variables
+    // --- Variables ---
     emit!(s, OP_VAR, ty_ptr_in_vec3, in_pos, SC_INPUT);
     emit!(s, OP_VAR, ty_ptr_in_vec4, in_color, SC_INPUT);
+    emit!(s, OP_VAR, ty_ptr_in_vec3, in_normal, SC_INPUT);
     emit!(s, OP_VAR, ty_ptr_out_vec4, gl_position, SC_OUTPUT);
     emit!(s, OP_VAR, ty_ptr_out_vec4, out_frag_color, SC_OUTPUT);
     emit!(s, OP_VAR, ty_ptr_pc, pc_var, SC_PUSH_CONST);
 
-    // Constants
+    // --- Constants ---
     emit!(s, OP_CONST, ty_uint, c_0u, 0);
-    emit!(s, OP_CONST, ty_float, c_1f, 0x3F800000u32); // 1.0f
+    emit!(s, OP_CONST, ty_uint, c_1u, 1);
+    emit!(s, OP_CONST, ty_uint, c_2u, 2);
+    emit!(s, OP_CONST, ty_uint, c_3u, 3);
+    emit!(s, OP_CONST, ty_uint, c_4u, 4);
+    emit!(s, OP_CONST, ty_float, c_0f, 0u32);                   // 0.0
+    emit!(s, OP_CONST, ty_float, c_1f, 0x3F800000u32);          // 1.0
+    emit!(s, OP_CONST, ty_float, c_01f, 0.1_f32.to_bits());     // 0.1
+    emit!(s, OP_CONST, ty_float, c_13f, 1.3_f32.to_bits());     // 1.3
 
-    // Function
+    // --- Function ---
     emit!(s, OP_FN, ty_void, main_fn, 0, ty_fn_void);
     emit!(s, OP_LABEL, lbl_entry);
 
-    // Load position
+    // Load vertex inputs
     emit!(s, OP_LOAD, ty_vec3, r_pos, in_pos);
+    emit!(s, OP_LOAD, ty_vec4, r_color, in_color);
+    emit!(s, OP_LOAD, ty_vec3, r_normal, in_normal);
 
-    // Construct vec4(pos, 1.0)
+    // Transform: gl_Position = VP * vec4(pos, 1.0)
     emit!(s, OP_COMPOSITE_CONSTRUCT, ty_vec4, r_pos4, r_pos, c_1f);
-
-    // Load VP matrix from push constants
     emit!(s, OP_ACCESS, ty_ptr_pc_mat4, r_vp_ptr, pc_var, c_0u);
     emit!(s, OP_LOAD, ty_mat4, r_vp, r_vp_ptr);
-
-    // gl_Position = VP * vec4(pos, 1.0)
     emit!(s, OP_MAT_TIMES_VEC, ty_vec4, r_clip_pos, r_vp, r_pos4);
     emit!(s, OP_STORE, gl_position, r_clip_pos);
 
-    // fragColor = inColor
-    emit!(s, OP_LOAD, ty_vec4, r_color, in_color);
-    emit!(s, OP_STORE, out_frag_color, r_color);
+    // Load push constants: lighting params
+    emit!(s, OP_ACCESS, ty_ptr_pc_vec4, r_ld_ptr, pc_var, c_1u);
+    emit!(s, OP_LOAD, ty_vec4, r_ld_vec, r_ld_ptr);
+    emit!(s, OP_VECTOR_SHUFFLE, ty_vec3, r_light_dir, r_ld_vec, r_ld_vec, 0, 1, 2);
+    emit!(s, OP_COMPOSITE_EXTRACT, ty_float, r_ambient, r_ld_vec, 3);
+
+    emit!(s, OP_ACCESS, ty_ptr_pc_vec4, r_sf_ptr, pc_var, c_2u);
+    emit!(s, OP_LOAD, ty_vec4, r_sf_vec, r_sf_ptr);
+    emit!(s, OP_COMPOSITE_EXTRACT, ty_float, r_sun_str, r_sf_vec, 0);
+    emit!(s, OP_COMPOSITE_EXTRACT, ty_float, r_fog_inv, r_sf_vec, 1);
+
+    emit!(s, OP_ACCESS, ty_ptr_pc_vec4, r_fc_ptr, pc_var, c_3u);
+    emit!(s, OP_LOAD, ty_vec4, r_fc_vec, r_fc_ptr);
+    emit!(s, OP_VECTOR_SHUFFLE, ty_vec3, r_fog_rgb, r_fc_vec, r_fc_vec, 0, 1, 2);
+
+    emit!(s, OP_ACCESS, ty_ptr_pc_vec4, r_ep_ptr, pc_var, c_4u);
+    emit!(s, OP_LOAD, ty_vec4, r_ep_vec, r_ep_ptr);
+    emit!(s, OP_VECTOR_SHUFFLE, ty_vec3, r_eye_xyz, r_ep_vec, r_ep_vec, 0, 1, 2);
+
+    // Lighting: intensity = clamp(max(dot(normal, light_dir), 0.0) * sun_strength + ambient, 0.1, 1.3)
+    emit!(s, OP_DOT, ty_float, r_sun_dot, r_normal, r_light_dir);
+    emit!(s, OP_EXT_INST, ty_float, r_sun_max, glsl, 40, r_sun_dot, c_0f);   // FMax
+    emit!(s, OP_FMUL, ty_float, r_sun_lit, r_sun_max, r_sun_str);
+    emit!(s, OP_FADD, ty_float, r_int_raw, r_sun_lit, r_ambient);
+    emit!(s, OP_EXT_INST, ty_float, r_intensity, glsl, 43, r_int_raw, c_01f, c_13f); // FClamp
+
+    // Fog: fog_sq = min(dot(eye-pos, eye-pos) * fog_dist_sq_inv, 1.0)
+    emit!(s, OP_FSUB, ty_vec3, r_to_eye, r_eye_xyz, r_pos);
+    emit!(s, OP_DOT, ty_float, r_dist_sq, r_to_eye, r_to_eye);
+    emit!(s, OP_FMUL, ty_float, r_fog_raw, r_dist_sq, r_fog_inv);
+    emit!(s, OP_EXT_INST, ty_float, r_fog_sq, glsl, 37, r_fog_raw, c_1f);    // FMin
+
+    // Final color: mix(color.rgb * intensity, fog_color, fog_sq)
+    emit!(s, OP_VECTOR_SHUFFLE, ty_vec3, r_color_rgb, r_color, r_color, 0, 1, 2);
+    emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_lit_rgb, r_color_rgb, r_intensity);
+    emit!(s, OP_FSUB, ty_float, r_inv_fog, c_1f, r_fog_sq);
+    emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_lit_scaled, r_lit_rgb, r_inv_fog);
+    emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_fog_scaled, r_fog_rgb, r_fog_sq);
+    emit!(s, OP_FADD, ty_vec3, r_final_rgb, r_lit_scaled, r_fog_scaled);
+    emit!(s, OP_COMPOSITE_CONSTRUCT, ty_vec4, r_final, r_final_rgb, c_1f);
+
+    emit!(s, OP_STORE, out_frag_color, r_final);
 
     emit!(s, OP_RETURN);
     emit!(s, OP_FN_END);

@@ -102,14 +102,12 @@ fn main() {
     let mut render_scratch: Vec<state::WorldTri> = Vec::with_capacity(16384);
     let mut gpu_static_verts: Vec<gpu::GpuVertex> = Vec::with_capacity(1024 * 1024);
     let mut gpu_dynamic_verts: Vec<gpu::GpuVertex> = Vec::with_capacity(256 * 1024);
-    let mut static_regen_timer: f32 = 0.0;
 
-    // Pre-generate and upload static GPU vertices
+    // Upload static GPU vertices once (lighting computed in shader, never needs regen)
     if gpu.as_ref().is_some_and(|g| g.has_graphics()) {
-        let eye = [game.camera.x, game.camera.y, game.camera.z];
-        render::generate_static_gpu_vertices(&game.world, eye, game.time_of_day, &mut gpu_static_verts);
+        render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
         gpu.as_mut().unwrap().upload_static_vertices(&gpu_static_verts);
-        eprintln!("Static GPU verts: {} ({:.1}MB)", gpu_static_verts.len(),
+        eprintln!("Static GPU verts: {} ({:.1}MB) — uploaded once", gpu_static_verts.len(),
             gpu_static_verts.len() as f64 * 28.0 / 1_000_000.0);
     }
     let mut last_frame = Instant::now();
@@ -147,10 +145,10 @@ fn main() {
         frame_stats.report_timer += frame_dt;
         if frame_stats.report_timer >= 5.0 {
             frame_stats.report_timer = 0.0;
-            eprintln!("FPS avg={:.0} 1%low={:.0} 0.1%low={:.0} | tris={}+{} | {}x{}",
+            eprintln!("FPS avg={:.0} 1%low={:.0} 0.1%low={:.0} | sverts={} dverts={} | {}x{}",
                 frame_stats.avg_fps(), frame_stats.percentile_fps(1.0),
                 frame_stats.percentile_fps(0.1),
-                game.world.static_tris.len(), render_scratch.len(),
+                gpu_static_verts.len(), gpu_dynamic_verts.len(),
                 fb.w, fb.h);
         }
 
@@ -276,41 +274,30 @@ fn main() {
         // Always render (frozen scene when paused)
         let use_gpu = gpu.as_ref().is_some_and(|g| g.has_graphics());
 
-        // Regenerate static verts periodically (lighting changes with time of day)
-        if use_gpu {
-            static_regen_timer += frame_dt;
-            if static_regen_timer >= 10.0 {
-                static_regen_timer = 0.0;
-                let eye = [game.camera.x, game.camera.y, game.camera.z];
-                render::generate_static_gpu_vertices(&game.world, eye, game.time_of_day, &mut gpu_static_verts);
-                gpu.as_mut().unwrap().upload_static_vertices(&gpu_static_verts);
-            }
-        }
-
         if use_gpu {
             // GPU offscreen render path
             let ctx = gpu.as_mut().unwrap();
             ctx.resize_render_target(fb.w as u32, fb.h as u32);
 
-            // Generate dynamic vertices
+            // Generate dynamic vertices (no CPU lighting — shader handles it)
             render::generate_dynamic_gpu_vertices(
                 &game.world, &game.player, &game.camera,
-                game.time_of_day, &mut render_scratch, &mut gpu_dynamic_verts,
+                &mut render_scratch, &mut gpu_dynamic_verts,
             );
 
-            // Build VP matrix (Vulkan depth [0,1] + Y-flip)
+            // Build VP matrix (Vulkan depth [0,1] + Y-flip) + lighting push constants
             let aspect = fb.w as f32 / fb.h as f32;
             let eye = [game.camera.x, game.camera.y, game.camera.z];
             let target = [game.camera.tx, game.camera.ty, game.camera.tz];
             let view = math::m4_look_at(eye, target, [0.0, 1.0, 0.0]);
             let proj = math::m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.1, 500.0);
             let vp = math::m4_mul(&proj, &view);
+            let push = render::gpu_push_constants(game.time_of_day, eye, &vp);
 
             let clear = render::sky_color_f32(game.time_of_day);
-            ctx.render_frame(&gpu_dynamic_verts, &vp, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
+            ctx.render_frame(&gpu_dynamic_verts, &push, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
 
-            // CPU overlays on top of GPU output
-            fb.zbuf.fill(1.0);
+            // CPU overlays on top of GPU output (no zbuf clear needed — 2D overlays)
             particle::sys_render_particles(&mut fb, &particles, &game.camera);
             hud::sys_hud(&mut fb, &game);
             menu::sys_menu_render(

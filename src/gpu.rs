@@ -8,7 +8,7 @@ use std::ptr;
 
 use crate::gpu_kernels;
 use crate::gpu_shaders;
-use crate::math::Mat4;
+// math types used via GpuPushConstants
 
 // --- libc ---
 unsafe extern "C" {
@@ -138,7 +138,7 @@ const VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: u32 = 3;
 const VK_POLYGON_MODE_FILL: u32 = 0;
 const VK_CULL_MODE_BACK_BIT: u32 = 2;
 const _VK_FRONT_FACE_COUNTER_CLOCKWISE: u32 = 0;
-const VK_FRONT_FACE_CLOCKWISE: u32 = 1;
+const _VK_FRONT_FACE_CLOCKWISE: u32 = 1;
 const VK_COMPARE_OP_LESS: u32 = 1;
 const VK_DYNAMIC_STATE_VIEWPORT: u32 = 0;
 const VK_DYNAMIC_STATE_SCISSOR: u32 = 1;
@@ -956,6 +956,17 @@ pub struct GpuVertex {
     pub pos: [f32; 3],
     pub color_packed: u32,
     pub normal: [f32; 3],
+}
+
+/// Push constants for GPU lighting (128 bytes, fits Vulkan minimum guarantee)
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct GpuPushConstants {
+    pub vp: [f32; 16],                    // mat4 VP matrix (64 bytes)
+    pub light_dir_ambient: [f32; 4],      // xyz=light_dir, w=ambient
+    pub sun_fog_params: [f32; 4],         // x=sun_strength, y=fog_dist_sq_inv
+    pub fog_color: [f32; 4],              // xyz=fog_color (0-1 normalized)
+    pub eye_pos: [f32; 4],                // xyz=camera position
 }
 
 // --- Render target (offscreen color+depth+readback) ---
@@ -1949,11 +1960,11 @@ impl GpuContext {
                 p_dynamic_states: dynamic_states.as_ptr(),
             };
 
-            // Pipeline layout: push constants = Mat4 VP (64 bytes) at vertex stage
+            // Pipeline layout: push constants = 128 bytes (VP + lighting) at vertex stage
             let push_range = VkPushConstantRange {
                 stage_flags: VK_SHADER_STAGE_VERTEX_BIT,
                 offset: 0,
-                size: 64,
+                size: 128,
             };
             let pipe_layout_info = VkPipelineLayoutCreateInfo {
                 s_type: VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -2161,7 +2172,7 @@ impl GpuContext {
     pub fn render_frame(
         &mut self,
         dynamic_verts: &[GpuVertex],
-        vp_matrix: &Mat4,
+        push_constants: &GpuPushConstants,
         clear_color: [f32; 4],
         width: u32,
         height: u32,
@@ -2278,7 +2289,7 @@ impl GpuContext {
             (self.fns.cmd_set_scissor)(cmd, 0, 1, &scissor);
             (self.fns.cmd_push_constants)(
                 cmd, gfx_layout, VK_SHADER_STAGE_VERTEX_BIT,
-                0, 64, vp_matrix.as_ptr() as *const c_void,
+                0, 128, push_constants as *const GpuPushConstants as *const c_void,
             );
 
             // Draw static vertices
