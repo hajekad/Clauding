@@ -2862,14 +2862,22 @@ pub fn generate_world(game: &mut GameState) {
     }
 
     // Items: Health, Money, Stamina only (Food/Water from vending machines)
+    // Spawn on walkable terrain — not on roads, not in collision zones, not on river
     let item_kinds = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina];
     for _ in 0..NUM_ITEMS {
         let mut x;
         let mut z;
+        let mut attempts = 0;
         loop {
             x = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
             z = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-            if !on_any_road(x, z, &game.road_network) { break; }
+            attempts += 1;
+            if on_any_road(x, z, &game.road_network) { continue; }
+            if attempts <= 20 {
+                if check_npc_walk_collision(&game.world, x, z, 0.5, usize::MAX) { continue; }
+                if on_river_not_bridge(x, z, &game.world.river_segments, &game.world.bridges) { continue; }
+            }
+            break;
         }
         let y = game.terrain.height_at(x, z);
         let kind = item_kinds[rng.next() as usize % 3];

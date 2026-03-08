@@ -125,7 +125,7 @@ fn main() {
         clauding::vehicle::sys_vehicle(&mut game, dt);
         npc::sys_npc(&mut game.world, &mut game.road_network, &game.terrain,
             dt, game.time_of_day, &mut game.neat_brains, 0.0, 0.0);
-        npc::sys_night_spawning(&mut game.world, &game.terrain, game.time_of_day, dt, &mut game.spawn_rng);
+        npc::sys_night_spawning(&mut game.world, &game.terrain, game.time_of_day, dt, &mut game.spawn_rng, &game.road_network);
         npc::sys_items_update(&mut game.world, dt);
         npc::sys_npc_interactions(&mut game.world, dt);
         npc::sys_hunger_thirst(&mut game.world, &mut game.player, dt);

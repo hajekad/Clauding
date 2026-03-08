@@ -44,6 +44,8 @@ fn main() {
     // Aggregate counters
     let mut _snapshot_count: u32 = 0;
     let mut state_time_accum = [0u32; 8]; // ticks in each NPC state
+    let mut total_items_picked: u32 = 0; // accumulated across all days (survives midnight reset)
+    let mut total_items_deposited: u32 = 0;
 
     // Per-hour snapshots
     let mut prev_time_of_day: f32 = game.time_of_day;
@@ -60,13 +62,19 @@ fn main() {
         game.time_of_day += FIXED_DT * 24.0 / state::DAY_LENGTH;
         if game.time_of_day >= 24.0 { game.time_of_day -= 24.0; }
 
+        // Capture pre-reset metrics before midnight clears them
+        if prev_time_of_day > 23.5 && game.time_of_day < 0.5 {
+            for npc in &game.world.npcs {
+                total_items_picked += npc.fitness_items_picked;
+                total_items_deposited += npc.items_deposited_today;
+            }
+        }
         // Midnight reset
         if npc::sys_midnight_reset(
             &mut game.world, game.time_of_day, prev_time_of_day,
             &mut game.neat_population, &mut game.neat_brains,
         ) {
             game.day_count += 1;
-            // Reset daily counters for new day tracking
             let _ = writeln!(out, "--- DAY {} RESET (gen {}) ---", game.day_count, game.neat_population.generation);
         }
 
@@ -79,7 +87,7 @@ fn main() {
         );
         npc::sys_night_spawning(
             &mut game.world, &game.terrain, game.time_of_day,
-            FIXED_DT, &mut game.spawn_rng,
+            FIXED_DT, &mut game.spawn_rng, &game.road_network,
         );
         npc::sys_items_update(&mut game.world, FIXED_DT);
         npc::sys_npc_interactions(&mut game.world, FIXED_DT);
@@ -240,14 +248,14 @@ fn main() {
     let _ = writeln!(out, "  NPC homes (first 100): NW={} NE={} SW={} SE={}", hq[0], hq[1], hq[2], hq[3]);
     let _ = writeln!(out, "  NPC homes: near_center(<50m)={} far_out(>150m)={}", home_near, home_far);
 
-    // Item economy
+    // Item economy — use accumulated totals plus current (incomplete) day
     let items_active = game.world.items.iter().filter(|it| it.active).count();
-    let total_picked: u32 = game.world.npcs.iter().map(|n| n.fitness_items_picked).sum();
-    let total_dep: u32 = game.world.npcs.iter().map(|n| n.items_deposited_today).sum();
+    let cur_picked: u32 = game.world.npcs.iter().map(|n| n.fitness_items_picked).sum();
+    let cur_dep: u32 = game.world.npcs.iter().map(|n| n.items_deposited_today).sum();
     let _ = writeln!(out, "\n--- ITEM ECONOMY ---");
     let _ = writeln!(out, "  Active items: {}/{}", items_active, state::NUM_ITEMS);
-    let _ = writeln!(out, "  Total picked (last day): {}", total_picked);
-    let _ = writeln!(out, "  Total deposited (last day): {}", total_dep);
+    let _ = writeln!(out, "  Total picked (all days): {}", total_items_picked + cur_picked);
+    let _ = writeln!(out, "  Total deposited (all days): {}", total_items_deposited + cur_dep);
     let total_npc_money: f32 = game.world.npcs.iter().map(|n| n.money).sum();
     let avg_npc_money = total_npc_money / n_npcs.max(1) as f32;
     let _ = writeln!(out, "  Total NPC money: ${:.0} (avg ${:.0})", total_npc_money, avg_npc_money);

@@ -88,9 +88,14 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
                 push_z = pz * sign;
             }
         }
-        // Push outward strongly
-        npc.x += push_x * 5.0 * dt;
-        npc.z += push_z * 5.0 * dt;
+        // Strong push outward — must exceed walking speed
+        npc.x += push_x * 20.0 * dt;
+        npc.z += push_z * 20.0 * dt;
+        // If still on river after push, snap to bank
+        if on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) {
+            npc.x += push_x * best_dist * 1.5;
+            npc.z += push_z * best_dist * 1.5;
+        }
     }
 }
 
@@ -776,11 +781,8 @@ fn unclaim_item(world: &mut WorldData, npc_idx: usize) {
 // Night sky spawning system
 pub fn sys_night_spawning(
     world: &mut WorldData, terrain: &Terrain, time_of_day: f32,
-    dt: f32, rng: &mut Rng,
+    dt: f32, rng: &mut Rng, _road_network: &RoadNetwork,
 ) {
-    // Active during night hours (20:00–04:00)
-    let is_night = time_of_day >= NIGHT_SPAWN_START || time_of_day < NIGHT_SPAWN_END;
-
     // Update falling items
     for item in &mut world.items {
         if item.falling {
@@ -800,19 +802,36 @@ pub fn sys_night_spawning(
     let active_count = world.items.iter().filter(|it| it.active || it.falling).count();
     if active_count >= NUM_ITEMS { return; }
 
-    // Spawn multiple items per tick based on deficit (up to 5 per tick to keep up with collection)
+    // Spawn rate: full speed at night, slightly reduced during day
+    let is_night = time_of_day >= NIGHT_SPAWN_START || time_of_day < NIGHT_SPAWN_END;
+    let spawn_interval = if is_night { NIGHT_SPAWN_INTERVAL } else { NIGHT_SPAWN_INTERVAL * 1.5 };
+
+    // Spawn multiple items per tick based on deficit
     let deficit = NUM_ITEMS - active_count;
-    let max_spawns = (deficit / 5).max(1).min(10); // spawn more when deficit is larger
+    let max_spawns = (deficit / 5).max(1).min(10);
     for _ in 0..max_spawns {
-    if (rng.next() as f32 / u64::MAX as f32) < (dt / NIGHT_SPAWN_INTERVAL) {
-        // 70% chance to spawn near town (within 150m), 30% anywhere
-        let (x, z) = if rng.next() % 10 < 7 {
-            (rng.range(-150.0, 150.0), rng.range(-150.0, 150.0))
-        } else {
-            (rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0), rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0))
-        };
+    if (rng.next() as f32 / u64::MAX as f32) < (dt / spawn_interval) {
+        // Spawn near roads/walkable areas so NPCs can actually reach them
+        let mut x;
+        let mut z;
+        let mut attempts = 0;
+        loop {
+            // 70% near town, 30% anywhere
+            if rng.next() % 10 < 7 {
+                x = rng.range(-150.0, 150.0);
+                z = rng.range(-150.0, 150.0);
+            } else {
+                x = rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0);
+                z = rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0);
+            }
+            attempts += 1;
+            // Reject items in collision zones or on river (max 10 attempts, then accept)
+            if attempts >= 10 { break; }
+            if check_npc_walk_collision(world, x, z, 0.5, usize::MAX) { continue; }
+            if on_river_not_bridge(x, z, &world.river_segments, &world.bridges) { continue; }
+            break;
+        }
         let y = 40.0 + rng.range(0.0, 20.0);
-        // Only Health, Money, Stamina (Food/Water from vending machines)
         let kind = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina][rng.next() as usize % 3];
 
         // Find an inactive item slot to reuse, or push new
@@ -906,10 +925,20 @@ pub fn sys_midnight_reset(
         // Reset trash bins
         for bin in &mut world.trash_bins {
             bin.items_held = 0;
+            bin.carried_by = None;
+        }
+        // Clear stale item claims — NPCs no longer target these after reset
+        for item in &mut world.items {
+            item.claimed_by = None;
+            item.skip_until = 0.0;
         }
         // Reset NPC daily counters
         for npc in &mut world.npcs {
             npc.items_deposited_today = 0;
+            npc.stuck_timer = 0.0;
+            npc.stuck_count = 0;
+            npc.detouring = false;
+            npc.wander_cooldown = 0.0;
         }
         return true; // day changed
     }

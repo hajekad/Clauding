@@ -79,7 +79,7 @@ fn main() {
         );
         npc::sys_night_spawning(
             &mut game.world, &game.terrain, game.time_of_day,
-            FIXED_DT, &mut game.spawn_rng,
+            FIXED_DT, &mut game.spawn_rng, &game.road_network,
         );
         npc::sys_items_update(&mut game.world, FIXED_DT);
         npc::sys_npc_interactions(&mut game.world, FIXED_DT);
