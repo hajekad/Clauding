@@ -1,7 +1,7 @@
 // NPC life simulation: state machine, physics, pathfinding, item pickup/deposit, night spawning
 
 use crate::state::*;
-use crate::world::{check_npc_walk_collision, surface_at, point_to_segment_dist, on_river_not_bridge};
+use crate::world::{check_npc_walk_collision, surface_at, point_to_segment_dist, on_river_not_bridge, on_any_road};
 use crate::rng::Rng;
 
 // Home task duration: 4 game-hours = 4 * 60 = 240 real seconds
@@ -857,11 +857,18 @@ pub fn sys_night_spawning(
         let mut z;
         let mut attempts = 0;
         loop {
-            // After many failures, spawn near a road node (guaranteed walkable)
+            // After many failures, spawn near a road node but off the road itself
             if attempts > 30 && !road_network.nodes.is_empty() {
                 let ni = rng.next() as usize % road_network.nodes.len();
-                x = road_network.nodes[ni][0] + rng.range(-5.0, 5.0);
-                z = road_network.nodes[ni][1] + rng.range(-5.0, 5.0);
+                // Offset 10-20m from node to land on terrain, not road surface
+                let angle = rng.range(0.0, std::f32::consts::TAU);
+                let dist = rng.range(10.0, 20.0);
+                x = road_network.nodes[ni][0] + angle.cos() * dist;
+                z = road_network.nodes[ni][1] + angle.sin() * dist;
+                if !on_any_road(x, z, road_network) { break; }
+                // If still on road, try once more with bigger offset
+                x = road_network.nodes[ni][0] + angle.cos() * 25.0;
+                z = road_network.nodes[ni][1] + angle.sin() * 25.0;
                 break;
             }
             // 70% near town, 30% anywhere
@@ -873,6 +880,7 @@ pub fn sys_night_spawning(
                 z = rng.range(-WORLD_HALF + 10.0, WORLD_HALF - 10.0);
             }
             attempts += 1;
+            if on_any_road(x, z, road_network) { continue; }
             if check_npc_walk_collision(world, x, z, 0.5, usize::MAX) { continue; }
             if on_river_not_bridge(x, z, &world.river_segments, &world.bridges) { continue; }
             break;

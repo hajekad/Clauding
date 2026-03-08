@@ -129,7 +129,7 @@ fn render_screenshot(
     let view = math::m4_look_at(eye, target, [0.0, 1.0, 0.0]);
     let proj = math::m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.1, 500.0);
     let vp = math::m4_mul(&proj, &view);
-    let push = render::gpu_push_constants(time_of_day, eye, &vp);
+    let push = render::gpu_push_constants(time_of_day, eye, target, &vp);
 
     let clear = render::sky_color_f32(time_of_day);
     ctx.render_frame(dynamic_verts, &push, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);

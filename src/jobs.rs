@@ -80,7 +80,7 @@ fn stuck_recovery(world: &mut WorldData, i: usize, net: &RoadNetwork) {
         return;
     }
 
-    world.npcs[i].wander_cooldown = 3.0;
+    world.npcs[i].wander_cooldown = 2.0;
     pick_wander(world, i, net);
 }
 

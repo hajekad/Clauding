@@ -964,7 +964,7 @@ pub struct GpuVertex {
 pub struct GpuPushConstants {
     pub vp: [f32; 16],                    // mat4 VP matrix (64 bytes)
     pub light_dir_ambient: [f32; 4],      // xyz=light_dir, w=ambient
-    pub sun_fog_params: [f32; 4],         // x=sun_strength, y=fog_dist_sq_inv
+    pub sun_fog_params: [f32; 4],         // x=sun_strength, y=fog_dist_sq_inv, z=fwd_x, w=fwd_z
     pub fog_color: [f32; 4],              // xyz=fog_color (0-1 normalized)
     pub eye_pos: [f32; 4],                // xyz=camera position
 }
@@ -1571,46 +1571,6 @@ impl GpuContext {
         }
     }
 
-    fn create_buffer_usage(&self, size_bytes: usize, usage: u32, mem_flags: u32) -> GpuBuf {
-        unsafe {
-            let buf_info = VkBufferCreateInfo {
-                s_type: VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: 0,
-                size: size_bytes as u64,
-                usage,
-                sharing_mode: VK_SHARING_MODE_EXCLUSIVE,
-                queue_family_index_count: 0,
-                p_queue_family_indices: ptr::null(),
-            };
-            let mut buffer: VkBuffer = 0;
-            (self.fns.create_buffer)(self.device, &buf_info, ptr::null(), &mut buffer);
-
-            let mut reqs = std::mem::zeroed::<VkMemoryRequirements>();
-            (self.fns.get_buf_mem_reqs)(self.device, buffer, &mut reqs);
-
-            let mem_type = find_memory_type(&self.mem_props, reqs.memory_type_bits, mem_flags)
-                .expect("No suitable memory type");
-
-            let alloc_info = VkMemoryAllocateInfo {
-                s_type: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                p_next: ptr::null(),
-                allocation_size: reqs.size,
-                memory_type_index: mem_type,
-            };
-            let mut memory: VkDeviceMemory = 0;
-            (self.fns.alloc_mem)(self.device, &alloc_info, ptr::null(), &mut memory);
-            (self.fns.bind_buf_mem)(self.device, buffer, memory, 0);
-
-            let mut mapped: *mut c_void = ptr::null_mut();
-            if mem_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0 {
-                (self.fns.map_mem)(self.device, memory, 0, VK_WHOLE_SIZE, 0, &mut mapped);
-            }
-
-            GpuBuf { buffer, memory, mapped, size: size_bytes }
-        }
-    }
-
     /// Create buffer, trying preferred memory flags first, then falling back
     fn create_buffer_usage_prefer(&self, size_bytes: usize, usage: u32, preferred: u32, fallback: u32) -> GpuBuf {
         unsafe {
@@ -2014,9 +1974,10 @@ impl GpuContext {
 
             // Create initial vertex buffer (4MB, grows as needed)
             let vbuf_size = 4 * 1024 * 1024;
-            self.dynamic_vbuf = Some(self.create_buffer_usage(
+            self.dynamic_vbuf = Some(self.create_buffer_usage_prefer(
                 vbuf_size,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             ));
         }
@@ -2147,9 +2108,12 @@ impl GpuContext {
             if let Some(old) = self.static_vbuf.take() {
                 self.free_buffer(old);
             }
-            self.static_vbuf = Some(self.create_buffer_usage(
+            // Prefer DEVICE_LOCAL + HOST_VISIBLE (resizable BAR → GPU VRAM, CPU-mappable)
+            // Fallback: HOST_VISIBLE + HOST_COHERENT (system RAM, PCIe reads every frame)
+            self.static_vbuf = Some(self.create_buffer_usage_prefer(
                 vert_bytes,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             ));
         }
@@ -2228,9 +2192,10 @@ impl GpuContext {
                     if vbuf.size < vert_bytes {
                         let old = self.dynamic_vbuf.take().unwrap();
                         self.free_buffer(old);
-                        self.dynamic_vbuf = Some(self.create_buffer_usage(
+                        self.dynamic_vbuf = Some(self.create_buffer_usage_prefer(
                             vert_bytes * 2,
                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                         ));
                     }
@@ -2292,7 +2257,7 @@ impl GpuContext {
                 0, 128, push_constants as *const GpuPushConstants as *const c_void,
             );
 
-            // Draw static vertices
+            // Draw static vertices (single draw call — GPU handles 1.15M verts efficiently)
             if has_static {
                 let svbuf = self.static_vbuf.as_ref().unwrap();
                 let offset: VkDeviceSize = 0;
