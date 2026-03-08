@@ -258,12 +258,14 @@ pub struct TrashBin {
     pub x: f32, pub y: f32, pub z: f32,
     pub items_held: u32,
     pub carried_by: Option<usize>, // NPC index carrying this bin
+    pub terrain_normal: [f32; 3],
 }
 
 pub struct Vehicle {
     pub x: f32, pub y: f32, pub z: f32,
     pub rot_y: f32,
     pub speed: f32,
+    pub terrain_normal: [f32; 3],
     pub color: u32,
     pub occupied: bool,       // player is driving
     pub ai_active: bool,      // AI drives when not occupied and on road
@@ -389,6 +391,7 @@ pub struct Npc {
     // Physics
     pub vel_y: f32,
     pub on_ground: bool,
+    pub terrain_normal: [f32; 3],
     // Life simulation
     pub state: NpcState,
     pub home_idx: usize,         // index into buildings
@@ -492,6 +495,7 @@ pub struct Player {
     pub money: f32,
     pub vel_y: f32,
     pub on_ground: bool,
+    pub terrain_normal: [f32; 3],
     pub walk_phase: f32,
     pub sprinting: bool,
     pub in_vehicle: Option<usize>, // index into vehicles vec
@@ -603,6 +607,7 @@ impl GameState {
                 hunger: 100.0, thirst: 100.0,
                 wanted_vehicle_hit: false, bounty: 0.0,
                 is_female: false,
+                terrain_normal: [0.0, 1.0, 0.0],
             },
             camera: Camera {
                 x: 0.0, y: 8.0, z: 18.0,

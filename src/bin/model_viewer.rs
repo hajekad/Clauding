@@ -549,6 +549,7 @@ fn make_player() -> state::Player {
         hunger: 0.0, thirst: 0.0,
         wanted_vehicle_hit: false, bounty: 0.0,
         is_female: false,
+        terrain_normal: [0.0, 1.0, 0.0],
     }
 }
 
@@ -571,6 +572,7 @@ fn make_vehicle(color: u32) -> state::Vehicle {
         parking_target: None,
         parked: true,
         idle_timer: 0.0,
+        terrain_normal: [0.0, 1.0, 0.0],
     }
 }
 
@@ -619,6 +621,7 @@ fn make_npc(job: state::NpcJob) -> state::Npc {
         wanted: false, bounty: 0.0, violation_timer: 0.0,
         police_target: None,
         wander_cooldown: 0.0,
+        terrain_normal: [0.0, 1.0, 0.0],
     }
 }
 
@@ -627,6 +630,7 @@ fn make_trash_bin() -> state::TrashBin {
         x: 0.0, y: 0.0, z: 0.0,
         items_held: 3,
         carried_by: None,
+        terrain_normal: [0.0, 1.0, 0.0],
     }
 }
 

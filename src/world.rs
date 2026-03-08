@@ -2581,7 +2581,7 @@ pub fn generate_world(game: &mut GameState) {
         let bz = node[1] + 4.0;
         let by = game.terrain.height_at(bx, bz);
         game.world.trash_bins.push(TrashBin {
-            x: bx, y: by, z: bz, items_held: 0, carried_by: None,
+            x: bx, y: by, z: bz, items_held: 0, carried_by: None, terrain_normal: [0.0, 1.0, 0.0],
         });
         bin_count += 1;
     }
@@ -2604,7 +2604,7 @@ pub fn generate_world(game: &mut GameState) {
         let bz = sz + perp_z * offset * side;
         let by = game.terrain.height_at(bx, bz);
         game.world.trash_bins.push(TrashBin {
-            x: bx, y: by, z: bz, items_held: 0, carried_by: None,
+            x: bx, y: by, z: bz, items_held: 0, carried_by: None, terrain_normal: [0.0, 1.0, 0.0],
         });
         bin_count += 1;
     }
@@ -2690,6 +2690,7 @@ pub fn generate_world(game: &mut GameState) {
             cruise_speed, target_speed: 0.0,
             parking_target: spot_idx, parked: true,
             idle_timer: 0.0,
+            terrain_normal: [0.0, 1.0, 0.0],
         });
     }
 
@@ -2820,6 +2821,7 @@ pub fn generate_world(game: &mut GameState) {
             violation_timer: 0.0,
             police_target: None,
             wander_cooldown: 0.0,
+            terrain_normal: [0.0, 1.0, 0.0],
         });
     }
 
@@ -2831,11 +2833,16 @@ pub fn generate_world(game: &mut GameState) {
         let mut z;
         let mut attempts = 0;
         loop {
-            // After many failures, spawn near a road node (guaranteed walkable)
+            // After many failures, spawn near a road node but off the road itself
             if attempts > 50 && !game.road_network.nodes.is_empty() {
                 let ni = rng.next() as usize % game.road_network.nodes.len();
-                x = game.road_network.nodes[ni][0] + rng.range(-5.0, 5.0);
-                z = game.road_network.nodes[ni][1] + rng.range(-5.0, 5.0);
+                let angle = rng.range(0.0, std::f32::consts::TAU);
+                let dist = rng.range(10.0, 20.0);
+                x = game.road_network.nodes[ni][0] + angle.cos() * dist;
+                z = game.road_network.nodes[ni][1] + angle.sin() * dist;
+                if !on_any_road(x, z, &game.road_network) { break; }
+                x = game.road_network.nodes[ni][0] + angle.cos() * 25.0;
+                z = game.road_network.nodes[ni][1] + angle.sin() * 25.0;
                 break;
             }
             x = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
@@ -2853,6 +2860,12 @@ pub fn generate_world(game: &mut GameState) {
             spin_phase: rng.range(0.0, 6.0),
             falling: false, vel_y: 0.0, claimed_by: None, skip_until: 0.0,
         });
+    }
+
+    // Verify item placement
+    let items_on_road = game.world.items.iter().filter(|it| on_any_road(it.x, it.z, &game.road_network)).count();
+    if items_on_road > 0 {
+        eprintln!("WARNING: {} items spawned on roads!", items_on_road);
     }
 
     // Set player spawn height

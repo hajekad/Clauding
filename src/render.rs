@@ -2750,6 +2750,13 @@ fn gen_player_clothing(
     let hp = PI * 0.5;
     let co = 0.035; // clothing offset over body
 
+    // Breast coverage bump — matches nude body breast profile so coat covers chest
+    let breast_bump = |y: f32| -> f32 {
+        if !props.has_breasts { return 0.0; }
+        let dy = (y - props.breast_y) / 0.10;
+        (props.breast_rz * 1.3 + 0.015) * (-0.5 * dy * dy).exp() // body breast amp + margin
+    };
+
     // ── COAT/VEST SHELL — lofted tube matching body contour + offset ──
     // Ring radii derived from nude torso ring definitions. Muscle bumps attenuated
     // to 50% for smooth cloth surface. No shoulder pad or armpit filler ellipsoids.
@@ -2764,43 +2771,77 @@ fn gen_player_clothing(
         let coat_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
             coat_ring(0.88, 0.14, 0.12, &[(PI, 0.5, 0.04)]),
             coat_ring(0.92, 0.18, 0.14, &[
-                (hp, 0.35, 0.025), (PI + hp, 0.35, 0.025), (PI, 0.5, 0.06),
+                (hp, 0.40, 0.05), (PI + hp, 0.40, 0.05), (PI, 0.5, 0.06),
             ]),
             coat_ring(0.96, 0.17, 0.13, &[
-                (hp, 0.35, 0.02), (PI + hp, 0.35, 0.02), (PI, 0.4, 0.04),
+                (hp, 0.40, 0.04), (PI + hp, 0.40, 0.04), (PI, 0.4, 0.04),
             ]),
-            coat_ring(1.00, 0.15, 0.13, &[(PI, 0.5, 0.04)]),
-            coat_ring(1.04, 0.155, 0.14, &[(PI, 0.5, 0.035)]),
-            coat_ring(1.08, 0.17, 0.15, &[(PI, 0.5, 0.04)]),
-            coat_ring(1.12, 0.19, 0.16, &[
-                (hp, 0.35, 0.035), (PI + hp, 0.35, 0.035), (PI, 0.4, 0.04),
+            coat_ring(1.00, 0.16, 0.13, &[
+                (hp, 0.40, 0.04), (PI + hp, 0.40, 0.04), (PI, 0.5, 0.04),
             ]),
-            coat_ring(1.16, 0.20, 0.17, &[(hp, 0.35, 0.04), (PI + hp, 0.35, 0.04)]),
-            coat_ring(1.21, 0.21, 0.20, &[(hp, 0.35, 0.04), (PI + hp, 0.35, 0.04)]),
-            coat_ring(1.26, 0.22, 0.21, &[(hp, 0.35, 0.04), (PI + hp, 0.35, 0.04)]),
-            coat_ring(1.32, 0.22, 0.19, &[(hp, 0.30, 0.035), (PI + hp, 0.30, 0.035)]),
+            coat_ring(1.04, 0.17, 0.14, &[
+                (hp, 0.40, 0.05), (PI + hp, 0.40, 0.05), (PI, 0.5, 0.035),
+            ]),
+            // Armhole zone (Y=1.08-1.32): bypass 0.5 attenuation for full lateral bumps.
+            // Breast coverage bumps (theta=±0.30) match nude body breast profile.
+            {
+                let sf = s(1.08); let bb = breast_bump(1.08);
+                let mut b = vec![(hp, 0.45, 0.04), (PI + hp, 0.45, 0.04), (PI, 0.5, 0.02 * sf)];
+                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
+                (1.08, body_ring(0.0, 0.0, 0.19 * sf + co, 0.16 * sf + co, &b, n), coat)
+            },
+            {
+                let sf = s(1.12); let bb = breast_bump(1.12);
+                let mut b = vec![(hp, 0.45, 0.05), (PI + hp, 0.45, 0.05), (PI, 0.4, 0.02 * sf)];
+                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
+                (1.12, body_ring(0.0, 0.0, 0.21 * sf + co, 0.17 * sf + co, &b, n), coat)
+            },
+            {
+                let sf = s(1.16); let bb = breast_bump(1.16);
+                let mut b = vec![(hp, 0.45, 0.06), (PI + hp, 0.45, 0.06)];
+                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
+                (1.16, body_ring(0.0, 0.0, 0.22 * sf + co, 0.18 * sf + co, &b, n), coat)
+            },
+            {
+                let sf = s(1.21); let bb = breast_bump(1.21);
+                let mut b = vec![(hp, 0.45, 0.07), (PI + hp, 0.45, 0.07)];
+                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
+                (1.21, body_ring(0.0, 0.0, 0.23 * sf + co, 0.20 * sf + co, &b, n), coat)
+            },
+            {
+                let sf = s(1.26); let bb = breast_bump(1.26);
+                let mut b = vec![(hp, 0.45, 0.07), (PI + hp, 0.45, 0.07)];
+                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
+                (1.26, body_ring(0.0, 0.0, 0.24 * sf + co, 0.21 * sf + co, &b, n), coat)
+            },
+            {
+                let sf = s(1.32); let bb = breast_bump(1.32);
+                let mut b = vec![(hp, 0.45, 0.08), (PI + hp, 0.45, 0.08), (PI, 0.5, 0.02 * sf)];
+                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
+                (1.32, body_ring(0.0, 0.0, 0.24 * sf + co, 0.20 * sf + co, &b, n), coat)
+            },
             {
                 let sf = s(1.36); let da = props.shoulder_deltoid_amp * 0.5;
-                (1.36, body_ring(0.0, 0.0, 0.20 * sf + co, 0.19 * sf + co, &[
-                    (hp, 0.35, da + 0.01), (PI + hp, 0.35, da + 0.01), (PI, 0.5, 0.025 * sf),
+                (1.36, body_ring(0.0, 0.0, 0.22 * sf + co, 0.20 * sf + co, &[
+                    (hp, 0.45, da + 0.05), (PI + hp, 0.45, da + 0.05), (PI, 0.5, 0.030 * sf),
                 ], n), coat)
             },
             {
                 let sf = s(1.39); let da = props.shoulder_deltoid_amp * 0.5;
-                (1.39, body_ring(0.0, 0.0, 0.18 * sf + co, 0.18 * sf + co, &[
-                    (hp, 0.35, da + 0.02), (PI + hp, 0.35, da + 0.02), (PI, 0.5, 0.028 * sf),
+                (1.39, body_ring(0.0, 0.0, 0.20 * sf + co, 0.19 * sf + co, &[
+                    (hp, 0.45, da + 0.06), (PI + hp, 0.45, da + 0.06), (PI, 0.5, 0.035 * sf),
                 ], n), coat)
             },
             {
                 let sf = s(1.42); let da = props.shoulder_deltoid_amp * 0.5;
-                (1.42, body_ring(0.0, 0.0, 0.16 * sf + co, 0.17 * sf + co, &[
-                    (hp, 0.35, da + 0.025), (PI + hp, 0.35, da + 0.025), (PI, 0.5, 0.028 * sf),
+                (1.42, body_ring(0.0, 0.0, 0.18 * sf + co, 0.18 * sf + co, &[
+                    (hp, 0.45, da + 0.07), (PI + hp, 0.45, da + 0.07), (PI, 0.5, 0.035 * sf),
                 ], n), coat)
             },
             {
                 let sf = s(1.44);
-                (1.44, body_ring(0.0, 0.0, 0.13 * sf + co, 0.13 * sf + co, &[
-                    (hp, 0.25, 0.01), (PI + hp, 0.25, 0.01), (PI, 0.5, 0.023 * sf),
+                (1.44, body_ring(0.0, 0.0, 0.14 * sf + co, 0.14 * sf + co, &[
+                    (hp, 0.35, 0.03), (PI + hp, 0.35, 0.03), (PI, 0.5, 0.028 * sf),
                 ], n), darken(coat, 0.92))
             },
             (1.48, body_ring(0.0, 0.0, props.neck_rx + co, props.neck_rz + co, &[], n),
@@ -2950,24 +2991,28 @@ fn gen_player_clothing(
 
         // Pants loft (hip → knee) — same interpolation as gen_nude_leg
         // Inner-thigh bumps push rings past body centerline for overlap coverage
-        let pco = 0.025;
+        let pco = 0.030;
         let pants_data: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
-            (0.92, 0.092, 0.084, vec![
-                (PI + hp, 0.55, 0.045), (PI, 0.5, 0.030),
+            (0.92, 0.100, 0.095, vec![
+                (PI + hp, 0.70, 0.085), (PI, 0.60, 0.060), (0.0, 0.60, 0.055),
             ]),
-            (0.88, 0.096, 0.086, vec![
-                (PI + hp, 0.55, 0.040), (PI, 0.5, 0.025),
+            (0.88, 0.102, 0.097, vec![
+                (PI + hp, 0.70, 0.080), (PI, 0.60, 0.055), (0.0, 0.60, 0.050),
             ]),
-            (0.84, 0.098, 0.088, vec![
-                (PI + hp, 0.50, 0.030), (PI, 0.5, 0.020),
+            (0.84, 0.104, 0.097, vec![
+                (PI + hp, 0.65, 0.065), (PI, 0.55, 0.045), (0.0, 0.55, 0.040),
             ]),
-            (0.78, 0.100, 0.090, vec![
-                (PI + hp, 0.45, 0.020),
+            (0.78, 0.104, 0.097, vec![
+                (PI + hp, 0.60, 0.050), (PI, 0.50, 0.035), (0.0, 0.50, 0.030),
             ]),
-            (0.70, 0.096, 0.086, vec![]),
-            (0.62, 0.086, 0.078, vec![]),
-            (0.54, 0.072, 0.066, vec![]),
-            (0.48, 0.057, 0.054, vec![]),
+            (0.70, 0.100, 0.093, vec![
+                (PI + hp, 0.55, 0.030), (PI, 0.45, 0.020), (0.0, 0.45, 0.015),
+            ]),
+            (0.62, 0.088, 0.082, vec![
+                (PI + hp, 0.50, 0.015),
+            ]),
+            (0.54, 0.074, 0.068, vec![]),
+            (0.48, 0.058, 0.055, vec![]),
         ];
         let pants_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = pants_data.iter().map(|(y, rx, rz, bumps)| {
             let cz = if *y >= knee_y {
@@ -3117,28 +3162,47 @@ fn gen_player_clothing(
         let shoulder_y = shoulder[1];
         let elbow_y = elbow[1];
 
-        // Lofted sleeve (shoulder → elbow) with integrated inner overlap bumps
+        // Lofted sleeve (above shoulder → elbow) with integrated inner overlap bumps.
+        // Sleeve cap extends ABOVE Y=1.44 to close the armhole where coat narrows to collar.
+        // PI+hp pushes inward, 0/PI push front/back to fill armhole gap from all angles.
         let sleeve_data: Vec<(f32, f32, Vec<(f32, f32, f32)>)> = vec![
-            (1.44, 0.12, vec![
-                (hp, 0.35, 0.025), (PI + hp, 0.40, 0.040),
+            // Sleeve cap rings above coat shoulder — seal armhole from top
+            (1.48, 0.09, vec![
+                (PI + hp, 0.80, 0.140),
+                (0.0, 0.60, 0.080), (PI, 0.60, 0.080),
             ]),
-            (1.42, 0.11, vec![
-                (hp, 0.35, 0.025), (PI + hp, 0.40, 0.045),
+            (1.46, 0.11, vec![
+                (hp, 0.35, 0.020), (PI + hp, 0.80, 0.130),
+                (0.0, 0.60, 0.075), (PI, 0.60, 0.075),
             ]),
-            (1.39, 0.095, vec![
-                (hp, 0.35, 0.020), (PI + hp, 0.45, 0.050),
+            // Upper sleeve — puffy military cut, very wide inner overlap
+            (1.44, 0.13, vec![
+                (hp, 0.35, 0.030), (PI + hp, 0.80, 0.120),
+                (0.0, 0.60, 0.070), (PI, 0.60, 0.070),
             ]),
-            (1.36, 0.088, vec![
-                (hp, 0.35, 0.015), (PI + hp, 0.45, 0.050),
+            (1.42, 0.13, vec![
+                (hp, 0.35, 0.030), (PI + hp, 0.80, 0.130),
+                (0.0, 0.60, 0.075), (PI, 0.60, 0.075),
             ]),
-            (1.32, 0.082, vec![
-                (PI + hp, 0.45, 0.045),
+            (1.39, 0.12, vec![
+                (hp, 0.35, 0.025), (PI + hp, 0.80, 0.130),
+                (0.0, 0.60, 0.070), (PI, 0.60, 0.070),
             ]),
-            (1.26, 0.078, vec![
-                (PI + hp, 0.45, 0.040),
+            (1.36, 0.11, vec![
+                (hp, 0.35, 0.020), (PI + hp, 0.75, 0.120),
+                (0.0, 0.55, 0.060), (PI, 0.55, 0.060),
             ]),
-            (1.18, 0.068, vec![
-                (PI + hp, 0.40, 0.030),
+            (1.32, 0.10, vec![
+                (PI + hp, 0.70, 0.110),
+                (0.0, 0.50, 0.050), (PI, 0.50, 0.050),
+            ]),
+            (1.26, 0.095, vec![
+                (PI + hp, 0.65, 0.090),
+                (0.0, 0.45, 0.035), (PI, 0.45, 0.035),
+            ]),
+            (1.18, 0.082, vec![
+                (PI + hp, 0.60, 0.065),
+                (0.0, 0.40, 0.025), (PI, 0.40, 0.025),
             ]),
             (elbow_y, 0.056, vec![]),
         ];
@@ -3167,16 +3231,18 @@ fn gen_player_clothing(
                  elbow[1] * (1.0 - t) + wrist[1] * t,
                  elbow[2] * (1.0 - t) + wrist[2] * t]
             };
+            let cs = 0.20;
+            let ce = 0.42;
             mesh::tapered_cylinder_between(tris, lerp(cs), lerp(ce),
-                (0.058 + aco) * a, (0.056 + aco) * a, 8, darken(coat, 0.78));
+                (0.056 + aco) * a, (0.054 + aco) * a, 8, darken(coat, 0.78));
             let ce_p = lerp(ce);
             mesh::cylinder_tris(tris, ce_p[0], ce_p[1], ce_p[2],
-                (0.052 + aco) * a, 0.008, 8, darken(coat, 1.25));
+                (0.050 + aco) * a, 0.007, 8, darken(coat, 1.25));
             for bi in 0..3 {
                 let bt = cs + (ce - cs) * (bi as f32 + 0.5) / 3.0;
                 let bp = lerp(bt);
-                mesh::sphere_tris(tris, bp[0] + arm.side * (0.054 + aco) * a, bp[1], bp[2],
-                    0.006, 0, BUTTON_BRASS);
+                mesh::sphere_tris(tris, bp[0] + arm.side * (0.052 + aco) * a, bp[1], bp[2],
+                    0.005, 0, BUTTON_BRASS);
             }
         }
 
@@ -3187,27 +3253,27 @@ fn gen_player_clothing(
             elbow[1] * (1.0 - rt) + wrist[1] * rt,
             elbow[2] * (1.0 - rt) + wrist[2] * rt,
         ];
-        mesh::cylinder_tris(tris, rp[0], rp[1], rp[2], (0.044 + aco) * a, 0.012, 8, SHIRT_LINEN);
+        mesh::cylinder_tris(tris, rp[0], rp[1], rp[2], (0.042 + aco) * a, 0.010, 8, SHIRT_LINEN);
 
         // Bracer
         if app.has_bracers {
-            let brs = 0.38;
-            let bre = 0.68;
             let lerp = |t: f32| -> [f32; 3] {
                 [elbow[0] * (1.0 - t) + wrist[0] * t,
                  elbow[1] * (1.0 - t) + wrist[1] * t,
                  elbow[2] * (1.0 - t) + wrist[2] * t]
             };
+            let brs = 0.38;
+            let bre = 0.68;
             mesh::tapered_cylinder_between(tris, lerp(brs), lerp(bre),
-                (0.054 + aco) * a, (0.048 + aco) * a, 8, LEATHER_DARK);
+                (0.052 + aco) * a, (0.046 + aco) * a, 8, LEATHER_DARK);
             let brs_p = lerp(brs);
             let bre_p = lerp(bre);
-            mesh::cylinder_tris(tris, brs_p[0], brs_p[1], brs_p[2], (0.056 + aco) * a, 0.008, 8, LEATHER_DARK);
-            mesh::cylinder_tris(tris, bre_p[0], bre_p[1], bre_p[2], (0.050 + aco) * a, 0.008, 8, LEATHER_DARK);
+            mesh::cylinder_tris(tris, brs_p[0], brs_p[1], brs_p[2], (0.054 + aco) * a, 0.007, 8, LEATHER_DARK);
+            mesh::cylinder_tris(tris, bre_p[0], bre_p[1], bre_p[2], (0.048 + aco) * a, 0.007, 8, LEATHER_DARK);
             let mb_p = lerp((brs + bre) * 0.5);
-            mesh::cylinder_tris(tris, mb_p[0], mb_p[1], mb_p[2], (0.056 + aco) * a, 0.006, 8, darken(LEATHER_DARK, 0.85));
-            push_box(tris, mb_p[0] + arm.side * (0.056 + aco) * a, mb_p[1], mb_p[2],
-                0.008, 0.010, 0.006, BUCKLE_BRASS);
+            mesh::cylinder_tris(tris, mb_p[0], mb_p[1], mb_p[2], (0.054 + aco) * a, 0.005, 8, darken(LEATHER_DARK, 0.85));
+            push_box(tris, mb_p[0] + arm.side * (0.054 + aco) * a, mb_p[1], mb_p[2],
+                0.007, 0.008, 0.005, BUCKLE_BRASS);
         }
     }
 }
@@ -3850,29 +3916,6 @@ fn push_box(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, w: f32, h: f32,
 
 // --- GPU vertex generation (for Vulkan graphics pipeline) ---
 
-/// Convert WorldTri slice to GpuVertex buffer with lighting + fog + distance cull
-/// Convert WorldTris to GpuVertex with per-tri distance culling (no CPU lighting — GPU shader handles it)
-fn tris_to_gpu_verts_culled(tris: &[WorldTri], cam_pos: Vec3, out: &mut Vec<GpuVertex>) {
-    let fog_dist_sq = FOG_DIST * FOG_DIST;
-    out.reserve(tris.len() * 3);
-    for tri in tris {
-        let cx = (tri.v[0][0] + tri.v[1][0] + tri.v[2][0]) * 0.333;
-        let cy = (tri.v[0][1] + tri.v[1][1] + tri.v[2][1]) * 0.333;
-        let cz = (tri.v[0][2] + tri.v[1][2] + tri.v[2][2]) * 0.333;
-        let dx = cam_pos[0] - cx;
-        let dy = cam_pos[1] - cy;
-        let dz = cam_pos[2] - cz;
-        if dx*dx + dy*dy + dz*dz > fog_dist_sq { continue; }
-        for i in 0..3 {
-            out.push(GpuVertex {
-                pos: tri.v[i],
-                color_packed: tri.color,
-                normal: tri.normal,
-            });
-        }
-    }
-}
-
 /// Generate GPU vertices for static world geometry (upload once, never regenerate —
 /// GPU shader handles lighting/fog dynamically via push constants)
 pub fn generate_static_gpu_vertices(world: &WorldData, out: &mut Vec<GpuVertex>) {
@@ -3889,6 +3932,70 @@ pub fn generate_static_gpu_vertices(world: &WorldData, out: &mut Vec<GpuVertex>)
     }
 }
 
+/// Frustum + distance check. Returns Some(dist_sq) if visible, None if culled.
+#[inline]
+fn view_cull(eye: Vec3, fwd_x: f32, fwd_z: f32, ex: f32, ez: f32, fog_dist_sq: f32) -> Option<f32> {
+    let dx = ex - eye[0];
+    let dz = ez - eye[2];
+    let dist_sq = dx * dx + dz * dz;
+    if dist_sq > fog_dist_sq { return None; }
+    if dist_sq < 400.0 { return Some(dist_sq); } // <20m always visible
+    let inv_dist = 1.0 / dist_sq.sqrt();
+    let dot = fwd_x * dx * inv_dist + fwd_z * dz * inv_dist;
+    if dot > 0.259 { Some(dist_sq) } else { None } // cos(75°)
+}
+
+/// Low-detail NPC: 3 colored boxes (~36 tris vs ~14K full detail)
+fn gen_npc_mesh_lod(npc: &Npc, tris: &mut Vec<WorldTri>) {
+    let app = npc_appearance(npc.brain_idx as u32);
+    let body_col = if app.has_coat { app.coat_col } else { 0xFF3355AA };
+    let base = tris.len();
+    push_box(tris, 0.0, 0.75, 0.0, 0.20, 0.55, 0.12, body_col);
+    push_box(tris, 0.0, 0.25, 0.0, 0.13, 0.25, 0.10, npc.pants_color);
+    push_box(tris, 0.0, 1.55, 0.0, 0.10, 0.12, 0.10, app.skin);
+    let (sin_r, cos_r) = npc.rot_y.sin_cos();
+    for tri in &mut tris[base..] {
+        for v in &mut tri.v {
+            let rx = v[0] * cos_r + v[2] * sin_r;
+            let rz = -v[0] * sin_r + v[2] * cos_r;
+            v[0] = rx + npc.x;
+            v[1] += npc.y;
+            v[2] = rz + npc.z;
+        }
+        let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
+        let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
+        tri.normal[0] = nx;
+        tri.normal[2] = nz;
+    }
+}
+
+// LOD distance thresholds (squared)
+const LOD_NPC_FULL_SQ: f32 = 625.0;    // < 25m: full detail
+const LOD_NPC_LOW_SQ: f32 = 40000.0;   // 25-200m: low detail boxes
+const LOD_VEH_FULL_SQ: f32 = 2500.0;   // < 50m: full detail vehicle
+const LOD_VEH_DIST_SQ: f32 = 40000.0;  // > 200m: skip vehicles
+
+/// Low-detail vehicle mesh: 2 colored boxes (body + cabin), ~24 tris
+fn gen_vehicle_mesh_lod(v: &Vehicle, tris: &mut Vec<WorldTri>) {
+    let base = tris.len();
+    push_box(tris, 0.0, 0.35, 0.0, 1.8, 0.5, 3.6, v.color);
+    push_box(tris, 0.0, 0.95, 0.2, 1.4, 0.45, 1.8, darken(v.color, 0.85));
+    let (sin_r, cos_r) = v.rot_y.sin_cos();
+    for tri in &mut tris[base..] {
+        for vert in &mut tri.v {
+            let rx = vert[0] * cos_r + vert[2] * sin_r;
+            let rz = -vert[0] * sin_r + vert[2] * cos_r;
+            vert[0] = rx + v.x;
+            vert[1] += v.y;
+            vert[2] = rz + v.z;
+        }
+        let nx = tri.normal[0] * cos_r + tri.normal[2] * sin_r;
+        let nz = -tri.normal[0] * sin_r + tri.normal[2] * cos_r;
+        tri.normal[0] = nx;
+        tri.normal[2] = nz;
+    }
+}
+
 /// Generate GPU vertices for dynamic entities only (call each frame)
 pub fn generate_dynamic_gpu_vertices(
     world: &WorldData, player: &Player, cam: &Camera,
@@ -3897,54 +4004,80 @@ pub fn generate_dynamic_gpu_vertices(
     let eye = v3(cam.x, cam.y, cam.z);
     let fog_dist_sq = FOG_DIST * FOG_DIST;
 
+    let fdx = cam.tx - cam.x;
+    let fdz = cam.tz - cam.z;
+    let flen = (fdx * fdx + fdz * fdz).sqrt().max(0.001);
+    let fwd_x = fdx / flen;
+    let fwd_z = fdz / flen;
+
     out.clear();
     scratch.clear();
 
-    // Pre-cull entities by distance before generating mesh
+    // Vehicles: frustum + distance LOD
     for (vi, v) in world.vehicles.iter().enumerate() {
-        let dx = eye[0] - v.x;
-        let dz = eye[2] - v.z;
-        if dx*dx + dz*dz > fog_dist_sq { continue; }
-        let show_interior = player.in_vehicle == Some(vi);
-        gen_vehicle_mesh(v, scratch, show_interior);
+        let dist_sq = match view_cull(eye, fwd_x, fwd_z, v.x, v.z, fog_dist_sq) {
+            Some(d) => d,
+            None => continue,
+        };
+        if dist_sq > LOD_VEH_DIST_SQ { continue; }
+        if dist_sq < LOD_VEH_FULL_SQ {
+            let show_interior = player.in_vehicle == Some(vi);
+            gen_vehicle_mesh(v, scratch, show_interior);
+        } else {
+            gen_vehicle_mesh_lod(v, scratch);
+        }
     }
+    // NPCs: frustum + distance-based LOD
     for npc in &world.npcs {
         if npc.state == NpcState::Sleeping { continue; }
         if npc.in_vehicle { continue; }
-        let dx = eye[0] - npc.x;
-        let dz = eye[2] - npc.z;
-        if dx*dx + dz*dz > fog_dist_sq { continue; }
-        gen_npc_mesh(npc, scratch);
+        let dist_sq = match view_cull(eye, fwd_x, fwd_z, npc.x, npc.z, fog_dist_sq) {
+            Some(d) => d,
+            None => continue,
+        };
+        if dist_sq < LOD_NPC_FULL_SQ {
+            gen_npc_mesh(npc, scratch);
+        } else if dist_sq < LOD_NPC_LOW_SQ {
+            gen_npc_mesh_lod(npc, scratch);
+        }
     }
     for item in &world.items {
         if !item.active && !item.falling { continue; }
-        let dx = eye[0] - item.x;
-        let dz = eye[2] - item.z;
-        if dx*dx + dz*dz > fog_dist_sq { continue; }
+        if view_cull(eye, fwd_x, fwd_z, item.x, item.z, fog_dist_sq).is_none() { continue; }
         gen_item_mesh(item, scratch);
     }
     for bin in &world.trash_bins {
         if bin.carried_by.is_some() { continue; }
-        let dx = eye[0] - bin.x;
-        let dz = eye[2] - bin.z;
-        if dx*dx + dz*dz > fog_dist_sq { continue; }
+        if view_cull(eye, fwd_x, fwd_z, bin.x, bin.z, fog_dist_sq).is_none() { continue; }
         gen_trash_bin_mesh(bin, scratch);
     }
     if player.in_vehicle.is_none() {
         gen_player_mesh(player, scratch);
     }
-    // Per-tri distance culling, raw material color (GPU does lighting)
-    tris_to_gpu_verts_culled(scratch, eye, out);
+    // Convert to GPU format (raw material colors — GPU shader does lighting)
+    out.reserve(scratch.len() * 3);
+    for tri in scratch.iter() {
+        for i in 0..3 {
+            out.push(GpuVertex {
+                pos: tri.v[i],
+                color_packed: tri.color,
+                normal: tri.normal,
+            });
+        }
+    }
 }
 
 /// Build GPU push constants from current frame state
-pub fn gpu_push_constants(hour: f32, eye: Vec3, vp: &Mat4) -> crate::gpu::GpuPushConstants {
+pub fn gpu_push_constants(hour: f32, eye: Vec3, target: Vec3, vp: &Mat4) -> crate::gpu::GpuPushConstants {
     let tc = time_colors(hour);
     let fog_dist_sq = FOG_DIST * FOG_DIST;
+    let fdx = target[0] - eye[0];
+    let fdz = target[2] - eye[2];
+    let flen = (fdx * fdx + fdz * fdz).sqrt().max(0.001);
     crate::gpu::GpuPushConstants {
         vp: *vp,
         light_dir_ambient: [tc.light_dir[0], tc.light_dir[1], tc.light_dir[2], tc.ambient],
-        sun_fog_params: [tc.sun_strength, 1.0 / fog_dist_sq, 0.0, 0.0],
+        sun_fog_params: [tc.sun_strength, 1.0 / fog_dist_sq, fdx / flen, fdz / flen],
         fog_color: [tc.fog_r / 255.0, tc.fog_g / 255.0, tc.fog_b / 255.0, 0.0],
         eye_pos: [eye[0], eye[1], eye[2], 0.0],
     }

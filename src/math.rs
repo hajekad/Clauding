@@ -5,6 +5,7 @@ pub type Mat4 = [f32; 16];
 
 pub fn v3(x: f32, y: f32, z: f32) -> Vec3 { [x, y, z] }
 
+pub fn v3_add(a: Vec3, b: Vec3) -> Vec3 { [a[0]+b[0], a[1]+b[1], a[2]+b[2]] }
 pub fn v3_sub(a: Vec3, b: Vec3) -> Vec3 { [a[0]-b[0], a[1]-b[1], a[2]-b[2]] }
 pub fn v3_scale(a: Vec3, s: f32) -> Vec3 { [a[0]*s, a[1]*s, a[2]*s] }
 pub fn v3_dot(a: Vec3, b: Vec3) -> f32 { a[0]*b[0] + a[1]*b[1] + a[2]*b[2] }
@@ -66,4 +67,40 @@ pub fn m4_transform_no_div(m: &Mat4, p: Vec3) -> [f32; 4] {
         m[2]*p[0] + m[6]*p[1] + m[10]*p[2] + m[14],
         m[3]*p[0] + m[7]*p[1] + m[11]*p[2] + m[15],
     ]
+}
+
+/// Build a 3x3 rotation matrix that aligns local Y-up with terrain normal,
+/// while preserving heading (rot_y). Returns column-major [c0r0..c2r2].
+/// This combines heading rotation with slope tilt in a single matrix.
+pub fn terrain_rot3x3(normal: Vec3, rot_y: f32) -> [f32; 9] {
+    // Up axis = terrain normal (where local Y should point)
+    let up = normal;
+    // Forward direction from heading (in world XZ plane)
+    let (sin_r, cos_r) = rot_y.sin_cos();
+    let fwd_flat = [-sin_r, 0.0, -cos_r];
+    // Right = cross(forward, up), then normalize
+    let right = v3_normalize(v3_cross(fwd_flat, up));
+    // Recompute forward = cross(up, right) to ensure orthogonality
+    let fwd = v3_cross(up, right);
+    // Column-major 3x3: columns are right, up, forward
+    [
+        right[0], right[1], right[2],
+        up[0],    up[1],    up[2],
+        fwd[0],   fwd[1],   fwd[2],
+    ]
+}
+
+/// Apply a 3x3 rotation matrix (column-major) to a point
+#[inline]
+pub fn rot3x3_apply(m: &[f32; 9], p: Vec3) -> Vec3 {
+    [
+        m[0]*p[0] + m[3]*p[1] + m[6]*p[2],
+        m[1]*p[0] + m[4]*p[1] + m[7]*p[2],
+        m[2]*p[0] + m[5]*p[1] + m[8]*p[2],
+    ]
+}
+
+/// Linearly interpolate between two Vec3 values
+pub fn v3_lerp(a: Vec3, b: Vec3, t: f32) -> Vec3 {
+    [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t, a[2] + (b[2]-a[2])*t]
 }
