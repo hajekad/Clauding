@@ -15,7 +15,7 @@
 //   vehicles                — vehicle analysis
 //   reachability            — walkability grid, flood-fill components, building/NPC reachability
 
-use clauding::{state, world, npc, neat};
+use clauding::{state, world};
 
 fn surf_str(s: state::Surface) -> &'static str {
     match s {
@@ -73,7 +73,7 @@ fn main() {
             collision_full_scan(&game.world, step);
         }
         "density" => {
-            let radius: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20.0);
+            let _radius: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20.0);
             density_analysis(&game.world);
         }
         "buildings" => {
@@ -314,7 +314,7 @@ fn probe_cross_section(world: &state::WorldData, net: &state::RoadNetwork, terra
     println!();
 }
 
-fn analyze_npc_homes(world: &state::WorldData, net: &state::RoadNetwork, terrain: &state::Terrain) {
+fn analyze_npc_homes(world: &state::WorldData, net: &state::RoadNetwork, _terrain: &state::Terrain) {
     println!("=== NPC HOME ANALYSIS ===");
     println!("{:>4} {:>8} {:>8} {:>8} {:>8} {:>10} {:>6} {:>6} {:>8} {:>10}",
         "NPC", "HomeX", "HomeZ", "NpcX", "NpcZ", "Job", "River", "BCol", "DistHome", "Surface");

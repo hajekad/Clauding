@@ -248,7 +248,7 @@ pub fn sys_render_particles(fb: &mut Framebuffer, ps: &ParticleSystem, cam: &Cam
                 let x = px + dx;
                 let y = py + dy;
                 if x < fb.w && y < fb.h {
-                    fb.put_pixel(x, y, sz, color);
+                    fb.put_pixel_overlay(x, y, color);
                 }
             }
         }

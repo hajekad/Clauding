@@ -205,7 +205,7 @@ pub struct NeatBrain {
     conn_to: Vec<u16>,
     conn_weight: Vec<f32>,
     num_inputs: u16,
-    num_outputs: u16,
+    _num_outputs: u16,
 }
 
 impl NeatBrain {
@@ -255,7 +255,7 @@ impl NeatBrain {
             conn_to,
             conn_weight,
             num_inputs: NUM_INPUTS,
-            num_outputs: NUM_OUTPUTS,
+            _num_outputs: NUM_OUTPUTS,
         }
     }
 

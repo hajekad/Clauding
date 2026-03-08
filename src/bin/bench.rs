@@ -2,7 +2,7 @@
 // Usage: cargo run --release --bin bench [seed] [frames] [width] [height]
 // Reports: avg FPS, 1% low, 0.1% low, frame time distribution
 
-use clauding::{state, world, render, raster, camera, neat};
+use clauding::{state, world, render, raster, neat};
 use std::time::Instant;
 
 fn main() {

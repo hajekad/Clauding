@@ -321,58 +321,6 @@ fn render_model_sheet(
     composite
 }
 
-/// 4K multi-view render: 4 panels side by side, each 960x2160 (portrait)
-/// views: array of (eye_position, label)
-fn render_8k_sheet(
-    tris: &[state::WorldTri],
-    views: &[([f32; 3], [f32; 3], &str)], // (eye, target, label)
-    sheet_label: &str,
-) -> (Vec<u32>, usize, usize) {
-    let panel_w: usize = 960;
-    let panel_h: usize = 2160;
-    let n = views.len();
-    let sheet_w = panel_w * n;
-    let sheet_h = panel_h;
-
-    let mut view_fb = raster::Framebuffer::new(panel_w, panel_h);
-    let mut composite = vec![0xFF3A4455u32; sheet_w * sheet_h];
-
-    let tri_label = format!("tris: {}", tris.len());
-    for (view_idx, (eye, target, view_name)) in views.iter().enumerate() {
-        view_fb.clear(0xFF445566);
-        render_model(&mut view_fb, tris, *eye, *target);
-
-        // Labels at 2x scale for 4K
-        for dy in 0..2_usize {
-            for dx in 0..2_usize {
-                draw_label_scaled(&mut view_fb, 8 + dx, 8 + dy, view_name, 2);
-                draw_label_scaled(&mut view_fb, 8 + dx, 30 + dy, &tri_label, 2);
-            }
-        }
-
-        let qx = view_idx * panel_w;
-        for y in 0..panel_h {
-            for x in 0..panel_w {
-                composite[y * sheet_w + (qx + x)] = view_fb.pixels[y * panel_w + x];
-            }
-        }
-    }
-
-    // Panel separators (3px white)
-    for pi in 1..n {
-        let sx = pi * panel_w;
-        for y in 0..sheet_h {
-            for dx in 0..3_usize {
-                if sx + dx < sheet_w { composite[y * sheet_w + sx + dx] = 0xFFFFFFFF; }
-                if sx >= dx + 1 { composite[y * sheet_w + sx - 1 - dx] = 0xFFFFFFFF; }
-            }
-        }
-    }
-
-    eprintln!("Rendered 4K: {} ({} tris, {}x{})", sheet_label, tris.len(), sheet_w, sheet_h);
-    (composite, sheet_w, sheet_h)
-}
-
 /// Draw text at integer scale factor (for high-res displays)
 fn draw_label_scaled(fb: &mut raster::Framebuffer, x: usize, y: usize, text: &str, scale: usize) {
     let mut cx = x;
@@ -671,16 +619,6 @@ fn make_npc(job: state::NpcJob) -> state::Npc {
         wanted: false, bounty: 0.0, violation_timer: 0.0,
         police_target: None,
         wander_cooldown: 0.0,
-    }
-}
-
-fn make_item(kind: state::ItemKind) -> state::Item {
-    state::Item {
-        x: 0.0, y: 0.0, z: 0.0,
-        kind, active: true,
-        spin_phase: 0.0,
-        falling: false, vel_y: 0.0,
-        claimed_by: None, skip_until: 0.0,
     }
 }
 

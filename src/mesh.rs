@@ -1018,7 +1018,7 @@ pub fn leaf_canopy_tris(
     seed: u64, colors: &[u32],
 ) {
     let mut h = seed;
-    let mut next_f = |h: &mut u64| -> f32 {
+    let next_f = |h: &mut u64| -> f32 {
         *h = h.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         ((*h >> 16) & 0xFFFF) as f32 / 65535.0
     };
@@ -1103,7 +1103,7 @@ pub fn grass_patch_tris(
     height_fn: Option<&dyn Fn(f32, f32) -> f32>,
 ) {
     let mut h = seed;
-    let mut next_f = |h: &mut u64| -> f32 {
+    let next_f = |h: &mut u64| -> f32 {
         *h = h.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         ((*h >> 16) & 0xFFFF) as f32 / 65535.0
     };
@@ -1146,7 +1146,7 @@ pub fn bark_cylinder_tris(
 
     // Hash to determine which segments get ridges
     let mut rh = seed;
-    let mut next_h = |rh: &mut u64| -> f32 {
+    let next_h = |rh: &mut u64| -> f32 {
         *rh = rh.wrapping_mul(6364136223846793005).wrapping_add(1);
         ((*rh >> 16) & 0xFFFF) as f32 / 65535.0
     };
@@ -1193,7 +1193,7 @@ pub fn bush_tris(
     // 2-4 overlapping leaf clusters forming the bush body
     let cluster_count = 2 + ((seed >> 4) as usize % 3);
     let mut h = seed;
-    let mut next_f = |h: &mut u64| -> f32 {
+    let next_f = |h: &mut u64| -> f32 {
         *h = h.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         ((*h >> 16) & 0xFFFF) as f32 / 65535.0
     };
@@ -1229,10 +1229,6 @@ fn add3(a: [f32;3], b: [f32;3]) -> [f32;3] {
 
 fn sub3(a: [f32;3], b: [f32;3]) -> [f32;3] {
     [a[0]-b[0], a[1]-b[1], a[2]-b[2]]
-}
-
-fn scale3(v: [f32;3], s: f32) -> [f32;3] {
-    [v[0]*s, v[1]*s, v[2]*s]
 }
 
 // ── Tapered Cylinder ────────────────────────────────────────────────────────
@@ -1348,7 +1344,7 @@ pub fn tapered_cylinder_between(
     let fwd = cross3(right, dir);
     let n = quality_segments(segments).max(3);
     let step = std::f32::consts::TAU / n as f32;
-    let mid = [(p0[0]+p1[0])*0.5, (p0[1]+p1[1])*0.5, (p0[2]+p1[2])*0.5];
+    let _mid = [(p0[0]+p1[0])*0.5, (p0[1]+p1[1])*0.5, (p0[2]+p1[2])*0.5];
 
     for i in 0..n {
         let a0 = i as f32 * step;
