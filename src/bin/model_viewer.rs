@@ -1225,6 +1225,101 @@ fn main() {
         save_png(&head_composite, head_sheet_w, head_sheet_h, "debug/model_head_female.png");
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // FACE VARIATION GRID — 12 slider presets, front + 3/4 views per face
+    // ══════════════════════════════════════════════════════════════════════
+    {
+        let presets: Vec<(&str, render::FaceSliders, u32)> = vec![
+            ("Default",          render::FaceSliders::default_face(),       0xFFDEB887),
+            ("Male Default",     render::FaceSliders::male_default(),       0xFFD2A87A),
+            ("Female Default",   render::FaceSliders::female_default(),     0xFFE8C9A0),
+            ("Square Jaw",       render::FaceSliders::preset_square_jaw(),  0xFFC89B6E),
+            ("Narrow",           render::FaceSliders::preset_narrow(),      0xFFDDBC98),
+            ("Round",            render::FaceSliders::preset_round(),       0xFFCCA882),
+            ("Heavy Brow",       render::FaceSliders::preset_heavy_brow(),  0xFFBB9060),
+            ("High Cheekbones",  render::FaceSliders::preset_high_cheekbones(), 0xFFA07850),
+            ("Long Face",        render::FaceSliders::preset_long_face(),   0xFFDEB887),
+            ("Wide",             render::FaceSliders::preset_wide(),        0xFFD2A87A),
+            ("Delicate",         render::FaceSliders::preset_delicate(),    0xFFE8C9A0),
+            ("Rugged",           render::FaceSliders::preset_rugged(),      0xFFC89B6E),
+            ("Broad Nose",       render::FaceSliders::preset_broad_nose(),  0xFFBB9060),
+            ("Sharp",            render::FaceSliders::preset_sharp(),       0xFFCCA882),
+            ("Soft",             render::FaceSliders::preset_soft(),        0xFFDDBC98),
+        ];
+
+        // Each face gets 2 panels: front + 3/4 view
+        let panel_w: usize = 360;
+        let panel_h: usize = 480;
+        let cols = 5;  // 5 faces per row
+        let rows = (presets.len() + cols - 1) / cols;  // 3 rows
+        let panels_per_face = 2;  // front + 3/4
+        let sheet_w = panel_w * panels_per_face * cols;
+        let sheet_h = panel_h * rows;
+
+        let mut face_fb = raster::Framebuffer::new(panel_w, panel_h);
+        let mut face_composite = vec![0xFF2A3040u32; sheet_w * sheet_h];
+
+        let hcy = 2.00;
+        let hcz = 0.03;
+        let hd = 0.65;
+        let hdd = hd * 0.707;
+        let face_cam_views: [([f32; 3], [f32; 3]); 2] = [
+            ([0.0, hcy, hcz - hd],         [0.0, hcy, hcz]),       // Front
+            ([hdd, hcy, hcz - hdd],         [0.0, hcy, hcz]),       // 3/4 Front-R
+        ];
+
+        mesh::set_mesh_quality(1, 2); // moderate quality for grid
+        for (pi, (name, sliders, skin)) in presets.iter().enumerate() {
+            tris.clear();
+            let is_female = name.contains("Female") || name.contains("Delicate") || name.contains("Soft");
+            render::gen_head_standalone(&mut tris, sliders, *skin, 0xFF332211, is_female);
+
+            let vn = compute_smooth_normals(&tris);
+
+            let row = pi / cols;
+            let col = pi % cols;
+
+            for (vi, (eye, target)) in face_cam_views.iter().enumerate() {
+                face_fb.clear(0xFF3A4A5A);
+                render_model_smooth(&mut face_fb, &tris, &vn, *eye, *target);
+
+                // Label
+                draw_label(&mut face_fb, 4, 4, name);
+                draw_label(&mut face_fb, 4, 14, &format!("tris:{}", tris.len()));
+
+                let dest_x = (col * panels_per_face + vi) * panel_w;
+                let dest_y = row * panel_h;
+                for y in 0..panel_h {
+                    for x in 0..panel_w {
+                        let dx = dest_x + x;
+                        let dy = dest_y + y;
+                        if dx < sheet_w && dy < sheet_h {
+                            face_composite[dy * sheet_w + dx] = face_fb.pixels[y * panel_w + x];
+                        }
+                    }
+                }
+            }
+        }
+        mesh::set_mesh_quality(0, 1); // reset
+
+        // Grid lines
+        for row in 1..rows {
+            let sy = row * panel_h;
+            for x in 0..sheet_w {
+                if sy < sheet_h { face_composite[sy * sheet_w + x] = 0xFFFFFFFF; }
+            }
+        }
+        for col in 1..(cols * panels_per_face) {
+            let sx = col * panel_w;
+            for y in 0..sheet_h {
+                if sx < sheet_w { face_composite[y * sheet_w + sx] = 0xFFFFFFFF; }
+            }
+        }
+
+        eprintln!("Rendered face variation grid: {} presets, {}x{}", presets.len(), sheet_w, sheet_h);
+        save_png(&face_composite, sheet_w, sheet_h, "debug/model_face_variations.png");
+    }
+
     let vehicle = make_vehicle(0xFFCC3333);
     tris.clear();
     render::gen_vehicle_mesh(&vehicle, &mut tris, false);
