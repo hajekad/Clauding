@@ -77,9 +77,14 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         let slope = (1.0 - raw_n[1]).max(0.0); // use real normal, not clamped
         if slope > 0.15 { // ~22° threshold
             let slide_force = slope * 6.0 * dt;
-            npc.x -= raw_n[0] * slide_force;
-            npc.z -= raw_n[2] * slide_force;
-            npc.y = terrain.height_at(npc.x, npc.z);
+            let slide_x = npc.x - raw_n[0] * slide_force;
+            let slide_z = npc.z - raw_n[2] * slide_force;
+            // Don't slide into rivers
+            if !on_river_not_bridge(slide_x, slide_z, &world.river_segments, &world.bridges) {
+                npc.x = slide_x;
+                npc.z = slide_z;
+                npc.y = terrain.height_at(npc.x, npc.z);
+            }
         }
     }
 
@@ -123,15 +128,20 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
                     break;
                 }
             }
-            // Last resort: if still on river (junction/bend), try perpendicular to push direction
+            // Last resort: if still on river (junction/bend), try 8 directions at increasing radii
             if on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) {
-                for &(dx, dz) in &[(push_z, -push_x), (-push_z, push_x)] {
-                    let try_x = npc.x + dx * (best_half_width + 5.0);
-                    let try_z = npc.z + dz * (best_half_width + 5.0);
-                    if !on_river_not_bridge(try_x, try_z, &world.river_segments, &world.bridges) {
-                        npc.x = try_x;
-                        npc.z = try_z;
-                        break;
+                let cx = npc.x;
+                let cz = npc.z;
+                'escape: for radius in [best_half_width + 3.0, best_half_width + 8.0, best_half_width + 15.0] {
+                    for angle_i in 0..8 {
+                        let a = angle_i as f32 * std::f32::consts::TAU / 8.0;
+                        let try_x = cx + a.cos() * radius;
+                        let try_z = cz + a.sin() * radius;
+                        if !on_river_not_bridge(try_x, try_z, &world.river_segments, &world.bridges) {
+                            npc.x = try_x;
+                            npc.z = try_z;
+                            break 'escape;
+                        }
                     }
                 }
             }
@@ -400,13 +410,11 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
             world.npcs[i].stuck_timer = 0.0;
             world.npcs[i].detouring = false;
 
-            // Abandon current target — brief cooldown so NPC picks a different one.
-            // Keep short (10s) — path_clear in find_best_item prevents retargeting
-            // unreachable items. Longer values (30s+) cascade and block all items.
+            // Abandon current target — cooldown so NPC picks a different one.
             if let Some(item_idx) = world.npcs[i].target_item {
                 if item_idx < world.items.len() {
                     world.items[item_idx].claimed_by = None;
-                    world.items[item_idx].skip_until = 10.0;
+                    world.items[item_idx].skip_until = 30.0;
                 }
                 world.npcs[i].target_item = None;
             }
@@ -1002,6 +1010,17 @@ pub fn sys_midnight_reset(
             npc.knockout_timer = 0.0;
             npc.carrying_item = false;
             npc.carrying_bin = None;
+            // Release vehicle if NPC was driving
+            if npc.in_vehicle {
+                let ci = npc.car_idx;
+                if ci < world.vehicles.len() {
+                    world.vehicles[ci].ai_active = false;
+                    world.vehicles[ci].speed = 0.0;
+                    world.vehicles[ci].occupied = false;
+                    world.vehicles[ci].parked = true;
+                }
+            }
+            npc.in_vehicle = false;
             // Money persists between days — NPCs keep what they earned
             npc.brain_idx = i;
             npc.job_timer = 0.0;
