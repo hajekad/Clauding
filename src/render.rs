@@ -2822,13 +2822,13 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
         c);
     // Top panel (hood slope — visible from above and slightly from front)
     mesh::push_quad(tris,
-        [-fb_xh, fb_yt, fb_z], [-fn_xh, fn_yt, fn_z],
-        [fn_xh, fn_yt, fn_z], [fb_xh, fb_yt, fb_z],
+        [fb_xh, fb_yt, fb_z], [fn_xh, fn_yt, fn_z],
+        [-fn_xh, fn_yt, fn_z], [-fb_xh, fb_yt, fb_z],
         c);
     // Bottom panel
     mesh::push_quad(tris,
-        [-fb_xh, fb_yb, fb_z], [fb_xh, fb_yb, fb_z],
-        [fn_xh, fn_yb, fn_z], [-fn_xh, fn_yb, fn_z],
+        [fb_xh, fb_yb, fb_z], [-fb_xh, fb_yb, fb_z],
+        [-fn_xh, fn_yb, fn_z], [fn_xh, fn_yb, fn_z],
         undercar);
     // Front face (nose face)
     mesh::push_quad(tris,
@@ -2861,18 +2861,18 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
         c);
     // Top panel (rear deck)
     mesh::push_quad(tris,
-        [-rb_xh, rb_yt, rb_z], [rb_xh, rb_yt, rb_z],
-        [rn_xh, rn_yt, rn_z], [-rn_xh, rn_yt, rn_z],
+        [rb_xh, rb_yt, rb_z], [-rb_xh, rb_yt, rb_z],
+        [-rn_xh, rn_yt, rn_z], [rn_xh, rn_yt, rn_z],
         c);
     // Bottom panel
     mesh::push_quad(tris,
-        [-rb_xh, rb_yb, rb_z], [-rn_xh, rn_yb, rn_z],
-        [rn_xh, rn_yb, rn_z], [rb_xh, rb_yb, rb_z],
+        [rb_xh, rb_yb, rb_z], [rn_xh, rn_yb, rn_z],
+        [-rn_xh, rn_yb, rn_z], [-rb_xh, rb_yb, rb_z],
         undercar);
     // Rear face
     mesh::push_quad(tris,
-        [-rn_xh, rn_yt, rn_z], [rn_xh, rn_yt, rn_z],
-        [rn_xh, rn_yb, rn_z], [-rn_xh, rn_yb, rn_z],
+        [-rn_xh, rn_yb, rn_z], [rn_xh, rn_yb, rn_z],
+        [rn_xh, rn_yt, rn_z], [-rn_xh, rn_yt, rn_z],
         c_dk);
 
     // ── FENDER FLARES (RS5 wide-body — prominent muscular bulges) ──
@@ -3009,8 +3009,8 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
             [side * 0.92, 0.83, -0.90], [side * 0.92, 0.83, 1.80],
             [side * 0.76, 0.86, 1.80], [side * 0.76, 0.86, -0.90],
         );
-        if side > 0.0 { mesh::push_quad(tris, a, b, d2, d, c); }
-        else { mesh::push_quad(tris, d, d2, b, a, c); }
+        if side > 0.0 { mesh::push_quad(tris, d, d2, b, a, c); }
+        else { mesh::push_quad(tris, a, b, d2, d, c); }
     }
 
     // ── PILLARS ──
