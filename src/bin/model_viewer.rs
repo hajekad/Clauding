@@ -665,11 +665,11 @@ fn gen_building(tris: &mut Vec<state::WorldTri>) {
     // Front face (z+)
     mesh::wall_with_holes_tris(tris,
         -w * 0.5, 0.0, d * 0.5,
-        w, h, &win_holes, recess_depth, color, win_color, 1.0, 1.0, false);
+        w, h, &win_holes, recess_depth, color, &[win_color], 1.0, 1.0, false);
     // Back face (z-)
     mesh::wall_with_holes_tris(tris,
         w * 0.5, 0.0, -d * 0.5,
-        w, h, &win_holes, recess_depth, color, win_color, -1.0, -1.0, false);
+        w, h, &win_holes, recess_depth, color, &[win_color], -1.0, -1.0, false);
 
     // Side windows
     let side_cols = ((d - 1.0) / 2.5) as i32;
@@ -684,11 +684,11 @@ fn gen_building(tris: &mut Vec<state::WorldTri>) {
     // Right face (x+) — swap_xz for YZ-plane wall
     mesh::wall_with_holes_tris(tris,
         -d * 0.5, 0.0, w * 0.5,
-        d, h, &side_holes, recess_depth, color, win_color, -1.0, 1.0, true);
+        d, h, &side_holes, recess_depth, color, &[win_color], -1.0, 1.0, true);
     // Left face (x-) — swap_xz for YZ-plane wall
     mesh::wall_with_holes_tris(tris,
         d * 0.5, 0.0, -w * 0.5,
-        d, h, &side_holes, recess_depth, color, win_color, 1.0, -1.0, true);
+        d, h, &side_holes, recess_depth, color, &[win_color], 1.0, -1.0, true);
 
     // Pitched roof
     let roof_color = 0xFF665544u32;
@@ -722,9 +722,9 @@ fn gen_building_flat_roof(tris: &mut Vec<state::WorldTri>) {
         }
     }
     mesh::wall_with_holes_tris(tris, -w * 0.5, 0.0, d * 0.5,
-        w, h, &win_holes, 0.15, color, 0xFF222244, 1.0, 1.0, false);
+        w, h, &win_holes, 0.15, color, &[0xFF222244], 1.0, 1.0, false);
     mesh::wall_with_holes_tris(tris, w * 0.5, 0.0, -d * 0.5,
-        w, h, &win_holes, 0.15, color, 0xFF222244, -1.0, -1.0, false);
+        w, h, &win_holes, 0.15, color, &[0xFF222244], -1.0, -1.0, false);
 
     // Flat roof with parapet
     mesh::box_tris(tris, 0.0, h + 0.15, 0.0, w + 0.2, 0.3, d + 0.2, 0xFF556655);
@@ -1299,14 +1299,20 @@ fn main() {
     let vehicle = make_vehicle(0xFFCC3333);
     tris.clear();
     render::gen_vehicle_mesh(&vehicle, &mut tris, false);
-    let img = render_model_sheet(&tris, 0.7, 7.0, "Vehicle");
+    let img = render_model_sheet(&tris, 0.7, 5.5, "Vehicle");
     save_png(&img, IMG_W, IMG_H, "debug/model_vehicle.png");
 
     let vehicle_interior = make_vehicle(0xFF3333CC);
     tris.clear();
     render::gen_vehicle_mesh(&vehicle_interior, &mut tris, true);
-    let img = render_model_sheet(&tris, 0.7, 7.0, "Vehicle Interior");
+    let img = render_model_sheet(&tris, 0.7, 5.5, "Vehicle Interior");
     save_png(&img, IMG_W, IMG_H, "debug/model_vehicle_int.png");
+
+    // Vehicle mid LOD
+    tris.clear();
+    render::gen_vehicle_mesh_mid(&vehicle, &mut tris);
+    let img = render_model_sheet(&tris, 0.7, 7.0, "Vehicle Mid LOD");
+    save_png(&img, IMG_W, IMG_H, "debug/model_vehicle_mid.png");
 
     let npc = make_npc(state::NpcJob::Collector);
     tris.clear();
@@ -1491,13 +1497,13 @@ fn main() {
         mesh::WallHole { x: 3.0, y: 3.5, w: 0.8, h: 1.2 },
     ];
     mesh::wall_with_holes_tris(&mut tris, -2.5, 0.0, 0.0, 5.0, 6.0, &holes, 0.15,
-        0xFF887766, 0xFF222244, 1.0, 1.0, false);
+        0xFF887766, &[0xFF222244], 1.0, 1.0, false);
     let img = render_model_sheet(&tris, 3.0, 10.0, "Wall Holes Z+");
     save_png(&img, IMG_W, IMG_H, "debug/model_wallholes.png");
 
     tris.clear();
     mesh::wall_with_holes_tris(&mut tris, 2.5, 0.0, 0.0, 5.0, 6.0, &holes, 0.15,
-        0xFF887766, 0xFF222244, -1.0, -1.0, false);
+        0xFF887766, &[0xFF222244], -1.0, -1.0, false);
     let img = render_model_sheet(&tris, 3.0, 10.0, "Wall Holes Z-");
     save_png(&img, IMG_W, IMG_H, "debug/model_wallholes_back.png");
 

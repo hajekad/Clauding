@@ -636,9 +636,6 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     let hair = app.hair;
     let sk = skin;
     let sk_sh = darken(skin, 0.92);
-    let _sk_dk = darken(skin, 0.85);
-    let _hair_dk = darken(hair, 0.90);
-    let _hair_med = darken(hair, 0.95);
 
     use std::f32::consts::{PI, TAU};
     let n = 48;
@@ -1251,7 +1248,6 @@ fn body_ring(cx: f32, cz: f32, rx: f32, rz: f32, bumps: &[(f32, f32, f32)], n: u
 fn gen_nude_torso(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions, n: usize) {
     let sk = skin;
     let m = props.muscle_def;
-    let _sk_shadow = darken(sk, 1.0 - 0.03 * m);
     let sk_deep = darken(sk, 1.0 - 0.07 * m);
     let nipple_col = darken(sk, 0.78);
 
@@ -1749,8 +1745,6 @@ fn gen_nude_leg(
     let hp = PI * 0.5;
 
     let lx = side * props.hip_joint_x;
-    let _hip = [lx, 0.92, 0.0];
-    let _knee = [lx, 0.48, fwd * 0.5];
     let ankle = [lx, 0.08, fwd * 0.25 - knee_bend * 0.4];
 
     // ── SINGLE CONTINUOUS LEG LOFT (hip → knee → ankle) ──
@@ -2691,7 +2685,7 @@ pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
         None,
     );
 
-    let rot = terrain_rot3x3(player.terrain_normal, player.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(player.terrain_normal, 15.0), player.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
             let rv = rot3x3_apply(&rot, *v);
@@ -2750,6 +2744,448 @@ pub fn gen_head_standalone(tris: &mut Vec<WorldTri>, face: &FaceSliders, skin: u
 }
 
 pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bool) {
+    let base = tris.len();
+    gen_rs5_body(tris, v.color, show_interior);
+    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 25.0), v.rot_y);
+    for tri in &mut tris[base..] {
+        for vert in &mut tri.v {
+            let rv = rot3x3_apply(&rot, *vert);
+            vert[0] = rv[0] + v.x;
+            vert[1] = rv[1] + v.y;
+            vert[2] = rv[2] + v.z;
+        }
+        tri.normal = rot3x3_apply(&rot, tri.normal);
+    }
+}
+
+/// Audi RS5 Sportback — detailed body model in local space (origin at ground center).
+/// Uses volumetric primitives (beveled boxes, ellipsoids) for solid body construction.
+/// Real RS5: 4780mm L × 1861mm W × 1387mm H, wheelbase 2826mm, 20" wheels ~710mm OD.
+/// Coordinates: -Z = front, +Z = rear, +Y = up, ±X = sides.
+fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
+    use std::f32::consts::PI;
+    let c = color;
+    let c_dk = darken(c, 0.88);
+    let c_dkr = darken(c, 0.78);
+    let c_shadow = darken(c, 0.70);
+    let trim = 0xFF333333_u32;
+    let chrome = 0xFFAAAAAA_u32;
+    let chrome_dk = 0xFF777777_u32;
+    let undercar = 0xFF222222_u32;
+    let glass = WINDSHIELD_COLOR;
+    let grille_dk = 0xFF1A1A1A_u32;
+
+    // Key dimensions (meters, 1:1 from real RS5 Sportback)
+    let fwz: f32 = -1.41;   // front wheel center Z
+    let rwz: f32 = 1.41;    // rear wheel center Z
+    let wtrk: f32 = 0.80;   // wheel center |X| (half track)
+    let wr: f32 = 0.355;    // wheel radius (20" + tire)
+    let ww: f32 = 0.255;    // tire width
+    let gc: f32 = 0.125;    // ground clearance
+
+    // ══════════════════════════════════════════════════════════════
+    //  MAIN BODY SHELL — central box + tapered nose/tail with quad panels
+    // ══════════════════════════════════════════════════════════════
+
+    // Mid body (door/cabin area) — main volume between wheel arches
+    // y: 0.15 to 0.77
+    mesh::beveled_box_tris(tris, 0.0, 0.46, 0.0, 1.86, 0.62, 2.90, 0.06, c);
+
+    // Upper body shoulder ridge
+    mesh::beveled_box_tris(tris, 0.0, 0.80, -0.10, 1.84, 0.06, 2.70, 0.03, c);
+
+    // ── FRONT NOSE (tapered with quad side/top panels) ──
+    // Key coordinates: body ends at z=-1.45 (half of 2.90)
+    //   Body top: y=0.77, width: 1.86 (half=0.93)
+    //   Nose tip: z=-2.30, y_top=0.68, y_bot=0.17, width: 1.60 (half=0.80)
+    let fb_z = -1.45_f32;  // front body edge Z
+    let fn_z = -2.30_f32;  // front nose tip Z
+    let fb_yt = 0.77_f32;  // front body top Y
+    let fn_yt = 0.68_f32;  // front nose top Y
+    let fb_yb = 0.15_f32;  // front body bottom Y
+    let fn_yb = 0.17_f32;  // front nose bottom Y
+    let fb_xh = 0.93_f32;  // front body half-width
+    let fn_xh = 0.80_f32;  // front nose half-width
+
+    // Nose volume fill (inner box for solidity)
+    mesh::beveled_box_tris(tris, 0.0, 0.42, -1.88, 1.66, 0.50, 0.86, 0.04, c);
+
+    // Right side panel (visible from right — tapers inward + downward)
+    mesh::push_quad(tris,
+        [fb_xh, fb_yt, fb_z], [fn_xh, fn_yt, fn_z],
+        [fn_xh, fn_yb, fn_z], [fb_xh, fb_yb, fb_z],
+        c);
+    // Left side panel
+    mesh::push_quad(tris,
+        [-fb_xh, fb_yb, fb_z], [-fn_xh, fn_yb, fn_z],
+        [-fn_xh, fn_yt, fn_z], [-fb_xh, fb_yt, fb_z],
+        c);
+    // Top panel (hood slope — visible from above and slightly from front)
+    mesh::push_quad(tris,
+        [-fb_xh, fb_yt, fb_z], [-fn_xh, fn_yt, fn_z],
+        [fn_xh, fn_yt, fn_z], [fb_xh, fb_yt, fb_z],
+        c);
+    // Bottom panel
+    mesh::push_quad(tris,
+        [-fb_xh, fb_yb, fb_z], [fb_xh, fb_yb, fb_z],
+        [fn_xh, fn_yb, fn_z], [-fn_xh, fn_yb, fn_z],
+        undercar);
+    // Front face (nose face)
+    mesh::push_quad(tris,
+        [-fn_xh, fn_yb, fn_z], [fn_xh, fn_yb, fn_z],
+        [fn_xh, fn_yt, fn_z], [-fn_xh, fn_yt, fn_z],
+        c_dk);
+
+    // ── REAR TAIL (tapered with quad side/top panels) ──
+    let rb_z = 1.45_f32;   // rear body edge Z
+    let rn_z = 2.30_f32;   // rear tail tip Z
+    let rb_yt = 0.77_f32;  // rear body top Y
+    let rn_yt = 0.66_f32;  // rear tail top Y
+    let rb_yb = 0.15_f32;  // rear body bottom Y
+    let rn_yb = 0.17_f32;  // rear tail bottom Y
+    let rb_xh = 0.93_f32;  // rear body half-width
+    let rn_xh = 0.84_f32;  // rear tail half-width
+
+    // Rear volume fill
+    mesh::beveled_box_tris(tris, 0.0, 0.42, 1.88, 1.72, 0.50, 0.86, 0.04, c);
+
+    // Right side panel
+    mesh::push_quad(tris,
+        [rb_xh, rb_yb, rb_z], [rn_xh, rn_yb, rn_z],
+        [rn_xh, rn_yt, rn_z], [rb_xh, rb_yt, rb_z],
+        c);
+    // Left side panel
+    mesh::push_quad(tris,
+        [-rb_xh, rb_yt, rb_z], [-rn_xh, rn_yt, rn_z],
+        [-rn_xh, rn_yb, rn_z], [-rb_xh, rb_yb, rb_z],
+        c);
+    // Top panel (rear deck)
+    mesh::push_quad(tris,
+        [-rb_xh, rb_yt, rb_z], [rb_xh, rb_yt, rb_z],
+        [rn_xh, rn_yt, rn_z], [-rn_xh, rn_yt, rn_z],
+        c);
+    // Bottom panel
+    mesh::push_quad(tris,
+        [-rb_xh, rb_yb, rb_z], [-rn_xh, rn_yb, rn_z],
+        [rn_xh, rn_yb, rn_z], [rb_xh, rb_yb, rb_z],
+        undercar);
+    // Rear face
+    mesh::push_quad(tris,
+        [-rn_xh, rn_yt, rn_z], [rn_xh, rn_yt, rn_z],
+        [rn_xh, rn_yb, rn_z], [-rn_xh, rn_yb, rn_z],
+        c_dk);
+
+    // ── FENDER FLARES (RS5 wide-body — prominent muscular bulges) ──
+    for &side in &[-1.0f32, 1.0] {
+        // Front fender flare (large, wraps over front arch)
+        mesh::ellipsoid_tris(tris, side * 0.86, 0.52, fwz, 0.16, 0.34, 0.58, 0, c);
+        // Rear fender flare (wider — RS5 muscular rear haunches)
+        mesh::ellipsoid_tris(tris, side * 0.88, 0.52, rwz, 0.18, 0.36, 0.62, 0, c);
+        // Fender lip ridge above each arch
+        push_box(tris, side * 0.92, 0.72, fwz, 0.02, 0.02, 0.42, c_dkr);
+        push_box(tris, side * 0.92, 0.72, rwz, 0.02, 0.02, 0.46, c_dkr);
+    }
+
+    // ── HOOD SURFACE DETAIL ──
+    // Power bulge (center hood ridge)
+    mesh::ellipsoid_tris(tris, 0.0, 0.80, -1.50, 0.30, 0.025, 0.60, 0, c_dk);
+    // Hood crease lines (two sharp creases)
+    push_box(tris, -0.40, 0.79, -1.50, 0.012, 0.004, 0.65, c_dkr);
+    push_box(tris, 0.40, 0.79, -1.50, 0.012, 0.004, 0.65, c_dkr);
+    // Hood panel gap
+    push_box(tris, 0.0, 0.84, -0.88, 0.85, 0.003, 0.005, c_shadow);
+
+    // ── SINGLEFRAME GRILLE (massive hexagonal opening) ──
+    mesh::beveled_box_tris(tris, 0.0, 0.42, -2.34, 1.12, 0.30, 0.06, 0.03, grille_dk);
+    // Honeycomb mesh pattern (7 rows × 10 cols)
+    for row in 0..7 {
+        let y_off = if row % 2 == 1 { 0.05 } else { 0.0 };
+        for col in 0..10 {
+            let gx = -0.48 + col as f32 * 0.10 + y_off * 0.5;
+            let gy = 0.30 + row as f32 * 0.035;
+            if gx.abs() < 0.54 {
+                push_box(tris, gx, gy, -2.38, 0.032, 0.010, 0.008, 0xFF2A2A2A);
+            }
+        }
+    }
+    // Chrome frame around grille
+    push_box(tris, 0.0, 0.58, -2.36, 1.14, 0.018, 0.02, chrome);  // top
+    push_box(tris, 0.0, 0.26, -2.36, 1.10, 0.018, 0.02, chrome);  // bottom
+    push_box(tris, -0.57, 0.42, -2.36, 0.018, 0.32, 0.02, chrome); // left
+    push_box(tris, 0.57, 0.42, -2.36, 0.018, 0.32, 0.02, chrome);  // right
+    // Signature center horizontal chrome bar
+    push_box(tris, 0.0, 0.42, -2.38, 1.10, 0.024, 0.012, chrome);
+
+    // ── LOWER AIR INTAKES (flanking grille) ──
+    for &side in &[-1.0f32, 1.0] {
+        mesh::beveled_box_tris(tris, side * 0.68, 0.20, -2.30, 0.36, 0.14, 0.06, 0.02, grille_dk);
+        for i in 0..3 {
+            push_box(tris, side * 0.68, 0.16 + i as f32 * 0.04, -2.32, 0.32, 0.006, 0.015, 0xFF2A2A2A);
+        }
+        // Fog light area
+        mesh::sphere_tris(tris, side * 0.72, 0.20, -2.32, 0.045, 0, chrome_dk);
+        // Front canard / aero blade
+        push_box(tris, side * 0.86, 0.18, -2.26, 0.05, 0.12, 0.10, trim);
+    }
+
+    // ── FRONT BUMPER + SPLITTER ──
+    mesh::beveled_box_tris(tris, 0.0, 0.16, -2.28, 1.86, 0.10, 0.12, 0.03, trim);
+    // Front splitter lip
+    push_box(tris, 0.0, 0.10, -2.36, 1.70, 0.020, 0.06, trim);
+
+    // ── HEADLIGHTS (angular, aggressive RS5 shape) ──
+    for &side in &[-1.0f32, 1.0] {
+        let hx = side * 0.72;
+        // Main housing (dark, angular — extends from grille outward)
+        mesh::beveled_box_tris(tris, hx, 0.66, -2.20, 0.38, 0.12, 0.26, 0.02, 0xFF333338);
+        // Headlight wraps to side
+        push_box(tris, side * 0.92, 0.66, -2.10, 0.02, 0.10, 0.14, 0xFF333338);
+        // LED DRL strip (upper arc — RS5 signature)
+        push_box(tris, hx, 0.73, -2.26, 0.32, 0.015, 0.08, 0x00FFEE88);
+        // Projector lens (main beam)
+        mesh::sphere_tris(tris, hx - side * 0.04, 0.66, -2.28, 0.06, 0, 0x00FFEE88);
+        // Secondary lens (inner)
+        mesh::sphere_tris(tris, hx + side * 0.08, 0.66, -2.26, 0.04, 0, 0x00FFDD66);
+        // Chrome inner reflector
+        push_box(tris, hx, 0.66, -2.22, 0.30, 0.06, 0.04, chrome_dk);
+        // Turn signal (lower outer corner, emissive amber)
+        push_box(tris, hx + side * 0.14, 0.60, -2.24, 0.06, 0.025, 0.06, 0x00FFAA22);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  CABIN / GREENHOUSE
+    // ══════════════════════════════════════════════════════════════
+
+    // Cabin core volume (beltline at ~0.86, roof at ~1.39)
+    mesh::beveled_box_tris(tris, 0.0, 1.10, -0.10, 1.52, 0.50, 1.70, 0.06, c_dk);
+    // Roof panel (flat section, B-pillar to C-pillar)
+    mesh::beveled_box_tris(tris, 0.0, 1.38, -0.20, 1.40, 0.06, 1.20, 0.04, c);
+
+    // ── SPORTBACK REAR SLOPE (quad-based for visible diagonal) ──
+    // Roof sweeps from y=1.38 at z=0.40 down to y=0.88 at z=1.80
+    let cab_xh = 0.72_f32; // cabin half-width at side
+    // Sportback roof surface (top, angled)
+    mesh::push_quad(tris,
+        [-cab_xh, 1.38, 0.40], [cab_xh, 1.38, 0.40],
+        [cab_xh, 0.88, 1.80], [-cab_xh, 0.88, 1.80],
+        c);
+    // Sportback right side panel (visible diagonal from right)
+    mesh::push_quad(tris,
+        [cab_xh, 1.34, 0.40], [cab_xh, 0.88, 1.80],
+        [cab_xh, 0.84, 1.80], [cab_xh, 0.86, 0.40],
+        c_dk);
+    // Sportback left side panel
+    mesh::push_quad(tris,
+        [-cab_xh, 0.86, 0.40], [-cab_xh, 0.84, 1.80],
+        [-cab_xh, 0.88, 1.80], [-cab_xh, 1.34, 0.40],
+        c_dk);
+    // Sportback rear face (small vertical face at the tail of the greenhouse)
+    mesh::push_quad(tris,
+        [-cab_xh, 0.84, 1.80], [cab_xh, 0.84, 1.80],
+        [cab_xh, 0.88, 1.80], [-cab_xh, 0.88, 1.80],
+        c_dk);
+
+    // Volume fill for sportback taper (gives thickness to the C/D pillar area)
+    mesh::beveled_box_tris(tris, 0.0, 1.08, 1.10, 1.20, 0.44, 0.60, 0.04, c);
+    mesh::beveled_box_tris(tris, 0.0, 0.96, 1.50, 1.00, 0.24, 0.30, 0.03, c);
+
+    // ── PILLARS ──
+    for &side in &[-1.0f32, 1.0] {
+        // A-pillar (raked forward, connects cowl to roof)
+        push_box(tris, side * 0.73, 1.14, -0.82, 0.05, 0.46, 0.06, trim);
+        // B-pillar (gloss black)
+        push_box(tris, side * 0.75, 1.10, 0.14, 0.05, 0.48, 0.05, trim);
+        // C-pillar (sportback — thick, sweeps rearward as diagonal)
+        mesh::push_quad(tris,
+            [side * 0.74, 1.32, 0.80],
+            [side * 0.74, 0.88, 1.60],
+            [side * 0.74, 0.84, 1.60],
+            [side * 0.74, 1.28, 0.80],
+            trim);
+    }
+
+    // ── WINDSHIELDS ──
+    // Front windshield (raked)
+    push_box(tris, 0.0, 1.16, -0.86, 1.32, 0.38, 0.04, glass);
+    // Rear window (sportback — shallow angle, large)
+    push_box(tris, 0.0, 1.14, 1.38, 1.10, 0.24, 0.04, glass);
+    push_box(tris, 0.0, 1.00, 1.60, 0.96, 0.14, 0.04, glass);
+
+    // ── SIDE WINDOWS ──
+    for &side in &[-1.0f32, 1.0] {
+        // Front door window
+        push_box(tris, side * 0.77, 1.12, -0.32, 0.03, 0.34, 0.64, glass);
+        // Rear door window
+        push_box(tris, side * 0.76, 1.12, 0.58, 0.03, 0.30, 0.54, glass);
+        // Quarter window (at C-pillar)
+        push_box(tris, side * 0.72, 1.14, 1.06, 0.03, 0.20, 0.16, glass);
+        // Chrome window surround trim
+        push_box(tris, side * 0.78, 1.32, -0.10, 0.005, 0.005, 1.50, chrome);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  SIDE DETAILS
+    // ══════════════════════════════════════════════════════════════
+
+    // ── CHARACTER LINES ──
+    for &side in &[-1.0f32, 1.0] {
+        // Upper character line (shoulder crease, headlight → tail)
+        push_box(tris, side * 0.93, 0.76, -0.10, 0.006, 0.006, 2.40, c_dkr);
+        // Lower character line (door crease)
+        push_box(tris, side * 0.92, 0.52, -0.10, 0.006, 0.006, 2.10, c_shadow);
+        // Beltline (at window bottom)
+        push_box(tris, side * 0.78, 0.92, -0.10, 0.006, 0.006, 1.70, c_dkr);
+    }
+
+    // ── SIDE SKIRTS (gloss black aero) ──
+    for &side in &[-1.0f32, 1.0] {
+        mesh::beveled_box_tris(tris, side * 0.92, 0.18, 0.0, 0.06, 0.10, 2.00, 0.015, trim);
+        push_box(tris, side * 0.94, 0.13, -0.40, 0.015, 0.015, 0.50, trim);
+        push_box(tris, side * 0.94, 0.13, 0.40, 0.015, 0.015, 0.50, trim);
+    }
+
+    // ── DOOR HANDLES ──
+    for &side in &[-1.0f32, 1.0] {
+        push_box(tris, side * 0.94, 0.72, -0.22, 0.015, 0.024, 0.12, chrome_dk);
+        push_box(tris, side * 0.94, 0.72, 0.52, 0.015, 0.024, 0.12, chrome_dk);
+    }
+
+    // ── SIDE MIRRORS ──
+    for &side in &[-1.0f32, 1.0] {
+        push_box(tris, side * 0.90, 0.95, -0.64, 0.04, 0.025, 0.06, c);
+        mesh::beveled_box_tris(tris, side * 1.02, 0.95, -0.62, 0.09, 0.07, 0.15, 0.02, c);
+        push_box(tris, side * 1.07, 0.95, -0.62, 0.008, 0.05, 0.11, 0xFF556677);
+        push_box(tris, side * 1.04, 1.00, -0.62, 0.008, 0.012, 0.06, 0x00FFAA22);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  WHEEL WELLS + WHEELS
+    // ══════════════════════════════════════════════════════════════
+
+    // Wheel arch cut-outs (dark recesses)
+    for &(awx, awz) in &[(-0.90f32, fwz), (0.90, fwz), (-0.90, rwz), (0.90, rwz)] {
+        push_box(tris, awx, wr, awz, 0.12, wr + 0.04, 0.50, undercar);
+    }
+
+    // 20" split 5-spoke alloy wheels
+    let spk = 0xFF444444_u32;
+    let hub = 0xFF888888_u32;
+    for &(wwx, wwz) in &[(-wtrk, fwz), (wtrk, fwz), (-wtrk, rwz), (wtrk, rwz)] {
+        let wy = wr;
+        // Tire (wide, low-profile)
+        mesh::cylinder_tris(tris, wwx, wy, wwz, wr, ww, 16, TIRE_COLOR);
+        // Sidewall detail
+        mesh::cylinder_tris(tris, wwx, wy, wwz, wr - 0.015, ww + 0.008, 14, darken(TIRE_COLOR, 0.88));
+        // Rim face (alloy)
+        mesh::cylinder_tris(tris, wwx, wy, wwz, wr * 0.84, 0.018, 14, spk);
+        // 5 split spokes
+        for s in 0..5 {
+            let a = s as f32 * PI * 2.0 / 5.0;
+            let (sa, ca) = a.sin_cos();
+            let rr = wr * 0.68;
+            push_box(tris, wwx, wy + ca * rr * 0.5, wwz + sa * rr * 0.5,
+                ww * 0.36, 0.028, 0.032, spk);
+            let a2 = a + 0.16;
+            let (sa2, ca2) = a2.sin_cos();
+            push_box(tris, wwx, wy + ca2 * rr * 0.5, wwz + sa2 * rr * 0.5,
+                ww * 0.26, 0.018, 0.024, spk);
+        }
+        // Center hub
+        mesh::cylinder_tris(tris, wwx, wy, wwz, wr * 0.18, ww + 0.016, 8, hub);
+        mesh::cylinder_tris(tris, wwx, wy, wwz, wr * 0.06, ww + 0.036, 5, 0xFFBBBBBB);
+        // Brake disc
+        mesh::cylinder_tris(tris, wwx, wy, wwz, wr * 0.66, 0.025, 12, 0xFF666666);
+        // RS red brake caliper
+        push_box(tris, wwx, wy - 0.08, wwz - 0.12, ww * 0.28, 0.06, 0.06, 0xFFCC2222);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  REAR END
+    // ══════════════════════════════════════════════════════════════
+
+    // Trunk lid surface
+    mesh::beveled_box_tris(tris, 0.0, 0.84, 1.90, 1.68, 0.08, 0.50, 0.03, c);
+    // Lip spoiler (subtle, integrated into trunk edge)
+    push_box(tris, 0.0, 0.90, 2.18, 1.36, 0.016, 0.04, trim);
+
+    // ── TAIL LIGHTS (wide, connected by LED bar — RS5 signature) ──
+    for &side in &[-1.0f32, 1.0] {
+        // Outer tail light housing (wraps to side)
+        mesh::beveled_box_tris(tris, side * 0.64, 0.74, 2.26, 0.34, 0.10, 0.06, 0.01, 0xFF331111);
+        // LED strip
+        push_box(tris, side * 0.64, 0.74, 2.30, 0.30, 0.030, 0.008, 0x00FF2222);
+        // Inner tail light
+        push_box(tris, side * 0.30, 0.74, 2.28, 0.18, 0.07, 0.04, 0xFF331111);
+        push_box(tris, side * 0.30, 0.74, 2.30, 0.14, 0.020, 0.008, 0x00FF2222);
+    }
+    // Connected light bar across full width
+    push_box(tris, 0.0, 0.74, 2.30, 0.84, 0.014, 0.008, 0x00FF2222);
+    // Reverse lights
+    push_box(tris, -0.34, 0.67, 2.28, 0.08, 0.028, 0.02, 0xFFDDDDDD);
+    push_box(tris, 0.34, 0.67, 2.28, 0.08, 0.028, 0.02, 0xFFDDDDDD);
+
+    // ── REAR BUMPER ──
+    mesh::beveled_box_tris(tris, 0.0, 0.28, 2.24, 1.86, 0.20, 0.14, 0.03, trim);
+    // Diffuser with vertical fins
+    mesh::beveled_box_tris(tris, 0.0, 0.14, 2.28, 1.46, 0.10, 0.08, 0.02, 0xFF2A2A2A);
+    for i in 0..5 {
+        push_box(tris, -0.44 + i as f32 * 0.22, 0.16, 2.30, 0.008, 0.06, 0.04, 0xFF333333);
+    }
+
+    // ── DUAL OVAL EXHAUST TIPS ──
+    for &side in &[-1.0f32, 1.0] {
+        let ex = side * 0.56;
+        mesh::beveled_box_tris(tris, ex, 0.16, 2.32, 0.22, 0.10, 0.06, 0.015, chrome_dk);
+        mesh::ellipsoid_tris(tris, ex, 0.16, 2.34, 0.065, 0.035, 0.025, 0, 0xFF111111);
+        mesh::cylinder_tris(tris, ex, 0.16, 2.34, 0.055, 0.04, 6, chrome);
+    }
+
+    // ── LICENSE PLATE (rear center) ──
+    push_box(tris, 0.0, 0.52, 2.30, 0.32, 0.07, 0.012, 0xFFDDDDDD);
+    push_box(tris, 0.0, 0.52, 2.31, 0.35, 0.005, 0.008, 0xFF444444);
+
+    // ── UNDERCARRIAGE PAN ──
+    push_box(tris, 0.0, gc - 0.02, 0.0, 1.74, 0.035, 4.60, undercar);
+
+    // ── SHARK FIN ANTENNA ──
+    mesh::ellipsoid_tris(tris, 0.0, 1.44, 0.50, 0.030, 0.045, 0.09, 0, trim);
+
+    // ══════════════════════════════════════════════════════════════
+    //  INTERIOR (only rendered for player's vehicle)
+    // ══════════════════════════════════════════════════════════════
+    if show_interior {
+        // Dashboard
+        mesh::beveled_box_tris(tris, 0.0, 0.92, -0.68, 1.36, 0.12, 0.38, 0.02, DASHBOARD_COLOR);
+        // Virtual cockpit screen
+        push_box(tris, -0.34, 0.96, -0.80, 0.32, 0.07, 0.015, 0x00334455);
+        // MMI touchscreen
+        push_box(tris, 0.10, 1.00, -0.68, 0.24, 0.14, 0.015, 0x00334455);
+        // Steering wheel (flat-bottom RS style)
+        mesh::cylinder_tris(tris, -0.34, 1.02, -0.52, 0.14, 0.018, 10, STEERING_COLOR);
+        push_box(tris, -0.34, 0.93, -0.52, 0.11, 0.018, 0.018, STEERING_COLOR);
+        mesh::cylinder_tris(tris, -0.34, 0.96, -0.60, 0.026, 0.12, 4, STEERING_COLOR);
+        // High center console
+        mesh::beveled_box_tris(tris, 0.0, 0.74, -0.02, 0.26, 0.22, 0.84, 0.02,
+            darken(DASHBOARD_COLOR, 0.8));
+        // Gear selector
+        push_box(tris, 0.0, 0.86, -0.14, 0.06, 0.038, 0.10, 0xFF333333);
+        // Sport bucket seats
+        for &sx in &[-0.38f32, 0.38] {
+            mesh::beveled_box_tris(tris, sx, 0.68, -0.04, 0.46, 0.12, 0.50, 0.02, SEAT_COLOR);
+            mesh::beveled_box_tris(tris, sx, 1.02, 0.18, 0.46, 0.50, 0.08, 0.02, SEAT_COLOR);
+            push_box(tris, sx, 1.30, 0.20, 0.18, 0.11, 0.06, SEAT_COLOR);
+            push_box(tris, sx - 0.21, 1.02, 0.18, 0.035, 0.34, 0.06, darken(SEAT_COLOR, 0.85));
+            push_box(tris, sx + 0.21, 1.02, 0.18, 0.035, 0.34, 0.06, darken(SEAT_COLOR, 0.85));
+        }
+        // Rear bench
+        mesh::beveled_box_tris(tris, 0.0, 0.66, 0.64, 1.14, 0.10, 0.42, 0.02, SEAT_COLOR);
+        mesh::beveled_box_tris(tris, 0.0, 0.94, 0.80, 1.14, 0.34, 0.07, 0.02, SEAT_COLOR);
+        // Rearview mirror
+        push_box(tris, 0.0, 1.26, -0.54, 0.18, 0.05, 0.018, 0xFF556677);
+    }
+}
+
+fn _gen_vehicle_mesh_old(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bool) {
     let base = tris.len();
     let color = v.color;
     let cabin_color = darken(color, VEHICLE_BODY_COLOR_DARKEN);
@@ -2898,7 +3334,7 @@ pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bo
         push_box(tris, 0.0, 1.1, -0.45, 0.2, 0.06, 0.02, 0xFF667788);
     }
 
-    let rot = terrain_rot3x3(v.terrain_normal, v.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 25.0), v.rot_y);
     for tri in &mut tris[base..] {
         for vert in &mut tri.v {
             let rv = rot3x3_apply(&rot, *vert);
@@ -3019,28 +3455,20 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
             job_hat,
         );
 
-        // Rotate 90° around X to lie face-down: (x, y, z) → (x, z, -y)
-        // Then offset Y so body rests on ground surface (y ≈ 0.15)
-        let (sin_r, cos_r) = npc.rot_y.sin_cos();
+        // Rotate -90° around X (face-down), then terrain-aligned heading rotation
+        let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 15.0), npc.rot_y);
         for tri in &mut tris[base..] {
             for v in &mut tri.v {
                 // First: rotate -90° around X axis (face-down)
-                let lx = v[0];
-                let ly = v[2];       // y' = old_z
-                let lz = -v[1];      // z' = -old_y
-                // Then: rotate around Y by heading + translate to world
-                let rx = lx * cos_r + lz * sin_r;
-                let rz = -lx * sin_r + lz * cos_r;
-                v[0] = rx + npc.x;
-                v[1] = ly + npc.y + 0.15; // slight offset above ground
-                v[2] = rz + npc.z;
+                let local = [v[0], v[2], -v[1]];
+                // Then: terrain-aligned rotation + translate to world
+                let rv = rot3x3_apply(&rot, local);
+                v[0] = rv[0] + npc.x;
+                v[1] = rv[1] + npc.y + 0.15;
+                v[2] = rv[2] + npc.z;
             }
-            let nx = tri.normal[0];
-            let ny = tri.normal[2];
-            let nz = -tri.normal[1];
-            let rnx = nx * cos_r + nz * sin_r;
-            let rnz = -nx * sin_r + nz * cos_r;
-            tri.normal = [rnx, ny, rnz];
+            let local_n = [tri.normal[0], tri.normal[2], -tri.normal[1]];
+            tri.normal = rot3x3_apply(&rot, local_n);
         }
         return;
     }
@@ -3075,7 +3503,7 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         mesh::sphere_tris(tris, 0.0, 2.70, -0.1, 0.04, 0, 0xFFFFFFFF);
     }
 
-    let rot = terrain_rot3x3(npc.terrain_normal, npc.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 15.0), npc.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
             let rv = rot3x3_apply(&rot, *v);
@@ -3166,7 +3594,7 @@ pub fn gen_trash_bin_mesh(bin: &TrashBin, tris: &mut Vec<WorldTri>) {
         mesh::sphere_tris(tris, 0.0, 0.95, 0.0, 0.15, 0, BAG_COLOR);
     }
     // Terrain-aligned transform
-    let rot = terrain_rot3x3(bin.terrain_normal, 0.0);
+    let rot = terrain_rot3x3(clamp_normal_tilt(bin.terrain_normal, 20.0), 0.0);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
             let rv = rot3x3_apply(&rot, *v);
@@ -3258,7 +3686,7 @@ pub fn gen_npc_mesh_mid(npc: &Npc, tris: &mut Vec<WorldTri>) {
     push_box(tris,  0.09, 0.04,  swing * 0.15, 0.05, 0.05, 0.08, BOOT_BROWN);
 
     // Apply body stretch + world transform
-    let rot = terrain_rot3x3(npc.terrain_normal, npc.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 15.0), npc.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
             v[1] *= BODY_STRETCH;
@@ -3274,12 +3702,13 @@ pub fn gen_npc_mesh_mid(npc: &Npc, tris: &mut Vec<WorldTri>) {
 /// Low-detail NPC: 3 colored boxes (~36 tris vs ~14K full detail)
 fn gen_npc_mesh_lod(npc: &Npc, tris: &mut Vec<WorldTri>) {
     let app = npc_appearance(npc.brain_idx as u32);
-    let body_col = if app.has_coat { app.coat_col } else { 0xFF3355AA };
+    let shirt = job_shirt_color(npc);
+    let body_col = if app.has_coat { app.coat_col } else { shirt };
     let base = tris.len();
     push_box(tris, 0.0, 0.75, 0.0, 0.20, 0.55, 0.12, body_col);
     push_box(tris, 0.0, 0.25, 0.0, 0.13, 0.25, 0.10, npc.pants_color);
     push_box(tris, 0.0, 1.55, 0.0, 0.10, 0.12, 0.10, app.skin);
-    let rot = terrain_rot3x3(npc.terrain_normal, npc.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 15.0), npc.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
             let rv = rot3x3_apply(&rot, *v);
@@ -3296,14 +3725,42 @@ const LOD_NPC_FULL_SQ: f32 = 625.0;    // < 25m: full detail
 const LOD_NPC_MID_SQ: f32 = 6400.0;    // 25-80m: medium detail (~200 tris)
 const LOD_NPC_LOW_SQ: f32 = 40000.0;   // 80-200m: low detail boxes
 const LOD_VEH_FULL_SQ: f32 = 2500.0;   // < 50m: full detail vehicle
+const LOD_VEH_MID_SQ: f32 = 10000.0;   // 50-100m: medium detail vehicle
 const LOD_VEH_DIST_SQ: f32 = 40000.0;  // > 200m: skip vehicles
+
+/// Medium-detail vehicle: body + cabin + 4 wheels + windshield, ~100 tris
+pub fn gen_vehicle_mesh_mid(v: &Vehicle, tris: &mut Vec<WorldTri>) {
+    let base = tris.len();
+    let color = v.color;
+    let cabin_color = darken(color, VEHICLE_BODY_COLOR_DARKEN);
+    // Body
+    mesh::beveled_box_tris(tris, 0.0, 0.45, 0.0, 1.8, 0.6, 3.6, 0.08, color);
+    // Cabin
+    mesh::beveled_box_tris(tris, 0.0, 0.95, 0.2, 1.5, 0.5, 1.8, 0.06, cabin_color);
+    // Windshield
+    push_box(tris, 0.0, 0.95, -0.70, 1.3, 0.4, 0.05, WINDSHIELD_COLOR);
+    // 4 wheels
+    for &(wx, wz) in &[(-0.88f32, -1.1f32), (0.88, -1.1), (-0.88, 1.1), (0.88, 1.1)] {
+        mesh::cylinder_tris(tris, wx, 0.28, wz, 0.28, 0.22, 5, TIRE_COLOR);
+    }
+    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 25.0), v.rot_y);
+    for tri in &mut tris[base..] {
+        for vert in &mut tri.v {
+            let rv = rot3x3_apply(&rot, *vert);
+            vert[0] = rv[0] + v.x;
+            vert[1] = rv[1] + v.y;
+            vert[2] = rv[2] + v.z;
+        }
+        tri.normal = rot3x3_apply(&rot, tri.normal);
+    }
+}
 
 /// Low-detail vehicle mesh: 2 colored boxes (body + cabin), ~24 tris
 fn gen_vehicle_mesh_lod(v: &Vehicle, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
     push_box(tris, 0.0, 0.35, 0.0, 1.8, 0.5, 3.6, v.color);
     push_box(tris, 0.0, 0.95, 0.2, 1.4, 0.45, 1.8, darken(v.color, 0.85));
-    let rot = terrain_rot3x3(v.terrain_normal, v.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 25.0), v.rot_y);
     for tri in &mut tris[base..] {
         for vert in &mut tri.v {
             let rv = rot3x3_apply(&rot, *vert);
@@ -3319,6 +3776,7 @@ fn gen_vehicle_mesh_lod(v: &Vehicle, tris: &mut Vec<WorldTri>) {
 pub fn generate_dynamic_gpu_vertices(
     world: &WorldData, player: &Player, cam: &Camera,
     scratch: &mut Vec<WorldTri>, out: &mut Vec<GpuVertex>,
+    hour: f32,
 ) {
     let eye = v3(cam.x, cam.y, cam.z);
     let fog_dist_sq = FOG_DIST * FOG_DIST;
@@ -3342,6 +3800,8 @@ pub fn generate_dynamic_gpu_vertices(
         if dist_sq < LOD_VEH_FULL_SQ {
             let show_interior = player.in_vehicle == Some(vi);
             gen_vehicle_mesh(v, scratch, show_interior);
+        } else if dist_sq < LOD_VEH_MID_SQ {
+            gen_vehicle_mesh_mid(v, scratch);
         } else {
             gen_vehicle_mesh_lod(v, scratch);
         }
@@ -3376,7 +3836,7 @@ pub fn generate_dynamic_gpu_vertices(
         gen_player_mesh(player, scratch);
     }
     // Convert to GPU format (raw material colors — GPU shader does lighting)
-    out.reserve(scratch.len() * 3);
+    out.reserve(scratch.len() * 3 + 16 * 6 * 3); // +sky dome
     for tri in scratch.iter() {
         for i in 0..3 {
             out.push(GpuVertex {
@@ -3384,6 +3844,247 @@ pub fn generate_dynamic_gpu_vertices(
                 color_packed: tri.color,
                 normal: tri.normal,
             });
+        }
+    }
+
+    // Sky dome: gradient hemisphere centered on camera
+    gen_sky_dome_gpu(out, eye, hour);
+}
+
+/// Generate sky dome hemisphere as GPU vertices (emissive, no lighting).
+/// Creates a gradient from horizon color (base) to zenith (top).
+fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
+    const SEGS: usize = 16;   // azimuthal segments
+    const RINGS: usize = 6;   // altitude rings (0=horizon, RINGS=zenith)
+    const RADIUS: f32 = 250.0;
+
+    let tc = time_colors(hour);
+    let boost = (2.0 - tc.sun_strength * 2.0).clamp(1.0, 2.5);
+
+    // Horizon color = sky color (matches clear color)
+    let hr = ((tc.sky >> 16) & 0xFF) as f32;
+    let hg = ((tc.sky >> 8) & 0xFF) as f32;
+    let hb = (tc.sky & 0xFF) as f32;
+
+    // Zenith color = deeper/darker version of sky
+    let zr = hr * 0.25;
+    let zg = hg * 0.35;
+    let zb = (hb * 0.7 + 30.0).min(255.0); // keep some blue
+
+    // Pack color for emissive vertex (alpha=0), compensated for shader boost
+    let pack = |r: f32, g: f32, b: f32| -> u32 {
+        let cr = (r / boost).min(255.0).max(0.0) as u32;
+        let cg = (g / boost).min(255.0).max(0.0) as u32;
+        let cb = (b / boost).min(255.0).max(0.0) as u32;
+        (cr << 16) | (cg << 8) | cb  // alpha=0x00 (emissive)
+    };
+
+    let ring_color = |ring: usize| -> u32 {
+        let t = ring as f32 / RINGS as f32;
+        let t2 = t * t; // ease-in: more horizon color near base
+        pack(hr + (zr - hr) * t2, hg + (zg - hg) * t2, hb + (zb - hb) * t2)
+    };
+
+    // Vertex positions on hemisphere
+    let pos = |ring: usize, seg: usize| -> Vec3 {
+        let alt = (ring as f32 / RINGS as f32) * std::f32::consts::FRAC_PI_2;
+        let az = (seg as f32 / SEGS as f32) * std::f32::consts::TAU;
+        let cos_alt = alt.cos();
+        [
+            eye[0] + az.cos() * cos_alt * RADIUS,
+            eye[1] + alt.sin() * RADIUS,
+            eye[2] + az.sin() * cos_alt * RADIUS,
+        ]
+    };
+
+    // Normal pointing inward (toward center)
+    let norm = |ring: usize, seg: usize| -> Vec3 {
+        let alt = (ring as f32 / RINGS as f32) * std::f32::consts::FRAC_PI_2;
+        let az = (seg as f32 / SEGS as f32) * std::f32::consts::TAU;
+        let cos_alt = alt.cos();
+        [-az.cos() * cos_alt, -alt.sin(), -az.sin() * cos_alt]
+    };
+
+    // Generate quads between rings
+    for ring in 0..RINGS {
+        let c0 = ring_color(ring);
+        let c1 = ring_color(ring + 1);
+        for seg in 0..SEGS {
+            let nseg = (seg + 1) % SEGS;
+            let p00 = pos(ring, seg);     let n00 = norm(ring, seg);
+            let p10 = pos(ring, nseg);    let n10 = norm(ring, nseg);
+            let p01 = pos(ring + 1, seg); let n01 = norm(ring + 1, seg);
+            let p11 = pos(ring + 1, nseg); let n11 = norm(ring + 1, nseg);
+
+            // Tri 1: p00, p10, p11
+            out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
+            out.push(GpuVertex { pos: p10, color_packed: c0, normal: n10 });
+            out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
+            // Tri 2: p00, p11, p01
+            out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
+            out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
+            out.push(GpuVertex { pos: p01, color_packed: c1, normal: n01 });
+        }
+    }
+
+    // Clouds — scattered emissive quads on the sky hemisphere
+    // Clouds — clusters of overlapping puffs on the sky hemisphere
+    const CLOUD_RADIUS: f32 = 210.0;
+    const NUM_CLOUDS: u32 = 8;
+
+    // Cloud base color by time of day
+    let (cloud_r, cloud_g, cloud_b) = if tc.sun_strength > 0.5 {
+        (220.0 + tc.sun_strength * 35.0, 220.0 + tc.sun_strength * 35.0, 230.0 + tc.sun_strength * 25.0)
+    } else if tc.sun_strength > 0.05 {
+        let t = (tc.sun_strength - 0.05) / 0.45;
+        (80.0 + t * 175.0, 60.0 + t * 170.0, 70.0 + t * 170.0)
+    } else {
+        (35.0, 35.0, 45.0)
+    };
+
+    for ci in 0..NUM_CLOUDS {
+        let ch = ci.wrapping_mul(2654435761);
+        let az = (ci as f32 / NUM_CLOUDS as f32) * std::f32::consts::TAU + (ch % 100) as f32 * 0.01;
+        let alt_frac = 0.25 + (ch % 30) as f32 * 0.006;
+        let alt = alt_frac * std::f32::consts::FRAC_PI_2;
+        let cos_alt = alt.cos();
+
+        // Cloud center on sphere
+        let base_x = eye[0] + az.cos() * cos_alt * CLOUD_RADIUS;
+        let base_y = eye[1] + alt.sin() * CLOUD_RADIUS;
+        let base_z = eye[2] + az.sin() * cos_alt * CLOUD_RADIUS;
+
+        let rx = -az.sin();
+        let rz = az.cos();
+        let n = [-az.cos() * cos_alt, -alt.sin(), -az.sin() * cos_alt];
+
+        // 3-5 puffs per cloud, overlapping at different offsets
+        let num_puffs = 3 + (ch % 3) as i32;
+        for pi in 0..num_puffs {
+            let ph = ch.wrapping_add((pi as u32).wrapping_mul(1013904223));
+            // Offset along right axis and slight vertical offset
+            let off_r = ((ph % 40) as f32 - 20.0) * 0.6;
+            let off_y = ((ph >> 4) % 12) as f32 * 0.3 - 1.5;
+            let px = base_x + rx * off_r;
+            let py = base_y + off_y;
+            let pz = base_z + rz * off_r;
+
+            // Puff size — center puffs larger, edges smaller
+            let size_t = 1.0 - (pi as f32 / num_puffs as f32 - 0.5).abs() * 1.5;
+            let pw = (10.0 + (ph % 15) as f32 * 0.8) * size_t.max(0.5);
+            let phh = (2.5 + (ph % 8) as f32 * 0.3) * size_t.max(0.6);
+
+            // Per-puff color variation (brighter tops, dimmer undersides)
+            let bright = ((ph >> 8) % 20) as f32 - 8.0;
+            let cr = ((cloud_r + bright) / boost).clamp(0.0, 255.0) as u32;
+            let cg = ((cloud_g + bright) / boost).clamp(0.0, 255.0) as u32;
+            let cb = ((cloud_b + bright * 0.5) / boost).clamp(0.0, 255.0) as u32;
+            let cc = (cr << 16) | (cg << 8) | cb; // alpha=0 emissive
+
+            let hw = pw * 0.5;
+            let hh = phh * 0.5;
+            let p0 = [px - rx * hw, py - hh, pz - rz * hw];
+            let p1 = [px + rx * hw, py - hh, pz + rz * hw];
+            let p2 = [px + rx * hw, py + hh, pz + rz * hw];
+            let p3 = [px - rx * hw, py + hh, pz - rz * hw];
+
+            out.push(GpuVertex { pos: p0, color_packed: cc, normal: n });
+            out.push(GpuVertex { pos: p1, color_packed: cc, normal: n });
+            out.push(GpuVertex { pos: p2, color_packed: cc, normal: n });
+            out.push(GpuVertex { pos: p0, color_packed: cc, normal: n });
+            out.push(GpuVertex { pos: p2, color_packed: cc, normal: n });
+            out.push(GpuVertex { pos: p3, color_packed: cc, normal: n });
+        }
+    }
+
+    // Sun/moon disc — emissive circle on the sky hemisphere
+    let sun_angle = (hour - 6.0) / 12.0 * std::f32::consts::PI;
+    let is_day = tc.sun_strength > 0.05;
+
+    if is_day {
+        let sy = sun_angle.sin().max(0.05);
+        let sx = sun_angle.cos();
+        let disc_dist = 220.0;
+        let sun_x = eye[0] + sx * disc_dist * 0.5;
+        let sun_y = eye[1] + sy * disc_dist;
+        let sun_z = eye[2] + disc_dist * 0.3;
+
+        let horizon_t = (1.0 - sy * 2.0).clamp(0.0, 1.0);
+        let sr = (255.0 / boost).min(255.0) as u32;
+        let sg = (((1.0 - horizon_t * 0.4) * 230.0) / boost).min(255.0) as u32;
+        let sb = (((1.0 - horizon_t * 0.7) * 180.0) / boost).min(255.0) as u32;
+        let sun_color = (sr << 16) | (sg << 8) | sb;
+
+        let sun_r = 6.0;
+        let sn = [-(sun_x - eye[0]), -(sun_y - eye[1]), -(sun_z - eye[2])];
+        let sn_len = (sn[0]*sn[0] + sn[1]*sn[1] + sn[2]*sn[2]).sqrt();
+        let sn = [sn[0]/sn_len, sn[1]/sn_len, sn[2]/sn_len];
+        let up = if sn[1].abs() > 0.99 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        let tx = [up[1]*sn[2] - up[2]*sn[1], up[2]*sn[0] - up[0]*sn[2], up[0]*sn[1] - up[1]*sn[0]];
+        let tl = (tx[0]*tx[0] + tx[1]*tx[1] + tx[2]*tx[2]).sqrt();
+        let tx = [tx[0]/tl, tx[1]/tl, tx[2]/tl];
+        let ty = [sn[1]*tx[2] - sn[2]*tx[1], sn[2]*tx[0] - sn[0]*tx[2], sn[0]*tx[1] - sn[1]*tx[0]];
+
+        for i in 0..8u32 {
+            let a0 = (i as f32 / 8.0) * std::f32::consts::TAU;
+            let a1 = ((i + 1) as f32 / 8.0) * std::f32::consts::TAU;
+            let p0 = [sun_x, sun_y, sun_z];
+            let p1 = [
+                sun_x + (a0.cos() * tx[0] + a0.sin() * ty[0]) * sun_r,
+                sun_y + (a0.cos() * tx[1] + a0.sin() * ty[1]) * sun_r,
+                sun_z + (a0.cos() * tx[2] + a0.sin() * ty[2]) * sun_r,
+            ];
+            let p2 = [
+                sun_x + (a1.cos() * tx[0] + a1.sin() * ty[0]) * sun_r,
+                sun_y + (a1.cos() * tx[1] + a1.sin() * ty[1]) * sun_r,
+                sun_z + (a1.cos() * tx[2] + a1.sin() * ty[2]) * sun_r,
+            ];
+            out.push(GpuVertex { pos: p0, color_packed: sun_color, normal: sn });
+            out.push(GpuVertex { pos: p1, color_packed: sun_color, normal: sn });
+            out.push(GpuVertex { pos: p2, color_packed: sun_color, normal: sn });
+        }
+    } else {
+        // Moon disc — silvery white
+        let moon_angle = sun_angle + std::f32::consts::PI;
+        let my = moon_angle.sin().abs().max(0.15);
+        let mx = moon_angle.cos();
+        let disc_dist = 220.0;
+        let moon_x = eye[0] + mx * disc_dist * 0.4;
+        let moon_y = eye[1] + my * disc_dist * 0.8;
+        let moon_z = eye[2] - disc_dist * 0.3;
+
+        let mr = (200.0 / boost).min(255.0) as u32;
+        let mg = (200.0 / boost).min(255.0) as u32;
+        let mb = (210.0 / boost).min(255.0) as u32;
+        let moon_color = (mr << 16) | (mg << 8) | mb;
+
+        let moon_r = 5.0;
+        let mn = [-(moon_x - eye[0]), -(moon_y - eye[1]), -(moon_z - eye[2])];
+        let mn_len = (mn[0]*mn[0] + mn[1]*mn[1] + mn[2]*mn[2]).sqrt();
+        let mn = [mn[0]/mn_len, mn[1]/mn_len, mn[2]/mn_len];
+        let up = if mn[1].abs() > 0.99 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        let mtx = [up[1]*mn[2] - up[2]*mn[1], up[2]*mn[0] - up[0]*mn[2], up[0]*mn[1] - up[1]*mn[0]];
+        let mtl = (mtx[0]*mtx[0] + mtx[1]*mtx[1] + mtx[2]*mtx[2]).sqrt();
+        let mtx = [mtx[0]/mtl, mtx[1]/mtl, mtx[2]/mtl];
+        let mty = [mn[1]*mtx[2] - mn[2]*mtx[1], mn[2]*mtx[0] - mn[0]*mtx[2], mn[0]*mtx[1] - mn[1]*mtx[0]];
+
+        for i in 0..8u32 {
+            let a0 = (i as f32 / 8.0) * std::f32::consts::TAU;
+            let a1 = ((i + 1) as f32 / 8.0) * std::f32::consts::TAU;
+            let p0 = [moon_x, moon_y, moon_z];
+            let p1 = [
+                moon_x + (a0.cos() * mtx[0] + a0.sin() * mty[0]) * moon_r,
+                moon_y + (a0.cos() * mtx[1] + a0.sin() * mty[1]) * moon_r,
+                moon_z + (a0.cos() * mtx[2] + a0.sin() * mty[2]) * moon_r,
+            ];
+            let p2 = [
+                moon_x + (a1.cos() * mtx[0] + a1.sin() * mty[0]) * moon_r,
+                moon_y + (a1.cos() * mtx[1] + a1.sin() * mty[1]) * moon_r,
+                moon_z + (a1.cos() * mtx[2] + a1.sin() * mty[2]) * moon_r,
+            ];
+            out.push(GpuVertex { pos: p0, color_packed: moon_color, normal: mn });
+            out.push(GpuVertex { pos: p1, color_packed: moon_color, normal: mn });
+            out.push(GpuVertex { pos: p2, color_packed: moon_color, normal: mn });
         }
     }
 }

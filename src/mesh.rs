@@ -34,7 +34,7 @@ fn tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
 }
 
 /// Push a quad as 2 tris (CCW winding: a-b-c, a-c-d)
-fn push_quad(tris: &mut Vec<WorldTri>, a: [f32;3], b: [f32;3], c: [f32;3], d: [f32;3], color: u32) {
+pub fn push_quad(tris: &mut Vec<WorldTri>, a: [f32;3], b: [f32;3], c: [f32;3], d: [f32;3], color: u32) {
     let normal = tri_normal(a, b, c);
     tris.push(WorldTri { v: [a, b, c], normal, color });
     tris.push(WorldTri { v: [a, c, d], normal, color });
@@ -557,7 +557,7 @@ pub fn wall_with_holes_tris(
     holes: &[WallHole],
     depth: f32,
     wall_color: u32,
-    hole_color: u32,
+    hole_colors: &[u32],
     face_dir: f32,
     left_dir: f32,
     swap_xz: bool,
@@ -570,11 +570,11 @@ pub fn wall_with_holes_tris(
         if swap_xz { [z, y, x] } else { [x, y, z] }
     };
 
-    let mut sorted_holes: Vec<&WallHole> = holes.iter().collect();
-    sorted_holes.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+    let mut sorted_holes: Vec<(usize, &WallHole)> = holes.iter().enumerate().collect();
+    sorted_holes.sort_by(|a, b| a.1.x.partial_cmp(&b.1.x).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut y_cuts = vec![0.0_f32, wall_h];
-    for hole in &sorted_holes {
+    for (_, hole) in &sorted_holes {
         y_cuts.push(hole.y);
         y_cuts.push(hole.y + hole.h);
     }
@@ -586,12 +586,12 @@ pub fn wall_with_holes_tris(
         let strip_top = y_cuts[yi + 1];
         if (strip_top - strip_bot) < 0.001 { continue; }
 
-        let strip_holes: Vec<&&WallHole> = sorted_holes.iter()
-            .filter(|h| h.y < strip_top - 0.001 && h.y + h.h > strip_bot + 0.001)
+        let strip_holes: Vec<&(usize, &WallHole)> = sorted_holes.iter()
+            .filter(|(_, h)| h.y < strip_top - 0.001 && h.y + h.h > strip_bot + 0.001)
             .collect();
 
         let mut x_start = 0.0_f32;
-        for hole in &strip_holes {
+        for (_, hole) in &strip_holes {
             if hole.x > x_start + 0.001 {
                 emit_wall_quad(tris, pos_x, pos_y, fz, x_start, strip_bot, hole.x, strip_top, wall_color, face_dir, left_dir, swap_xz);
             }
@@ -602,7 +602,8 @@ pub fn wall_with_holes_tris(
         }
     }
 
-    for hole in &sorted_holes {
+    for &(orig_idx, hole) in &sorted_holes {
+        let hc = hole_colors[orig_idx % hole_colors.len()];
         let hx0 = pos_x + hole.x * left_dir;
         let hx1 = pos_x + (hole.x + hole.w) * left_dir;
         let hy0 = pos_y + hole.y;
@@ -612,9 +613,9 @@ pub fn wall_with_holes_tris(
 
         // Back face of recess
         if face_dir > 0.0 {
-            push_quad(tris, v(lx, hy0, bz), v(rx, hy0, bz), v(rx, hy1, bz), v(lx, hy1, bz), hole_color);
+            push_quad(tris, v(lx, hy0, bz), v(rx, hy0, bz), v(rx, hy1, bz), v(lx, hy1, bz), hc);
         } else {
-            push_quad(tris, v(rx, hy0, bz), v(lx, hy0, bz), v(lx, hy1, bz), v(rx, hy1, bz), hole_color);
+            push_quad(tris, v(rx, hy0, bz), v(lx, hy0, bz), v(lx, hy1, bz), v(rx, hy1, bz), hc);
         }
 
         // Top side
@@ -751,20 +752,32 @@ pub fn wave_surface_tris(
             let z0 = z_min + iz as f32 * dz;
             let z1 = z0 + dz;
 
-            let y00 = base_y + (x0 * freq).sin() * (z0 * freq * 0.7).cos() * amplitude;
-            let y10 = base_y + (x1 * freq).sin() * (z0 * freq * 0.7).cos() * amplitude;
-            let y01 = base_y + (x0 * freq).sin() * (z1 * freq * 0.7).cos() * amplitude;
-            let y11 = base_y + (x1 * freq).sin() * (z1 * freq * 0.7).cos() * amplitude;
+            let y00 = base_y + (x0 * freq).sin() * (z0 * freq * 0.7).cos() * amplitude
+                + (x0 * freq * 2.3 + z0 * freq * 1.7).sin() * amplitude * 0.3;
+            let y10 = base_y + (x1 * freq).sin() * (z0 * freq * 0.7).cos() * amplitude
+                + (x1 * freq * 2.3 + z0 * freq * 1.7).sin() * amplitude * 0.3;
+            let y01 = base_y + (x0 * freq).sin() * (z1 * freq * 0.7).cos() * amplitude
+                + (x0 * freq * 2.3 + z1 * freq * 1.7).sin() * amplitude * 0.3;
+            let y11 = base_y + (x1 * freq).sin() * (z1 * freq * 0.7).cos() * amplitude
+                + (x1 * freq * 2.3 + z1 * freq * 1.7).sin() * amplitude * 0.3;
 
             let v00 = [x0, y00, z0];
             let v10 = [x1, y10, z0];
             let v01 = [x0, y01, z1];
             let v11 = [x1, y11, z1];
 
+            // Per-tile color jitter for ripple variation
+            let h = (ix as u32).wrapping_mul(73856093) ^ (iz as u32).wrapping_mul(19349663);
+            let noise = (h % 20) as i32 - 10;
+            let r = ((((color >> 16) & 0xFF) as i32 + noise).clamp(0, 255)) as u32;
+            let g = ((((color >> 8) & 0xFF) as i32 + noise).clamp(0, 255)) as u32;
+            let b = (((color & 0xFF) as i32 + noise).clamp(0, 255)) as u32;
+            let c = (color & 0xFF000000) | (r << 16) | (g << 8) | b;
+
             let n1 = tri_normal(v00, v11, v10);
-            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
+            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: c });
             let n2 = tri_normal(v00, v01, v11);
-            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
+            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: c });
         }
     }
 }
@@ -1455,7 +1468,7 @@ pub fn loft_y_tris_caps(
     }
 
     if top_cap {
-        let last = rings.last().unwrap();
+        let Some(last) = rings.last() else { return; };
         let yt = last.0;
         let tpts = &last.1;
         let tcol = last.2;
