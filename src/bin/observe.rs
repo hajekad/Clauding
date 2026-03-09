@@ -136,7 +136,7 @@ fn main() {
                     npc_stuck_ticks[i] = 0;
                 }
 
-                if world::on_river_not_bridge(npc.x, npc.z, &game.world.river_segments, &game.world.bridges) {
+                if !npc.in_vehicle && world::on_river_not_bridge(npc.x, npc.z, &game.world.river_segments, &game.world.bridges) {
                     npc_river_ticks[i] += 1;
                 }
 

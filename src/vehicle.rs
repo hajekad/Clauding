@@ -481,7 +481,7 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
         }
     }
 
-    // 10. Move + building collision check
+    // 10. Move + building/river collision check
     {
         let rot = world.vehicles[vi].rot_y;
         let spd = world.vehicles[vi].speed;
@@ -490,7 +490,8 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
         let new_x = cur_x - rot.sin() * spd * dt;
         let new_z = cur_z - rot.cos() * spd * dt;
 
-        if !check_building_collision(world, new_x, cur_z, 1.5) {
+        let river_x = crate::world::on_river_not_bridge(new_x, cur_z, &world.river_segments, &world.bridges);
+        if !check_building_collision(world, new_x, cur_z, 1.5) && !river_x {
             world.vehicles[vi].x = new_x;
         } else {
             world.vehicles[vi].speed *= -0.3;
@@ -498,7 +499,8 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
             world.vehicles[vi].rot_y += 0.3;
         }
         let cur_x = world.vehicles[vi].x;
-        if !check_building_collision(world, cur_x, new_z, 1.5) {
+        let river_z = crate::world::on_river_not_bridge(cur_x, new_z, &world.river_segments, &world.bridges);
+        if !check_building_collision(world, cur_x, new_z, 1.5) && !river_z {
             world.vehicles[vi].z = new_z;
         } else {
             world.vehicles[vi].speed *= -0.3;
