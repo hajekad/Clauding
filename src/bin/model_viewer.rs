@@ -60,6 +60,48 @@ fn render_model(
     }
 }
 
+/// Render triangles colored by their face normal direction (normal-map visualization).
+/// normal.x → Red, normal.y → Green, normal.z → Blue, each mapped from [-1,1] to [0,255].
+fn render_model_normals(
+    fb: &mut raster::Framebuffer,
+    tris: &[state::WorldTri],
+    eye: [f32; 3],
+    target: [f32; 3],
+) {
+    let aspect = fb.w as f32 / fb.h as f32;
+    let view = math::m4_look_at(eye, target, [0.0, 1.0, 0.0]);
+    let proj = math::m4_perspective(60.0_f32.to_radians(), aspect, 0.01, 100.0);
+    let vp = math::m4_mul(&proj, &view);
+    let fw = fb.w as f32;
+    let fh = fb.h as f32;
+
+    for tri in tris {
+        // Map normal components from [-1,1] to [0,255]
+        let r = ((tri.normal[0] * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u32;
+        let g = ((tri.normal[1] * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u32;
+        let b = ((tri.normal[2] * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u32;
+        let color = 0xFF000000 | (r << 16) | (g << 8) | b;
+
+        let c0 = math::m4_transform_no_div(&vp, tri.v[0]);
+        let c1 = math::m4_transform_no_div(&vp, tri.v[1]);
+        let c2 = math::m4_transform_no_div(&vp, tri.v[2]);
+
+        let near_w = 0.01;
+        if c0[3] < near_w || c1[3] < near_w || c2[3] < near_w { continue; }
+
+        let s0 = clip_to_screen(c0, fw, fh);
+        let s1 = clip_to_screen(c1, fw, fh);
+        let s2 = clip_to_screen(c2, fw, fh);
+
+        if s0[0].max(s1[0]).max(s2[0]) < 0.0 { continue; }
+        if s0[0].min(s1[0]).min(s2[0]) >= fw { continue; }
+        if s0[1].max(s1[1]).max(s2[1]) < 0.0 { continue; }
+        if s0[1].min(s1[1]).min(s2[1]) >= fh { continue; }
+
+        raster::draw_triangle(fb, &raster::ScreenTri { v: [s0, s1, s2], color });
+    }
+}
+
 fn clip_to_screen(c: [f32; 4], w: f32, h: f32) -> [f32; 3] {
     let inv_w = 1.0 / c[3];
     [
@@ -318,6 +360,54 @@ fn render_model_sheet(
     }
 
     eprintln!("Rendered: {} ({} tris)", label, tris.len());
+    composite
+}
+
+/// Render model from 4 views using normal-direction colorization
+fn render_model_sheet_normals(
+    tris: &[state::WorldTri],
+    center_y: f32,
+    cam_dist: f32,
+    label: &str,
+) -> Vec<u32> {
+    let mut view_fb = raster::Framebuffer::new(VIEW_W, VIEW_H);
+    let mut composite = vec![0xFF334455u32; IMG_W * IMG_H];
+
+    let views: [([f32; 3], &str); 4] = [
+        ([0.0, center_y, -cam_dist], "Front (-Z)"),
+        ([cam_dist, center_y, 0.0], "Right (+X)"),
+        ([0.0, center_y, cam_dist], "Back (+Z)"),
+        ([-cam_dist, center_y, 0.0], "Left (-X)"),
+    ];
+
+    let target = [0.0, center_y, 0.0];
+
+    for (view_idx, (eye, view_name)) in views.iter().enumerate() {
+        view_fb.clear(0xFF445566);
+        render_model_normals(&mut view_fb, tris, *eye, target);
+
+        draw_label(&mut view_fb, 4, 4, view_name);
+        draw_label(&mut view_fb, 4, 16, &format!("tris: {}", tris.len()));
+
+        let qx = (view_idx % 2) * VIEW_W;
+        let qy = (view_idx / 2) * VIEW_H;
+        for y in 0..VIEW_H {
+            for x in 0..VIEW_W {
+                composite[(qy + y) * IMG_W + (qx + x)] = view_fb.pixels[y * VIEW_W + x];
+            }
+        }
+    }
+
+    for y in 0..IMG_H {
+        composite[y * IMG_W + VIEW_W] = 0xFFFFFFFF;
+        if VIEW_W > 1 { composite[y * IMG_W + VIEW_W - 1] = 0xFFFFFFFF; }
+    }
+    for x in 0..IMG_W {
+        composite[VIEW_H * IMG_W + x] = 0xFFFFFFFF;
+        if VIEW_H > 1 { composite[(VIEW_H - 1) * IMG_W + x] = 0xFFFFFFFF; }
+    }
+
+    eprintln!("Rendered normals: {} ({} tris)", label, tris.len());
     composite
 }
 
@@ -1036,6 +1126,12 @@ fn main() {
     let (img, iw, ih) = render_8k_sheet_smooth(&tris, &vertex_normals, &vert_views, "Player Vertical");
     save_png(&img, iw, ih, "debug/model_player_vertical.png");
 
+    // ── Player Normal map ──
+    {
+        let img = render_model_sheet_normals(&tris, cy, d, "Player Normal map");
+        save_png(&img, IMG_W, IMG_H, "debug/model_player_normals.png");
+    }
+
     // ── HEAD CLOSE-UP — 6 views for detailed comparison with ACU bust reference ──
     // Head Y range after transforms: chin ~1.82, crown ~2.23, center ~2.02
     {
@@ -1358,6 +1454,36 @@ fn main() {
         render::gen_npc_mesh(&rag_npc, &mut tris);
         let img = render_model_sheet(&tris, 0.8, 4.5, "NPC Ragdoll");
         save_png(&img, IMG_W, IMG_H, "debug/model_npc_ragdoll.png");
+    }
+
+    // ── NPC Walking (mid-stride) ──
+    {
+        let mut walk_npc = make_npc(state::NpcJob::Collector);
+        walk_npc.walk_phase = 1.5;
+        tris.clear();
+        render::gen_npc_mesh(&walk_npc, &mut tris);
+        let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Walking");
+        save_png(&img, IMG_W, IMG_H, "debug/model_npc_walk.png");
+    }
+
+    // ── NPC Attacking (mid-swing) ──
+    {
+        let mut atk_npc = make_npc(state::NpcJob::Collector);
+        atk_npc.attack_phase = 0.5;
+        tris.clear();
+        render::gen_npc_mesh(&atk_npc, &mut tris);
+        let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Attacking");
+        save_png(&img, IMG_W, IMG_H, "debug/model_npc_attack.png");
+    }
+
+    // ── NPC Carrying ──
+    {
+        let mut carry_npc = make_npc(state::NpcJob::Collector);
+        carry_npc.carrying_item = true;
+        tris.clear();
+        render::gen_npc_mesh(&carry_npc, &mut tris);
+        let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Carrying");
+        save_png(&img, IMG_W, IMG_H, "debug/model_npc_carry.png");
     }
 
     let bin = make_trash_bin();

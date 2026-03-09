@@ -7,6 +7,13 @@
 //   cargo run --release --bin screenshot -- --orbit 8        # 8 screenshots orbiting
 //   cargo run --release --bin screenshot -- --grid           # 4x4 grid of viewpoints
 //   cargo run --release --bin screenshot -- --pos 0 2 0 --look 0 2 -10  # street level
+//   cargo run --release --bin screenshot -- --model npc      # 16-angle model orbit (npc/vehicle/player/item/bin)
+//   cargo run --release --bin screenshot -- --timelapse      # 12 shots across a full day cycle
+//   cargo run --release --bin screenshot -- --around 30 5 -20  # 16-angle orbit around a world point
+//   cargo run --release --bin screenshot -- --seed 123       # use different world seed
+//   cargo run --release --bin screenshot -- --follow-npc 5   # camera behind NPC #5
+//   cargo run --release --bin screenshot -- --follow-vehicle 3  # camera behind vehicle #3
+//   cargo run --release --bin screenshot -- --player         # orbit around the player
 //
 // Output: debug/screenshot*.png
 
@@ -150,6 +157,12 @@ fn main() {
     let mut orbit_count = 8;
     let mut time_of_day = 10.0_f32; // 10am default (good lighting)
     let mut sim_ticks: u32 = 0;
+    let mut model_type = String::new();
+    let mut around_pos: Option<[f32; 3]> = None;
+    let mut world_seed: u64 = 42;
+    let mut follow_npc: Option<usize> = None;
+    let mut follow_vehicle: Option<usize> = None;
+    let mut show_player: bool = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -183,6 +196,24 @@ fn main() {
                 }
             }
             "--grid" => { mode = "grid"; }
+            "--model" => {
+                mode = "model";
+                if i + 1 < args.len() {
+                    model_type = args[i+1].clone();
+                    i += 1;
+                }
+            }
+            "--timelapse" => { mode = "timelapse"; }
+            "--around" => {
+                mode = "around";
+                if i + 3 < args.len() {
+                    let x: f32 = args[i+1].parse().unwrap_or(0.0);
+                    let y: f32 = args[i+2].parse().unwrap_or(5.0);
+                    let z: f32 = args[i+3].parse().unwrap_or(0.0);
+                    around_pos = Some([x, y, z]);
+                    i += 3;
+                }
+            }
             "--time" => {
                 if i + 1 < args.len() {
                     time_of_day = args[i+1].parse().unwrap_or(10.0);
@@ -195,14 +226,43 @@ fn main() {
                     i += 1;
                 }
             }
+            "--seed" => {
+                if i + 1 < args.len() {
+                    world_seed = args[i+1].parse().unwrap_or(42);
+                    i += 1;
+                }
+            }
+            "--follow-npc" => {
+                if i + 1 < args.len() {
+                    follow_npc = Some(args[i+1].parse().unwrap_or(0));
+                    i += 1;
+                }
+            }
+            "--follow-vehicle" => {
+                if i + 1 < args.len() {
+                    follow_vehicle = Some(args[i+1].parse().unwrap_or(0));
+                    i += 1;
+                }
+            }
+            "--player" => {
+                show_player = true;
+                mode = "custom";
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: screenshot [OPTIONS]");
                 eprintln!("  --pos X Y Z        Camera position (default: 0 50 -50)");
                 eprintln!("  --look X Y Z       Look-at target (default: 0 0 0)");
                 eprintln!("  --orbit [N]        Take N shots orbiting center (default: 8)");
                 eprintln!("  --grid             4x4 grid of viewpoints");
+                eprintln!("  --model TYPE       16-angle orbit of entity (npc/vehicle/player/item/bin)");
+                eprintln!("  --timelapse        12 shots across full day cycle (2h intervals)");
+                eprintln!("  --around X Y Z     16-angle orbit around world position");
                 eprintln!("  --time HOUR        Time of day 0-24 (default: 10)");
                 eprintln!("  --sim TICKS        Simulate N ticks before render (default: 0)");
+                eprintln!("  --seed N           World seed (default: 42)");
+                eprintln!("  --follow-npc N     Center camera 4m behind NPC #N at eye level");
+                eprintln!("  --follow-vehicle N Center camera 8m from vehicle #N");
+                eprintln!("  --player           Orbit camera around the player");
                 return;
             }
             _ => {}
@@ -235,7 +295,7 @@ fn main() {
     eprintln!("GPU graphics pipeline ready ({}x{})", W, H);
 
     // Generate world
-    let world_seed: u64 = 42;
+    eprintln!("Seed: {}", world_seed);
     let mut game = state::GameState::new(W, H, world_seed);
     world::generate_world(&mut game);
 
@@ -269,6 +329,46 @@ fn main() {
             combat::sys_ragdoll_update(&mut game.world, &game.terrain, dt);
             game.frame_counter += 1;
         }
+    }
+
+    // --follow-npc: override camera to look at specific NPC from behind
+    if let Some(idx) = follow_npc {
+        if idx < game.world.npcs.len() {
+            let npc = &game.world.npcs[idx];
+            let angle = npc.rot_y + std::f32::consts::PI; // behind the NPC
+            custom_pos = Some([npc.x + angle.sin() * 4.0, npc.y + 1.7, npc.z + angle.cos() * 4.0]);
+            custom_look = Some([npc.x, npc.y + 0.9, npc.z]);
+            mode = "custom";
+            eprintln!("Following NPC #{} at ({:.1}, {:.1}, {:.1})", idx, npc.x, npc.y, npc.z);
+        } else {
+            eprintln!("Error: NPC #{} not found (only {} NPCs)", idx, game.world.npcs.len());
+            return;
+        }
+    }
+
+    // --follow-vehicle: override camera to look at specific vehicle
+    if let Some(idx) = follow_vehicle {
+        if idx < game.world.vehicles.len() {
+            let v = &game.world.vehicles[idx];
+            let angle = v.rot_y + std::f32::consts::PI; // behind the vehicle
+            custom_pos = Some([v.x + angle.sin() * 8.0, v.y + 3.0, v.z + angle.cos() * 8.0]);
+            custom_look = Some([v.x, v.y + 0.8, v.z]);
+            mode = "custom";
+            eprintln!("Following vehicle #{} at ({:.1}, {:.1}, {:.1})", idx, v.x, v.y, v.z);
+        } else {
+            eprintln!("Error: Vehicle #{} not found (only {} vehicles)", idx, game.world.vehicles.len());
+            return;
+        }
+    }
+
+    // --player: orbit camera around the player
+    if show_player {
+        let px = game.player.x;
+        let py = game.player.y;
+        let pz = game.player.z;
+        custom_pos = Some([px + 4.0, py + 2.0, pz + 4.0]);
+        custom_look = Some([px, py + 0.9, pz]);
+        eprintln!("Showing player at ({:.1}, {:.1}, {:.1})", px, py, pz);
     }
 
     eprintln!("World: {} static tris, time={:.1}h", game.world.static_tris.len(), time_of_day);
@@ -348,6 +448,178 @@ fn main() {
                 let cam = CameraSpec { pos: *pos, look: *look };
                 render_screenshot(&mut ctx, &game, &cam, t, &mut fb, &mut dynamic_verts, &mut render_scratch);
                 save_png(&fb.pixels, W, H, &format!("debug/screenshot_{}.png", name));
+            }
+        }
+        "model" => {
+            // 16-angle orbit around a specific entity type — renders through GPU pipeline
+            // to show actual backface culling behavior
+            let mt = model_type.as_str();
+            let entity_center: [f32; 3];
+            let orbit_radius: f32;
+            let orbit_height_offset: f32;
+
+            match mt {
+                "npc" => {
+                    // Find first NPC that's not knocked out
+                    if let Some(npc) = game.world.npcs.first() {
+                        entity_center = [npc.x, npc.y + 1.0, npc.z];
+                    } else {
+                        eprintln!("No NPCs found");
+                        return;
+                    }
+                    orbit_radius = 4.0;
+                    orbit_height_offset = 1.0;
+                }
+                "vehicle" => {
+                    if let Some(v) = game.world.vehicles.first() {
+                        entity_center = [v.x, v.y + 0.8, v.z];
+                    } else {
+                        eprintln!("No vehicles found");
+                        return;
+                    }
+                    orbit_radius = 8.0;
+                    orbit_height_offset = 1.5;
+                }
+                "player" => {
+                    entity_center = [game.player.x, game.player.y + 1.0, game.player.z];
+                    orbit_radius = 4.0;
+                    orbit_height_offset = 1.0;
+                }
+                "item" => {
+                    if let Some(item) = game.world.items.first() {
+                        entity_center = [item.x, item.y + 0.3, item.z];
+                    } else {
+                        eprintln!("No items found");
+                        return;
+                    }
+                    orbit_radius = 2.0;
+                    orbit_height_offset = 0.3;
+                }
+                "bin" => {
+                    if let Some(bin) = game.world.trash_bins.first() {
+                        entity_center = [bin.x, bin.y + 0.5, bin.z];
+                    } else {
+                        eprintln!("No bins found");
+                        return;
+                    }
+                    orbit_radius = 3.0;
+                    orbit_height_offset = 0.5;
+                }
+                _ => {
+                    eprintln!("Unknown model type '{}'. Use: npc, vehicle, player, item, bin", mt);
+                    return;
+                }
+            }
+
+            eprintln!("Model orbit: {} at ({:.1}, {:.1}, {:.1}), radius={:.1}",
+                mt, entity_center[0], entity_center[1], entity_center[2], orbit_radius);
+
+            // 16 angles: 4 rows × 4 cols in output grid
+            // Row 0: eye-level orbit (4 angles)
+            // Row 1: slightly elevated orbit (4 angles)
+            // Row 2: elevated 45° orbit (4 angles)
+            // Row 3: top-down + bottom-up + front close + back close
+            let tile_w = W / 4;
+            let tile_h = H / 4;
+            let mut grid_pixels = vec![0x00111111u32; W * H]; // dark grey background
+
+            let elevations: [(f32, &str); 4] = [
+                (0.0, "eye-level"),
+                (0.3, "low-angle"),
+                (0.7, "mid-angle"),
+                (1.2, "high-angle"),
+            ];
+
+            let mut shot = 0;
+            for (row, &(elev, label)) in elevations.iter().enumerate() {
+                for col in 0..4 {
+                    let angle = (col as f32 / 4.0) * std::f32::consts::TAU;
+                    let cam_x = entity_center[0] + angle.cos() * orbit_radius;
+                    let cam_z = entity_center[2] + angle.sin() * orbit_radius;
+                    let cam_y = entity_center[1] + orbit_height_offset + elev * orbit_radius;
+                    let pos = [cam_x, cam_y, cam_z];
+                    let look = entity_center;
+
+                    render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
+                    ctx.upload_static_vertices(&gpu_static_verts);
+
+                    let cam = CameraSpec { pos, look };
+                    render_screenshot(&mut ctx, &game, &cam, time_of_day, &mut fb, &mut dynamic_verts, &mut render_scratch);
+
+                    // Copy tile into grid
+                    let ox = col * tile_w;
+                    let oy = row * tile_h;
+                    for ty in 0..tile_h {
+                        for tx in 0..tile_w {
+                            let src_x = tx * W / tile_w;
+                            let src_y = ty * H / tile_h;
+                            grid_pixels[(oy + ty) * W + (ox + tx)] = fb.pixels[src_y * W + src_x];
+                        }
+                    }
+
+                    // Also save individual shot
+                    save_png(&fb.pixels, W, H, &format!("debug/model_{}_{:02}.png", mt, shot));
+                    shot += 1;
+                }
+                eprintln!("  Row {}: {} (4 angles)", row, label);
+            }
+
+            // Save the 4×4 composite grid
+            save_png(&grid_pixels, W, H, &format!("debug/model_{}_grid.png", mt));
+            eprintln!("Saved 4x4 grid: debug/model_{}_grid.png", mt);
+        }
+        "timelapse" => {
+            // 12 shots across a full day cycle (every 2 hours)
+            let pos = custom_pos.unwrap_or([0.0, 40.0, -60.0]);
+            let look = custom_look.unwrap_or([0.0, 0.0, 0.0]);
+
+            for hour_idx in 0..12 {
+                let t = hour_idx as f32 * 2.0; // 0, 2, 4, ..., 22
+
+                render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
+                ctx.upload_static_vertices(&gpu_static_verts);
+
+                let cam = CameraSpec { pos, look };
+                render_screenshot(&mut ctx, &game, &cam, t, &mut fb, &mut dynamic_verts, &mut render_scratch);
+
+                let label = match hour_idx {
+                    0 => "00_midnight",
+                    1 => "02_late_night",
+                    2 => "04_pre_dawn",
+                    3 => "06_dawn",
+                    4 => "08_morning",
+                    5 => "10_mid_morning",
+                    6 => "12_noon",
+                    7 => "14_afternoon",
+                    8 => "16_late_afternoon",
+                    9 => "18_sunset",
+                    10 => "20_dusk",
+                    _ => "22_night",
+                };
+                save_png(&fb.pixels, W, H, &format!("debug/timelapse_{}.png", label));
+            }
+        }
+        "around" => {
+            // 16-angle orbit around an arbitrary world position
+            let center = around_pos.unwrap_or([0.0, 5.0, 0.0]);
+            let orbit_r = 15.0;
+
+            eprintln!("Orbiting around ({:.1}, {:.1}, {:.1}), radius={:.1}, 16 angles",
+                center[0], center[1], center[2], orbit_r);
+
+            for idx in 0..16 {
+                let angle = (idx as f32 / 16.0) * std::f32::consts::TAU;
+                let elev = if idx < 8 { 0.3 } else { 0.8 }; // first 8: low, next 8: high
+                let cam_x = center[0] + angle.cos() * orbit_r;
+                let cam_z = center[2] + angle.sin() * orbit_r;
+                let cam_y = center[1] + elev * orbit_r;
+
+                render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
+                ctx.upload_static_vertices(&gpu_static_verts);
+
+                let cam = CameraSpec { pos: [cam_x, cam_y, cam_z], look: center };
+                render_screenshot(&mut ctx, &game, &cam, time_of_day, &mut fb, &mut dynamic_verts, &mut render_scratch);
+                save_png(&fb.pixels, W, H, &format!("debug/around_{:02}.png", idx));
             }
         }
         _ => {

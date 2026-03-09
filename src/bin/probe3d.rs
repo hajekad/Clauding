@@ -15,8 +15,10 @@
 //   vehicles                — vehicle analysis
 //   reachability            — walkability grid, flood-fill components, building/NPC reachability
 //   slopes [step]           — terrain slope analysis + entities on slopes with tilt angles
+//   pathfinding <x0> <z0> <x1> <z1> — simulate NPC walking between two points
+//   bins                    — trash bin accessibility analysis
 
-use clauding::{state, world};
+use clauding::{npc, rng, state, world};
 
 fn surf_str(s: state::Surface) -> &'static str {
     match s {
@@ -99,8 +101,14 @@ fn main() {
             let step: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(5.0);
             analyze_slopes(&game.world, &game.terrain, step);
         }
+        "pathfinding" => {
+            analyze_pathfinding(&mut game, &args);
+        }
+        "bins" => {
+            analyze_bins(&game);
+        }
         _ => {
-            print_summary(&game.world, &game.road_network, &game.terrain);
+            print_summary(&game.world, &game.road_network, &game.terrain, seed);
         }
     }
 }
@@ -636,8 +644,8 @@ fn analyze_vehicles(world: &state::WorldData) {
     }
 }
 
-fn print_summary(world: &state::WorldData, net: &state::RoadNetwork, terrain: &state::Terrain) {
-    println!("=== WORLD SUMMARY (seed 42) ===");
+fn print_summary(world: &state::WorldData, net: &state::RoadNetwork, terrain: &state::Terrain, seed: u64) {
+    println!("=== PROBE3D (seed={}) ===", seed);
     println!("World size: {:.0}m x {:.0}m", state::WORLD_SIZE, state::WORLD_SIZE);
     println!("Terrain grid: {}x{}, cell={:.1}m", terrain.grid, terrain.grid, terrain.cell_size);
     println!();
@@ -985,6 +993,219 @@ fn analyze_reachability(world: &state::WorldData, net: &state::RoadNetwork) {
     }
     if main_count > 0 {
         println!("Average clearance (main component): {:.2}m", total_clearance / main_count as f64);
+    }
+}
+
+fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
+    let x0: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let z0: f32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let x1: f32 = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(50.0);
+    let z1: f32 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(50.0);
+
+    let straight_dist = ((x1 - x0).powi(2) + (z1 - z0).powi(2)).sqrt();
+    println!("=== PATHFINDING ANALYSIS ===");
+    println!("From: ({:.1}, {:.1})", x0, z0);
+    println!("To:   ({:.1}, {:.1})", x1, z1);
+    println!("Straight-line distance: {:.1}m", straight_dist);
+    println!();
+
+    // Place a temporary NPC at the start position
+    let y0 = game.terrain.height_at(x0, z0);
+    let npc_idx = game.world.npcs.len();
+    game.world.npcs.push(state::Npc {
+        x: x0, y: y0, z: z0,
+        rot_y: 0.0, walk_phase: 0.0,
+        target_x: x1, target_z: z1,
+        shirt_color: 0xFF0000, pants_color: 0x0000FF,
+        rng: rng::Rng::new(99999),
+        vel_y: 0.0, on_ground: true,
+        terrain_normal: [0.0, 1.0, 0.0],
+        state: state::NpcState::Working,
+        home_idx: 0, car_idx: 0,
+        wake_hour: 7.0,
+        state_timer: 0.0,
+        money: 0.0,
+        carrying_item: false,
+        carrying_bin: None,
+        target_item: None,
+        target_bin: None,
+        items_deposited_today: 0,
+        in_vehicle: false,
+        parked_x: x0, parked_z: z0,
+        stuck_timer: 0.0, stuck_count: 0,
+        detour_x: 0.0, detour_z: 0.0,
+        detouring: false,
+        job: state::NpcJob::Collector,
+        job_timer: 0.0,
+        job_target_x: x1, job_target_z: z1,
+        interaction_target: None,
+        interacting_with: None,
+        interaction_timer: 0.0,
+        brain_idx: 0,
+        fitness_money_earned: 0.0,
+        fitness_items_picked: 0,
+        fitness_interactions: 0,
+        fitness_distance: 0.0,
+        fitness_stuck_time: 0.0,
+        prev_x: x0, prev_z: z0,
+        health: 100.0,
+        attack_cooldown: 0.0,
+        attack_phase: 0.0,
+        hit_flash: 0.0,
+        knockout_timer: 0.0,
+        knockback_vx: 0.0,
+        knockback_vz: 0.0,
+        attack_intent: 0,
+        fitness_knockouts: 0,
+        fitness_hits_landed: 0,
+        hunger: 100.0,
+        thirst: 100.0,
+        starving_dead: false,
+        fitness_starve_time: 0.0,
+        sound: [0.0; 3],
+        fitness_sounds_made: 0,
+        fitness_npcs_heard: 0,
+        fitness_proximity: 0.0,
+        ragdoll_active: false,
+        ragdoll_points: [[0.0; 3]; 7],
+        ragdoll_prev: [[0.0; 3]; 7],
+        ragdoll_timer: 0.0,
+        wanted: false,
+        bounty: 0.0,
+        violation_timer: 0.0,
+        police_target: None,
+        wander_cooldown: 0.0,
+    });
+
+    let dt = 1.0 / 60.0; // simulate at 60 FPS timestep
+    let max_ticks = 10000;
+    let mut total_distance = 0.0f32;
+    let mut max_stuck = 0.0f32;
+    let mut detour_count = 0u32;
+    let mut was_detouring = false;
+    let mut arrived = false;
+
+    for tick in 0..max_ticks {
+        let prev_x = game.world.npcs[npc_idx].x;
+        let prev_z = game.world.npcs[npc_idx].z;
+
+        let remaining = npc::npc_walk_toward(
+            &mut game.world, npc_idx, x1, z1,
+            &game.road_network, &game.terrain, dt,
+        );
+
+        let step_dx = game.world.npcs[npc_idx].x - prev_x;
+        let step_dz = game.world.npcs[npc_idx].z - prev_z;
+        total_distance += (step_dx * step_dx + step_dz * step_dz).sqrt();
+
+        let stuck = game.world.npcs[npc_idx].stuck_timer;
+        if stuck > max_stuck { max_stuck = stuck; }
+
+        let currently_detouring = game.world.npcs[npc_idx].detouring;
+        if currently_detouring && !was_detouring {
+            detour_count += 1;
+        }
+        was_detouring = currently_detouring;
+
+        if remaining < 1.0 {
+            arrived = true;
+            println!("Arrived after {} ticks ({:.1}s simulated)", tick + 1, (tick + 1) as f32 * dt);
+            break;
+        }
+
+        // Print progress at intervals
+        if (tick + 1) % 2000 == 0 {
+            let npc = &game.world.npcs[npc_idx];
+            let dist_to_goal = ((npc.x - x1).powi(2) + (npc.z - z1).powi(2)).sqrt();
+            println!("  tick {:>5}: pos=({:.1},{:.1}) dist_to_goal={:.1}m stuck={:.1} detours={}",
+                tick + 1, npc.x, npc.z, dist_to_goal, npc.stuck_timer, detour_count);
+        }
+    }
+
+    if !arrived {
+        let npc = &game.world.npcs[npc_idx];
+        let final_dist = ((npc.x - x1).powi(2) + (npc.z - z1).powi(2)).sqrt();
+        println!("DID NOT ARRIVE after {} ticks ({:.1}s)", max_ticks, max_ticks as f32 * dt);
+        println!("Final position: ({:.1}, {:.1}), {:.1}m from target", npc.x, npc.z, final_dist);
+    }
+
+    println!();
+    println!("--- Path Statistics ---");
+    println!("Total distance walked: {:.1}m", total_distance);
+    println!("Straight-line distance: {:.1}m", straight_dist);
+    let efficiency = if total_distance > 0.01 { straight_dist / total_distance } else { 0.0 };
+    println!("Path efficiency: {:.1}% (straight/actual)", efficiency * 100.0);
+    println!("Max stuck score: {:.1}", max_stuck);
+    println!("Number of detours: {}", detour_count);
+    println!("Arrived: {}", arrived);
+
+    // Remove the temporary NPC
+    game.world.npcs.pop();
+}
+
+fn analyze_bins(game: &state::GameState) {
+    println!("=== TRASH BIN ACCESSIBILITY ANALYSIS ===");
+    println!("Total trash bins: {}", game.world.trash_bins.len());
+    println!();
+
+    let mut walkable_count = 0u32;
+    let mut near_road = 0u32;  // <15m
+    let mut far_road = 0u32;   // >30m
+    let mut inaccessible: Vec<(usize, f32, f32, &'static str)> = Vec::new();
+
+    println!("{:>4} {:>8} {:>8} {:>7} {:>6} {:>6} {:>6} {:>8} {:>10}",
+        "ID", "X", "Z", "Height", "River", "BldCl", "Steep", "RdDist", "Status");
+
+    for (i, bin) in game.world.trash_bins.iter().enumerate() {
+        let on_river = world::on_river(bin.x, bin.z, &game.world.river_segments);
+        let in_building = world::check_building_collision(&game.world, bin.x, bin.z, 0.3);
+        let terrain_normal = game.terrain.normal_at(bin.x, bin.z);
+        let slope_deg = terrain_normal[1].clamp(-1.0, 1.0).acos().to_degrees();
+        let steep = slope_deg > 40.0;
+
+        // Distance to nearest road node
+        let mut min_road_dist = f32::MAX;
+        for node in &game.road_network.nodes {
+            let d = ((node[0] - bin.x).powi(2) + (node[1] - bin.z).powi(2)).sqrt();
+            if d < min_road_dist { min_road_dist = d; }
+        }
+
+        let walkable = !on_river && !in_building && !steep;
+        if walkable { walkable_count += 1; }
+        if min_road_dist < 15.0 { near_road += 1; }
+        if min_road_dist > 30.0 { far_road += 1; }
+
+        let status = if on_river { "RIVER" }
+            else if in_building { "IN_BLDG" }
+            else if steep { "STEEP" }
+            else if min_road_dist > 30.0 { "far" }
+            else { "ok" };
+
+        let is_problem = on_river || in_building || steep;
+        if is_problem {
+            let reason = if on_river { "in river" }
+                else if in_building { "inside building collision" }
+                else { "very steep terrain (>40 deg)" };
+            inaccessible.push((i, bin.x, bin.z, reason));
+        }
+
+        println!("{:>4} {:>8.1} {:>8.1} {:>7.2} {:>6} {:>6} {:>5.1}° {:>8.1} {:>10}",
+            i, bin.x, bin.z, bin.y, on_river, in_building, slope_deg, min_road_dist, status);
+    }
+
+    println!();
+    println!("--- Summary ---");
+    println!("Bins on walkable terrain: {}/{}", walkable_count, game.world.trash_bins.len());
+    println!("Bins near roads (<15m): {}", near_road);
+    println!("Bins far from roads (>30m): {}", far_road);
+
+    if inaccessible.is_empty() {
+        println!("\nNo potentially inaccessible bins found.");
+    } else {
+        println!("\n--- Potentially Inaccessible Bins ({}) ---", inaccessible.len());
+        for (idx, x, z, reason) in &inaccessible {
+            println!("  Bin[{}] at ({:.1},{:.1}): {}", idx, x, z, reason);
+        }
     }
 }
 
