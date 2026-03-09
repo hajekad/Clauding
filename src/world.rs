@@ -55,8 +55,10 @@ const NEWSSTAND_COLOR: u32 = 0xFFCCCC33;
 const MAILBOX_COLOR: u32 = 0xFF3344CC;
 const PAYPHONE_COLOR: u32 = 0xFF888888;
 
-// River/bridge colors
-const RIVER_COLOR: u32 = 0xFF2255AA;
+// River/bridge colors — deep center to lighter edge
+const RIVER_DEEP: u32 = 0xFF1A3D7A;   // deep center
+const RIVER_MID: u32 = 0xFF2255AA;    // mid-channel
+const RIVER_EDGE: u32 = 0xFF3A7ABB;   // lighter near banks
 const BRIDGE_DECK_COLOR: u32 = 0xFF666666;
 const BRIDGE_RAIL_COLOR: u32 = 0xFF555555;
 
@@ -246,7 +248,7 @@ fn generate_road_network(rng: &mut Rng) -> RoadNetwork {
             let dz = nodes[ni][1] - nodes[nj][1];
             (dx * dx + dz * dz, nj)
         }).collect();
-        dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         // Connect to 1 or 2 nearest
         let connect_count = if rng.next() % 3 == 0 { 2 } else { 1 };
         for k in 0..connect_count.min(dists.len()) {
@@ -449,6 +451,13 @@ fn darken_color(c: u32, factor: f32) -> u32 {
     0xFF000000 | (r.min(255) << 16) | (g.min(255) << 8) | b.min(255)
 }
 
+fn jitter_color(c: u32, delta: i32) -> u32 {
+    let r = (((c >> 16) & 0xFF) as i32 + delta).clamp(0, 255) as u32;
+    let g = (((c >> 8) & 0xFF) as i32 + delta).clamp(0, 255) as u32;
+    let b = ((c & 0xFF) as i32 + delta).clamp(0, 255) as u32;
+    (c & 0xFF000000) | (r << 16) | (g << 8) | b
+}
+
 /// Generate heightmap from multi-octave sinusoidal waves, flattened near roads/downtown
 fn generate_heightmap(terrain: &mut Terrain, seed: u64, net: &RoadNetwork) {
     let grid = terrain.grid;
@@ -543,22 +552,39 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
             let v01 = [x0, h01, z1];
             let v11 = [x1, h11, z1];
 
-            let avg_h = (h00 + h10 + h01 + h11) * 0.25;
-            let t = ((avg_h - h_min) / h_range).clamp(0.0, 1.0);
-            let _mid_x = x0 + cell * 0.5;
             let mid_z = z0 + cell * 0.5;
-            let color = if mid_z > DOCK_Z_START {
-                let dock_t = ((mid_z - DOCK_Z_START) / 20.0).clamp(0.0, 1.0);
-                lerp_color(lerp_color(GROUND_LOW, GROUND_HIGH, t), DOCK_GROUND, dock_t)
-            } else {
-                lerp_color(GROUND_LOW, GROUND_HIGH, t)
+
+            // Slope: measure max height difference across the cell
+            let dh_x = ((h10 - h00).abs() + (h11 - h01).abs()) * 0.5 / cell;
+            let dh_z = ((h01 - h00).abs() + (h11 - h10).abs()) * 0.5 / cell;
+            let slope = (dh_x * dh_x + dh_z * dh_z).sqrt();
+            let slope_t = (slope * 3.0).clamp(0.0, 1.0); // steeper → more rock
+
+            // Per-triangle colors from average of their 3 vertex heights
+            // Tri 1: v00, v11, v10 | Tri 2: v00, v01, v11
+            let terrain_color = |avg_h: f32, ix: usize, iz: usize, tri_idx: u32| -> u32 {
+                let t = ((avg_h - h_min) / h_range).clamp(0.0, 1.0);
+                let hash = (ix as u32).wrapping_mul(73856093)
+                    ^ (iz as u32).wrapping_mul(19349663)
+                    ^ tri_idx.wrapping_mul(2654435761);
+                let noise = (hash % 20) as i32 - 10;
+                let base_green = lerp_color(GROUND_LOW, GROUND_HIGH, t);
+                let rocky = lerp_color(base_green, 0xFF6B6455, slope_t);
+                if mid_z > DOCK_Z_START {
+                    let dock_t = ((mid_z - DOCK_Z_START) / 20.0).clamp(0.0, 1.0);
+                    jitter_color(lerp_color(rocky, DOCK_GROUND, dock_t), noise)
+                } else {
+                    jitter_color(rocky, noise)
+                }
             };
 
             // Reversed winding → CCW screen + upward normals
             let n1 = normalize_tri_normal(v00, v11, v10);
-            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
+            let c1 = terrain_color((h00 + h11 + h10) / 3.0, ix, iz, 0);
+            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: c1 });
             let n2 = normalize_tri_normal(v00, v01, v11);
-            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
+            let c2 = terrain_color((h00 + h01 + h11) / 3.0, ix, iz, 1);
+            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: c2 });
         }
     }
 }
@@ -1050,7 +1076,7 @@ fn generate_river(
 
             // Subdivide along segment length
             let sub_count = (len / 2.0).ceil() as usize;
-            let cross_count = 4_usize;
+            let cross_count = 6_usize;
             for si in 0..sub_count {
                 for ci in 0..cross_count {
                     let t0 = si as f32 / sub_count as f32;
@@ -1067,10 +1093,11 @@ fn generate_river(
                     let x11 = seg.x1 + dx * t1 + perp_x * hw * c1;
                     let z11 = seg.z1 + dz * t1 + perp_z * hw * c1;
 
-                    // Wave offset — never flat
+                    // Multi-octave wave offset
                     let wave = |x: f32, z: f32| -> f32 {
                         wy + (x * 0.8).sin() * (z * 0.5).cos() * 0.15
                             + (x * 1.5 + 1.0).sin() * 0.08
+                            + (x * 2.3 + z * 1.7).sin() * 0.04
                     };
 
                     let v00 = [x00, wave(x00, z00), z00];
@@ -1078,11 +1105,24 @@ fn generate_river(
                     let v01 = [x01, wave(x01, z01), z01];
                     let v11 = [x11, wave(x11, z11), z11];
 
+                    // Color varies by cross-stream position: edge→lighter, center→deeper
+                    let cross_mid = (c0.abs() + c1.abs()) * 0.5; // 0=center, 1=edge
+                    let depth_t = 1.0 - cross_mid; // 1=center (deep), 0=edge
+                    let base = if depth_t > 0.5 {
+                        lerp_color(RIVER_MID, RIVER_DEEP, (depth_t - 0.5) * 2.0)
+                    } else {
+                        lerp_color(RIVER_EDGE, RIVER_MID, depth_t * 2.0)
+                    };
+                    // Hash-based per-quad noise for ripple variation
+                    let h = (si as u32).wrapping_mul(73856093) ^ (ci as u32).wrapping_mul(19349663);
+                    let noise = (h % 16) as i32 - 8;
+                    let color = jitter_color(base, noise);
+
                     // Reversed winding → CCW screen + upward normals
                     let n1 = normalize_tri_normal(v00, v11, v10);
-                    tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: RIVER_COLOR });
+                    tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
                     let n2 = normalize_tri_normal(v00, v01, v11);
-                    tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: RIVER_COLOR });
+                    tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
                 }
             }
         }
@@ -1815,7 +1855,13 @@ fn generate_decorations(
 const SUBURB_HOUSE_COLORS: [u32; 6] = [
     0xFF99887A, 0xFF8888AA, 0xFFAA9988, 0xFF889988, 0xFFBBAA88, 0xFF7788AA,
 ];
-const SUBURB_ROOF_COLOR: u32 = 0xFF554433;
+const SUBURB_ROOF_COLORS: [u32; 5] = [
+    0xFF554433, // dark brown shingle
+    0xFF443838, // slate grey-brown
+    0xFF5A4A3A, // warm brown
+    0xFF3A3A44, // dark slate
+    0xFF664433, // reddish brown
+];
 const SUBURB_FENCE_COLOR: u32 = 0xFF998866;
 const SUBURB_DOOR_COLOR: u32 = 0xFF553322;
 
@@ -1871,6 +1917,7 @@ fn generate_suburbs(
                 let hd = rng.range(4.0, 7.0);
                 let hh = rng.range(3.0, 5.0);
                 let color = rng.pick(&SUBURB_HOUSE_COLORS);
+                let roof_color = rng.pick(&SUBURB_ROOF_COLORS);
                 let shutter_c = SHUTTER_COLORS[k as usize % SHUTTER_COLORS.len()];
 
                 // House body — beveled
@@ -1878,7 +1925,7 @@ fn generate_suburbs(
 
                 // Pitched roof with overhang
                 let roof_peak = hh * 0.35 + 0.6;
-                mesh::pitched_roof_tris(tris, hx, gy + hh, hz, hw + 0.6, hd + 0.6, roof_peak, SUBURB_ROOF_COLOR);
+                mesh::pitched_roof_tris(tris, hx, gy + hh, hz, hw + 0.6, hd + 0.6, roof_peak, roof_color);
 
                 // Chimney on roof
                 let chim_ox = dir_x * hw * 0.2;
@@ -1907,14 +1954,31 @@ fn generate_suburbs(
                     1.2, 0.12, 0.5, darken_color(color, 0.6));
 
                 // Front windows with shutters and sills
-                let win_color = 0x00AA7722; // alpha=0 emissive, RRGGBB=AA7722 warm amber
-                for wi in [-1.0f32, 1.0] {
+                const SUBURB_WIN_LIT: [u32; 3] = [0x00AA7722, 0x00BB8833, 0x00997722];
+                const SUBURB_WIN_DARK: u32 = 0xFF1A1A2A;
+                for (wi_idx, wi) in [-1.0f32, 1.0].iter().enumerate() {
                     let wx = hx + dir_x * wi * (hw * 0.3);
                     let wz = hz + dir_z * wi * (hw * 0.3);
                     let fwx = wx + face_nx * hd * 0.5;
                     let fwz = wz + face_nz * hd * 0.5;
-                    // Window recess
-                    mesh::box_tris(tris, fwx, gy + hh * 0.55, fwz, 0.7, 0.8, 0.12, win_color);
+                    // Window color: ~70% lit, ~30% dark
+                    let wh = (k as u32).wrapping_mul(2654435761).wrapping_add(wi_idx as u32 * 1013904223);
+                    let win_color = if wh % 100 < 70 {
+                        SUBURB_WIN_LIT[(wh / 100) as usize % SUBURB_WIN_LIT.len()]
+                    } else { SUBURB_WIN_DARK };
+                    // Oriented window pane (faces outward along house face normal)
+                    let pane_off = 0.08;
+                    let px = fwx + face_nx * pane_off;
+                    let pz = fwz + face_nz * pane_off;
+                    let cy = gy + hh * 0.55;
+                    let qhw = 0.28; let qhh = 0.35;
+                    mesh::push_quad(tris,
+                        [px - dir_x*qhw, cy - qhh, pz - dir_z*qhw],
+                        [px + dir_x*qhw, cy - qhh, pz + dir_z*qhw],
+                        [px + dir_x*qhw, cy + qhh, pz + dir_z*qhw],
+                        [px - dir_x*qhw, cy + qhh, pz - dir_z*qhw],
+                        win_color,
+                    );
                     // Window sill
                     let sill_ox = face_nx * 0.06;
                     let sill_oz = face_nz * 0.06;
@@ -1932,24 +1996,51 @@ fn generate_suburbs(
                         0.14, 0.8, 0.04, shutter_c);
                 }
 
-                // Upper floor window (gable window in roof face)
-                let gable_x = hx + face_nx * hd * 0.5;
-                let gable_z = hz + face_nz * hd * 0.5;
-                mesh::box_tris(tris, gable_x, gy + hh + roof_peak * 0.2, gable_z,
-                    0.5, 0.5, 0.06, win_color);
+                // Upper floor window (gable — oriented quad facing outward)
+                let upper_wh = (k as u32).wrapping_mul(2654435761).wrapping_add(7);
+                let upper_win_color = if upper_wh % 100 < 70 {
+                    SUBURB_WIN_LIT[(upper_wh / 100) as usize % SUBURB_WIN_LIT.len()]
+                } else { SUBURB_WIN_DARK };
+                {
+                    let gx = hx + face_nx * (hd * 0.5 + 0.08);
+                    let gz = hz + face_nz * (hd * 0.5 + 0.08);
+                    let gy2 = gy + hh + roof_peak * 0.2;
+                    let ghw = 0.22; let ghh = 0.22;
+                    mesh::push_quad(tris,
+                        [gx - dir_x*ghw, gy2 - ghh, gz - dir_z*ghw],
+                        [gx + dir_x*ghw, gy2 - ghh, gz + dir_z*ghw],
+                        [gx + dir_x*ghw, gy2 + ghh, gz + dir_z*ghw],
+                        [gx - dir_x*ghw, gy2 + ghh, gz - dir_z*ghw],
+                        upper_win_color,
+                    );
+                }
 
-                // Side windows (one per side)
-                for si in [-1.0f32, 1.0] {
+                // Side windows (one per side — oriented quads facing outward)
+                for (si_idx, si) in [-1.0f32, 1.0].iter().enumerate() {
                     let swx = hx + dir_x * si * hw * 0.5;
                     let swz = hz + dir_z * si * hw * 0.5;
-                    mesh::box_tris(tris, swx, gy + hh * 0.55, swz, 0.12, 0.6, 0.5, win_color);
+                    let snx = dir_x * si;
+                    let snz = dir_z * si;
+                    let sx = swx + snx * 0.08;
+                    let sz = swz + snz * 0.08;
+                    let sy = gy + hh * 0.55;
+                    let sh = (k as u32).wrapping_mul(741103597).wrapping_add((si_idx as u32).wrapping_mul(2246822519));
+                    let sc = if sh % 100 < 60 { 0x00997722 } else { SUBURB_WIN_DARK };
+                    let shw = 0.2; let shh = 0.25;
+                    mesh::push_quad(tris,
+                        [sx - face_nx*shw, sy - shh, sz - face_nz*shw],
+                        [sx + face_nx*shw, sy - shh, sz + face_nz*shw],
+                        [sx + face_nx*shw, sy + shh, sz + face_nz*shw],
+                        [sx - face_nx*shw, sy + shh, sz - face_nz*shw],
+                        sc,
+                    );
                 }
 
                 // Porch overhang (small roof over door)
                 let porch_x = door_x + face_nx * 0.5;
                 let porch_z = door_z + face_nz * 0.5;
                 mesh::box_tris(tris, porch_x, gy + 2.15, porch_z,
-                    1.4, 0.06, 0.8, SUBURB_ROOF_COLOR);
+                    1.4, 0.06, 0.8, roof_color);
                 // Porch support posts
                 for ps in [-0.55f32, 0.55] {
                     let ppx = porch_x + dir_x * ps;
@@ -2199,7 +2290,6 @@ pub fn generate_world(game: &mut GameState) {
         mesh::beveled_box_tris(&mut tris, x, ground_y + h * 0.5, z,
             w - wall_inset * 2.0, h, d - wall_inset * 2.0, bevel, color);
 
-        let win_color = 0x00AA7722; // alpha=0 emissive, RRGGBB=AA7722 warm amber
         let win_h = 1.2;
         let win_w = 0.8;
         let floor_height = 3.0;
@@ -2209,6 +2299,15 @@ pub fn generate_world(game: &mut GameState) {
         let has_shop = bi % 3 != 2 && floors > 1; // ~66% have ground floor shop
         let has_balcony = bi % 5 == 0 && floors > 1; // ~20% have balconies
         let shutter_color = SHUTTER_COLORS[bi % SHUTTER_COLORS.len()];
+
+        // Per-window color: ~65% lit with color variation, ~35% dark
+        const WIN_LIT_COLORS: [u32; 4] = [
+            0x00AA7722, // warm amber
+            0x00BB8833, // golden
+            0x00997722, // dimmer amber
+            0x00CCAA44, // bright warm white
+        ];
+        const WIN_DARK: u32 = 0xFF1A1A2A; // dark glass (non-emissive)
 
         // Window holes for front/back
         let mut win_holes: Vec<mesh::WallHole> = Vec::new();
@@ -2221,20 +2320,33 @@ pub fn generate_world(game: &mut GameState) {
             }
         }
 
+        // Generate per-window colors for front/back (hash-based randomization)
+        let front_colors: Vec<u32> = win_holes.iter().enumerate().map(|(i, _)| {
+            let h = (bi as u32).wrapping_mul(2654435761).wrapping_add(i as u32 * 1013904223);
+            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
+            else { WIN_DARK }
+        }).collect();
+        // Back face uses shifted hash for different pattern
+        let back_colors: Vec<u32> = win_holes.iter().enumerate().map(|(i, _)| {
+            let h = (bi as u32).wrapping_mul(1597334677).wrapping_add(i as u32 * 741103597);
+            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
+            else { WIN_DARK }
+        }).collect();
+
         let zf = 0.01_f32;
         // Front face (z+) with recessed windows
         mesh::wall_with_holes_tris(
             &mut tris,
             x - w * 0.5, ground_y, z + d * 0.5 + zf,
             w, h, &win_holes, recess_depth,
-            color, win_color, 1.0, 1.0, false,
+            color, &front_colors, 1.0, 1.0, false,
         );
         // Back face (z-)
         mesh::wall_with_holes_tris(
             &mut tris,
             x + w * 0.5, ground_y, z - d * 0.5 - zf,
             w, h, &win_holes, recess_depth,
-            color, win_color, -1.0, -1.0, false,
+            color, &back_colors, -1.0, -1.0, false,
         );
 
         // Side windows
@@ -2247,17 +2359,27 @@ pub fn generate_world(game: &mut GameState) {
                 side_holes.push(mesh::WallHole { x: wz, y: wy, w: win_w, h: win_h });
             }
         }
+        let side_l_colors: Vec<u32> = side_holes.iter().enumerate().map(|(i, _)| {
+            let h = (bi as u32).wrapping_mul(3266489917).wrapping_add(i as u32 * 668265263);
+            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
+            else { WIN_DARK }
+        }).collect();
+        let side_r_colors: Vec<u32> = side_holes.iter().enumerate().map(|(i, _)| {
+            let h = (bi as u32).wrapping_mul(2246822519).wrapping_add(i as u32 * 387276957);
+            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
+            else { WIN_DARK }
+        }).collect();
         mesh::wall_with_holes_tris(
             &mut tris,
             z - d * 0.5, ground_y, x + w * 0.5 + zf,
             d, h, &side_holes, recess_depth,
-            color, win_color, -1.0, 1.0, true,
+            color, &side_l_colors, -1.0, 1.0, true,
         );
         mesh::wall_with_holes_tris(
             &mut tris,
             z + d * 0.5, ground_y, x - w * 0.5 - zf,
             d, h, &side_holes, recess_depth,
-            color, win_color, 1.0, -1.0, true,
+            color, &side_r_colors, 1.0, -1.0, true,
         );
 
         // --- Window shutters (thin boxes flanking each window on front face) ---
@@ -2411,7 +2533,7 @@ pub fn generate_world(game: &mut GameState) {
                     let dorm_z = z + d * 0.5 + 0.1;
                     mesh::box_tris(&mut tris, x, dorm_y, dorm_z, 1.0, 0.8, 0.5, color);
                     mesh::pitched_roof_tris(&mut tris, x, dorm_y + 0.4, dorm_z, 1.2, 0.7, 0.4, roof_color);
-                    mesh::box_tris(&mut tris, x, dorm_y, dorm_z + 0.26, 0.5, 0.5, 0.04, win_color);
+                    mesh::box_tris(&mut tris, x, dorm_y, dorm_z + 0.26, 0.5, 0.5, 0.04, 0x00AA7722);
                 }
             }
             _ => {
@@ -2976,6 +3098,7 @@ pub fn check_npc_walk_collision(world: &WorldData, x: f32, z: f32, radius: f32, 
         }
     }
     for tb in &world.trash_bins {
+        if tb.carried_by.is_some() { continue; }
         let dx = x - tb.x;
         let dz = z - tb.z;
         let r2 = 0.4 + radius;
@@ -3031,6 +3154,7 @@ pub fn check_building_collision(world: &WorldData, x: f32, z: f32, radius: f32) 
         }
     }
     for tb in &world.trash_bins {
+        if tb.carried_by.is_some() { continue; }
         let dx = x - tb.x;
         let dz = z - tb.z;
         let r2 = 0.4 + radius;
