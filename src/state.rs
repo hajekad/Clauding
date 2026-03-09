@@ -41,6 +41,7 @@ pub const PLAYER_SPEED: f32 = 5.0;
 pub const SPRINT_SPEED: f32 = 9.0;
 pub const PLAYER_RADIUS: f32 = 0.4;
 pub const DAY_LENGTH: f32 = 1440.0; // 1 game-minute = 1 real second (24 real minutes per day)
+pub const HEADLESS_DT: f32 = 1.0 / 30.0; // shared timestep for headless simulation (observe, etc.)
 pub const NUM_NPCS: usize = 100;
 pub const NUM_ITEMS: usize = 250;
 pub const NPC_SPEED: f32 = 2.5;

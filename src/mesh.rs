@@ -1463,7 +1463,7 @@ pub fn loft_y_tris_caps(
             let pn = (pi + 1) % n;
             let a = [bpts[pi][0], yb, bpts[pi][1]];
             let b = [bpts[pn][0], yb, bpts[pn][1]];
-            tris.push(WorldTri { v: [bc, b, a], normal: [0.0, -1.0, 0.0], color: bcol });
+            tris.push(WorldTri { v: [bc, a, b], normal: [0.0, -1.0, 0.0], color: bcol });
         }
     }
 
@@ -1479,7 +1479,7 @@ pub fn loft_y_tris_caps(
             let pn = (pi + 1) % n;
             let a = [tpts[pi][0], yt, tpts[pi][1]];
             let b = [tpts[pn][0], yt, tpts[pn][1]];
-            tris.push(WorldTri { v: [tc, a, b], normal: [0.0, 1.0, 0.0], color: tcol });
+            tris.push(WorldTri { v: [tc, b, a], normal: [0.0, 1.0, 0.0], color: tcol });
         }
     }
 }

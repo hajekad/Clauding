@@ -3588,6 +3588,10 @@ pub fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
                     v[1] += y;
                     v[2] = rz + item.z;
                 }
+                let nx = tri.normal[0] * cos_s + tri.normal[2] * sin_s;
+                let nz = -tri.normal[0] * sin_s + tri.normal[2] * cos_s;
+                tri.normal[0] = nx;
+                tri.normal[2] = nz;
             }
         }
         ItemKind::Health => {
@@ -3604,6 +3608,10 @@ pub fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
                     v[1] += y;
                     v[2] = rz + item.z;
                 }
+                let nx = tri.normal[0] * cos_s + tri.normal[2] * sin_s;
+                let nz = -tri.normal[0] * sin_s + tri.normal[2] * cos_s;
+                tri.normal[0] = nx;
+                tri.normal[2] = nz;
             }
         }
         ItemKind::Water => {
@@ -3622,6 +3630,10 @@ pub fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
                     v[1] += y;
                     v[2] = rz + item.z;
                 }
+                let nx = tri.normal[0] * cos_s + tri.normal[2] * sin_s;
+                let nz = -tri.normal[0] * sin_s + tri.normal[2] * cos_s;
+                tri.normal[0] = nx;
+                tri.normal[2] = nz;
             }
         }
         _ => {
