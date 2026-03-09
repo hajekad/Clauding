@@ -78,6 +78,29 @@ fn stuck_recovery(world: &mut WorldData, i: usize, net: &RoadNetwork) {
         return;
     }
 
+    // Level 1: try to move to nearest road node to escape current collision trap
+    if !net.nodes.is_empty() {
+        let nx = world.npcs[i].x;
+        let nz = world.npcs[i].z;
+        let mut best_d = f32::MAX;
+        let mut best_node = None;
+        for (ni, node) in net.nodes.iter().enumerate() {
+            let dx = node[0] - nx;
+            let dz = node[1] - nz;
+            let d = dx * dx + dz * dz;
+            // Closest road node within 80m, not on river
+            if d < 6400.0 && d < best_d
+                && !on_river_not_bridge(node[0], node[1], &world.river_segments, &world.bridges)
+            {
+                best_d = d;
+                best_node = Some(ni);
+            }
+        }
+        if let Some(ni) = best_node {
+            world.npcs[i].x = net.nodes[ni][0];
+            world.npcs[i].z = net.nodes[ni][1];
+        }
+    }
     world.npcs[i].wander_cooldown = 2.0;
     pick_wander(world, i, net);
 }
@@ -185,6 +208,9 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
     } else if world.npcs[i].carrying_bin.is_some() {
         let tx = world.npcs[i].target_x;
         let tz = world.npcs[i].target_z;
+        let was_stuck = world.npcs[i].stuck_timer > 4.0;
+        world.npcs[i].job_timer += dt;
+        let no_progress = world.npcs[i].job_timer > 15.0;
         let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
         if remaining < 2.0 {
             if let Some(bi) = world.npcs[i].carrying_bin {
@@ -194,7 +220,19 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
                 world.trash_bins[bi].terrain_normal = terrain.normal_at(world.npcs[i].x, world.npcs[i].z);
                 world.trash_bins[bi].carried_by = None;
                 world.npcs[i].carrying_bin = None;
+                world.npcs[i].stuck_count = 0;
             }
+        } else if was_stuck || no_progress {
+            // Can't reach target — drop bin here and give up
+            if let Some(bi) = world.npcs[i].carrying_bin {
+                world.trash_bins[bi].x = world.npcs[i].x;
+                world.trash_bins[bi].z = world.npcs[i].z;
+                world.trash_bins[bi].y = terrain.height_at(world.npcs[i].x, world.npcs[i].z);
+                world.trash_bins[bi].terrain_normal = terrain.normal_at(world.npcs[i].x, world.npcs[i].z);
+                world.trash_bins[bi].carried_by = None;
+                world.npcs[i].carrying_bin = None;
+            }
+            stuck_recovery(world, i, net);
         }
     } else {
         // Find item to pick up (skip if on cooldown from stuck recovery)
@@ -218,12 +256,11 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
                     if bin_dist > 20.0 && world.trash_bins[bi].carried_by.is_none() {
                         world.npcs[i].carrying_bin = Some(bi);
                         world.trash_bins[bi].carried_by = Some(i);
-                        world.npcs[i].target_x = world.items[idx].x;
-                        world.npcs[i].target_z = world.items[idx].z;
                         world.items[idx].claimed_by = None;
                         world.npcs[i].target_item = None;
-                        world.npcs[i].target_x = world.trash_bins[bi].x;
-                        world.npcs[i].target_z = world.trash_bins[bi].z;
+                        // Walk to item area to deposit bin there (closer to items)
+                        world.npcs[i].target_x = world.items[idx].x;
+                        world.npcs[i].target_z = world.items[idx].z;
                         return;
                     }
                 }
@@ -931,7 +968,7 @@ fn path_clear(world: &WorldData, ax: f32, az: f32, bx: f32, bz: f32, home_idx: u
     let dx = bx - ax;
     let dz = bz - az;
     let dist = (dx * dx + dz * dz).sqrt();
-    let steps = ((dist / 8.0) as usize).clamp(2, 8);
+    let steps = ((dist / 6.0) as usize).clamp(2, 10);
     for step in 1..=steps {
         let t = step as f32 / (steps + 1) as f32;
         let sx = ax + dx * t;
@@ -939,12 +976,28 @@ fn path_clear(world: &WorldData, ax: f32, az: f32, bx: f32, bz: f32, home_idx: u
         if on_river_not_bridge(sx, sz, &world.river_segments, &world.bridges) {
             return false;
         }
-        // Reject paths through large buildings — NPCs can't detour around these
+        // Reject paths through large buildings
         for (bi, b) in world.buildings.iter().enumerate() {
             if bi == home_idx { continue; }
             if b.w + b.d < 6.0 { continue; }
             if sx > b.x - b.w * 0.5 && sx < b.x + b.w * 0.5
             && sz > b.z - b.d * 0.5 && sz < b.z + b.d * 0.5 {
+                return false;
+            }
+        }
+        // Reject paths through walls (linear barriers)
+        for w in &world.walls {
+            if sx > w.x - w.hw - 0.5 && sx < w.x + w.hw + 0.5
+            && sz > w.z - w.hd - 0.5 && sz < w.z + w.hd + 0.5 {
+                return false;
+            }
+        }
+        // Reject paths through large rocks
+        for r in &world.rocks {
+            if r.size < 1.0 { continue; }
+            let rdx = sx - r.x;
+            let rdz = sz - r.z;
+            if rdx * rdx + rdz * rdz < (r.size + 0.5) * (r.size + 0.5) {
                 return false;
             }
         }
@@ -957,6 +1010,8 @@ fn find_best_item(world: &WorldData, npc_idx: usize) -> Option<usize> {
     let home = npc.home_idx;
     let mut best_dist = f32::MAX;
     let mut best_idx = None;
+    let mut fallback_dist = f32::MAX;
+    let mut fallback_idx = None;
     // Recently-stuck NPCs focus on closer items to reduce pathfinding failures
     let max_range = if npc.stuck_count > 0 { 60.0 } else { 120.0 };
     let max_dist_sq = max_range * max_range;
@@ -970,44 +1025,64 @@ fn find_best_item(world: &WorldData, npc_idx: usize) -> Option<usize> {
         let dz = item.z - npc.z;
         let dist = dx * dx + dz * dz;
         if dist > max_dist_sq { continue; }
-        if dist < best_dist && path_clear(world, npc.x, npc.z, item.x, item.z, home) {
-            best_dist = dist;
-            best_idx = Some(idx);
+        if path_clear(world, npc.x, npc.z, item.x, item.z, home) {
+            if dist < best_dist {
+                best_dist = dist;
+                best_idx = Some(idx);
+            }
+        } else if best_idx.is_none() && dist < fallback_dist {
+            // Track closest item without clear path — NPC can detour around obstacles
+            fallback_dist = dist;
+            fallback_idx = Some(idx);
         }
     }
-    best_idx
+    best_idx.or(fallback_idx)
 }
 
 fn find_nearest_bin(world: &WorldData, x: f32, z: f32, home_idx: usize) -> Option<usize> {
     let mut best_dist = f32::MAX;
     let mut best_idx = None;
+    let mut fallback_dist = f32::MAX;
+    let mut fallback_idx = None;
     for (idx, bin) in world.trash_bins.iter().enumerate() {
         if bin.carried_by.is_some() { continue; }
         let dx = bin.x - x;
         let dz = bin.z - z;
         let dist = dx * dx + dz * dz;
-        if dist < best_dist && path_clear(world, x, z, bin.x, bin.z, home_idx) {
-            best_dist = dist;
-            best_idx = Some(idx);
+        if path_clear(world, x, z, bin.x, bin.z, home_idx) {
+            if dist < best_dist {
+                best_dist = dist;
+                best_idx = Some(idx);
+            }
+        } else if best_idx.is_none() && dist < fallback_dist {
+            fallback_dist = dist;
+            fallback_idx = Some(idx);
         }
     }
-    best_idx
+    best_idx.or(fallback_idx)
 }
 
 fn find_nearest_interactible(world: &WorldData, x: f32, z: f32, kind: InteractibleKind, home_idx: usize) -> Option<usize> {
     let mut best_dist = f32::MAX;
     let mut best_idx = None;
+    let mut fallback_dist = f32::MAX;
+    let mut fallback_idx = None;
     for (idx, inter) in world.interactibles.iter().enumerate() {
         if inter.kind != kind { continue; }
         let dx = inter.x - x;
         let dz = inter.z - z;
         let dist = dx * dx + dz * dz;
-        if dist < best_dist && path_clear(world, x, z, inter.x, inter.z, home_idx) {
-            best_dist = dist;
-            best_idx = Some(idx);
+        if path_clear(world, x, z, inter.x, inter.z, home_idx) {
+            if dist < best_dist {
+                best_dist = dist;
+                best_idx = Some(idx);
+            }
+        } else if best_idx.is_none() && dist < fallback_dist {
+            fallback_dist = dist;
+            fallback_idx = Some(idx);
         }
     }
-    best_idx
+    best_idx.or(fallback_idx)
 }
 
 fn pick_wander(world: &mut WorldData, i: usize, net: &RoadNetwork) {
@@ -1041,8 +1116,8 @@ fn pick_wander(world: &mut WorldData, i: usize, net: &RoadNetwork) {
             let dx = node[0] - nx;
             let dz = node[1] - nz;
             let d = dx * dx + dz * dz;
-            // Must be 10-80m away and not on river
-            if d > 100.0 && d < 6400.0 && !on_river_not_bridge(node[0], node[1], &world.river_segments, &world.bridges) {
+            // Must be 5-200m away, not on river
+            if d > 25.0 && d < 40000.0 && !on_river_not_bridge(node[0], node[1], &world.river_segments, &world.bridges) {
                 world.npcs[i].target_x = node[0];
                 world.npcs[i].target_z = node[1];
                 return;

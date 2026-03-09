@@ -109,6 +109,9 @@ fn main() {
         // Headless NPC-NPC combat
         headless_combat(&mut game.world, &game.terrain, FIXED_DT);
 
+        // Final river escape — catches any NPC pushed into river by collision/knockback
+        npc::sys_river_escape(&mut game.world, &game.terrain);
+
         tick += 1;
         game.frame_counter += 1;
 
@@ -506,8 +509,15 @@ fn headless_combat(world: &mut state::WorldData, terrain: &state::Terrain, dt: f
     for i in 0..n {
         let npc = &mut world.npcs[i];
         if npc.knockback_vx.abs() > 0.01 || npc.knockback_vz.abs() > 0.01 {
-            npc.x += npc.knockback_vx * dt;
-            npc.z += npc.knockback_vz * dt;
+            let kb_x = npc.x + npc.knockback_vx * dt;
+            let kb_z = npc.z + npc.knockback_vz * dt;
+            if !world::on_river_not_bridge(kb_x, kb_z, &world.river_segments, &world.bridges) {
+                npc.x = kb_x;
+                npc.z = kb_z;
+            } else {
+                npc.knockback_vx = 0.0;
+                npc.knockback_vz = 0.0;
+            }
             npc.x = npc.x.clamp(-state::WORLD_HALF, state::WORLD_HALF);
             npc.z = npc.z.clamp(-state::WORLD_HALF, state::WORLD_HALF);
             let friction = (-state::KNOCKBACK_FRICTION * dt).exp();

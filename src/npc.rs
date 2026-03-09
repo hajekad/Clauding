@@ -50,6 +50,38 @@ pub fn sys_npc(
     }
 }
 
+/// Final pass: ensure no NPC is on the river after all systems have run.
+/// Call this AFTER collision, combat, knockback — it's the last line of defense.
+pub fn sys_river_escape(world: &mut WorldData, terrain: &Terrain) {
+    for i in 0..world.npcs.len() {
+        let npc = &world.npcs[i];
+        if npc.in_vehicle || npc.state == NpcState::Sleeping { continue; }
+        if !on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) { continue; }
+
+        // Find nearest bank using 8-direction search at increasing radii
+        let cx = world.npcs[i].x;
+        let cz = world.npcs[i].z;
+        let mut escaped = false;
+        for radius in [5.0, 10.0, 20.0, 40.0] {
+            for angle_i in 0..8 {
+                let a = angle_i as f32 * std::f32::consts::TAU / 8.0;
+                let try_x = cx + a.cos() * radius;
+                let try_z = cz + a.sin() * radius;
+                if !on_river_not_bridge(try_x, try_z, &world.river_segments, &world.bridges) {
+                    world.npcs[i].x = try_x;
+                    world.npcs[i].z = try_z;
+                    world.npcs[i].y = terrain.height_at(try_x, try_z);
+                    world.npcs[i].knockback_vx = 0.0;
+                    world.npcs[i].knockback_vz = 0.0;
+                    escaped = true;
+                    break;
+                }
+            }
+            if escaped { break; }
+        }
+    }
+}
+
 fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
     let npc = &mut world.npcs[i];
     if npc.in_vehicle || npc.state == NpcState::Sleeping || npc.state == NpcState::Interacting { return; }
@@ -66,17 +98,18 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         npc.on_ground = false;
     }
 
-    // Smooth terrain normal for slope tilting (clamped to 35° max visual tilt)
+    // Smooth terrain normal for slope tilting (clamped to 25° max visual tilt)
     let raw_n = terrain.normal_at(npc.x, npc.z);
-    let target_n = crate::math::clamp_normal_tilt(raw_n, 35.0);
+    let target_n = crate::math::clamp_normal_tilt(raw_n, 25.0);
     let lerp_rate = 8.0 * dt;
     npc.terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(npc.terrain_normal, target_n, lerp_rate.min(1.0)));
 
     // Slope sliding: if terrain is steep and NPC is on ground, slide downhill
+    // slope = 1 - cos(angle): 30°→0.13, 40°→0.23, 50°→0.36, 60°→0.50
     if npc.on_ground {
-        let slope = (1.0 - raw_n[1]).max(0.0); // use real normal, not clamped
-        if slope > 0.15 { // ~22° threshold
-            let slide_force = slope * 6.0 * dt;
+        let slope = (1.0 - raw_n[1]).max(0.0);
+        if slope > 0.12 { // ~28° threshold
+            let slide_force = slope * slope * 40.0 * dt;
             let slide_x = npc.x - raw_n[0] * slide_force;
             let slide_z = npc.z - raw_n[2] * slide_force;
             // Don't slide into rivers

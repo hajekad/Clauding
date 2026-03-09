@@ -239,6 +239,7 @@ fn main() {
                     &game.keybinds, FIXED_DT,
                 );
                 npc::sys_hunger_thirst(&mut game.world, &mut game.player, FIXED_DT);
+                npc::sys_river_escape(&mut game.world, &game.terrain);
                 player_jobs::sys_interactibles_update(&mut game.world, FIXED_DT);
                 player_jobs::sys_player_job(&mut game, FIXED_DT);
 
