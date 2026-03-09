@@ -120,8 +120,8 @@ fn drive_vehicle(state: &mut GameState, vi: usize, dt: f32) {
     let vz = state.world.vehicles[vi].z;
     state.world.vehicles[vi].y = state.terrain.height_at(vx, vz);
 
-    // Smooth terrain normal for slope tilting (clamped to 45° max visual tilt)
-    let target_n = crate::math::clamp_normal_tilt(state.terrain.normal_at(vx, vz), 45.0);
+    // Smooth terrain normal for slope tilting (clamped to 30° max visual tilt)
+    let target_n = crate::math::clamp_normal_tilt(state.terrain.normal_at(vx, vz), 30.0);
     let lerp_rate = 6.0 * dt;
     let v = &mut state.world.vehicles[vi];
     v.terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(v.terrain_normal, target_n, lerp_rate.min(1.0)));
@@ -510,8 +510,8 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
     world.vehicles[vi].z = world.vehicles[vi].z.clamp(-WORLD_HALF, WORLD_HALF);
     world.vehicles[vi].y = terrain.height_at(world.vehicles[vi].x, world.vehicles[vi].z);
 
-    // Smooth terrain normal for slope tilting (clamped to 45° max visual tilt)
-    let target_n = crate::math::clamp_normal_tilt(terrain.normal_at(world.vehicles[vi].x, world.vehicles[vi].z), 45.0);
+    // Smooth terrain normal for slope tilting (clamped to 30° max visual tilt)
+    let target_n = crate::math::clamp_normal_tilt(terrain.normal_at(world.vehicles[vi].x, world.vehicles[vi].z), 30.0);
     let lerp_rate = 6.0 * dt;
     world.vehicles[vi].terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(world.vehicles[vi].terrain_normal, target_n, lerp_rate.min(1.0)));
 

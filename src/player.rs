@@ -145,9 +145,9 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         p.y = new_ground;
     }
 
-    // Smooth terrain normal for slope tilting (clamped to 35° max visual tilt)
+    // Smooth terrain normal for slope tilting (clamped to 25° max visual tilt)
     let raw_n = state.terrain.normal_at(p.x, p.z);
-    let target_n = crate::math::clamp_normal_tilt(raw_n, 35.0);
+    let target_n = crate::math::clamp_normal_tilt(raw_n, 25.0);
     let lerp_rate = 8.0 * dt;
     let old_n = p.terrain_normal;
     p.terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(old_n, target_n, lerp_rate.min(1.0)));
@@ -156,7 +156,7 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     if p.on_ground {
         let slope = (1.0 - raw_n[1]).max(0.0);
         if slope > 0.15 {
-            let slide_force = slope * 6.0 * dt;
+            let slide_force = slope * slope * 40.0 * dt;
             p.x -= raw_n[0] * slide_force;
             p.z -= raw_n[2] * slide_force;
         }

@@ -2685,7 +2685,7 @@ pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
         None,
     );
 
-    let rot = terrain_rot3x3(clamp_normal_tilt(player.terrain_normal, 15.0), player.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(player.terrain_normal, 25.0), player.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
             let rv = rot3x3_apply(&rot, *v);
@@ -2746,7 +2746,7 @@ pub fn gen_head_standalone(tris: &mut Vec<WorldTri>, face: &FaceSliders, skin: u
 pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bool) {
     let base = tris.len();
     gen_rs5_body(tris, v.color, show_interior);
-    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 25.0), v.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 30.0), v.rot_y);
     for tri in &mut tris[base..] {
         for vert in &mut tri.v {
             let rv = rot3x3_apply(&rot, *vert);
@@ -3381,7 +3381,7 @@ fn _gen_vehicle_mesh_old(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: b
         push_box(tris, 0.0, 1.1, -0.45, 0.2, 0.06, 0.02, 0xFF667788);
     }
 
-    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 25.0), v.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 30.0), v.rot_y);
     for tri in &mut tris[base..] {
         for vert in &mut tri.v {
             let rv = rot3x3_apply(&rot, *vert);
@@ -3503,7 +3503,7 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         );
 
         // Rotate -90° around X (face-down), then terrain-aligned heading rotation
-        let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 15.0), npc.rot_y);
+        let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 25.0), npc.rot_y);
         for tri in &mut tris[base..] {
             for v in &mut tri.v {
                 // First: rotate -90° around X axis (face-down)
@@ -3550,7 +3550,7 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         mesh::sphere_tris(tris, 0.0, 2.70, -0.1, 0.04, 0, 0xFFFFFFFF);
     }
 
-    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 15.0), npc.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 25.0), npc.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
             let rv = rot3x3_apply(&rot, *v);
@@ -3641,7 +3641,7 @@ pub fn gen_trash_bin_mesh(bin: &TrashBin, tris: &mut Vec<WorldTri>) {
         mesh::sphere_tris(tris, 0.0, 0.95, 0.0, 0.15, 0, BAG_COLOR);
     }
     // Terrain-aligned transform
-    let rot = terrain_rot3x3(clamp_normal_tilt(bin.terrain_normal, 20.0), 0.0);
+    let rot = terrain_rot3x3(clamp_normal_tilt(bin.terrain_normal, 25.0), 0.0);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
             let rv = rot3x3_apply(&rot, *v);
@@ -3733,7 +3733,7 @@ pub fn gen_npc_mesh_mid(npc: &Npc, tris: &mut Vec<WorldTri>) {
     push_box(tris,  0.09, 0.04,  swing * 0.15, 0.05, 0.05, 0.08, BOOT_BROWN);
 
     // Apply body stretch + world transform
-    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 15.0), npc.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 25.0), npc.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
             v[1] *= BODY_STRETCH;
@@ -3755,7 +3755,7 @@ fn gen_npc_mesh_lod(npc: &Npc, tris: &mut Vec<WorldTri>) {
     push_box(tris, 0.0, 0.75, 0.0, 0.20, 0.55, 0.12, body_col);
     push_box(tris, 0.0, 0.25, 0.0, 0.13, 0.25, 0.10, npc.pants_color);
     push_box(tris, 0.0, 1.55, 0.0, 0.10, 0.12, 0.10, app.skin);
-    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 15.0), npc.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 25.0), npc.rot_y);
     for tri in &mut tris[base..] {
         for v in &mut tri.v {
             let rv = rot3x3_apply(&rot, *v);
@@ -3790,7 +3790,7 @@ pub fn gen_vehicle_mesh_mid(v: &Vehicle, tris: &mut Vec<WorldTri>) {
     for &(wx, wz) in &[(-0.88f32, -1.1f32), (0.88, -1.1), (-0.88, 1.1), (0.88, 1.1)] {
         mesh::cylinder_tris(tris, wx, 0.28, wz, 0.28, 0.22, 5, TIRE_COLOR);
     }
-    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 25.0), v.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 30.0), v.rot_y);
     for tri in &mut tris[base..] {
         for vert in &mut tri.v {
             let rv = rot3x3_apply(&rot, *vert);
@@ -3807,7 +3807,7 @@ fn gen_vehicle_mesh_lod(v: &Vehicle, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
     push_box(tris, 0.0, 0.35, 0.0, 1.8, 0.5, 3.6, v.color);
     push_box(tris, 0.0, 0.95, 0.2, 1.4, 0.45, 1.8, darken(v.color, 0.85));
-    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 25.0), v.rot_y);
+    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 30.0), v.rot_y);
     for tri in &mut tris[base..] {
         for vert in &mut tri.v {
             let rv = rot3x3_apply(&rot, *vert);
@@ -3974,10 +3974,9 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
         }
     }
 
-    // Clouds — scattered emissive quads on the sky hemisphere
     // Clouds — clusters of overlapping puffs on the sky hemisphere
     const CLOUD_RADIUS: f32 = 210.0;
-    const NUM_CLOUDS: u32 = 8;
+    const NUM_CLOUDS: u32 = 10;
 
     // Cloud base color by time of day
     let (cloud_r, cloud_g, cloud_b) = if tc.sun_strength > 0.5 {
@@ -3989,10 +3988,14 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
         (35.0, 35.0, 45.0)
     };
 
+    // Skip clouds at deep night — they render as dark blobs
+    let clouds_visible = tc.sun_strength > 0.02;
+
     for ci in 0..NUM_CLOUDS {
+        if !clouds_visible { break; }
         let ch = ci.wrapping_mul(2654435761);
         let az = (ci as f32 / NUM_CLOUDS as f32) * std::f32::consts::TAU + (ch % 100) as f32 * 0.01;
-        let alt_frac = 0.25 + (ch % 30) as f32 * 0.006;
+        let alt_frac = 0.40 + (ch % 30) as f32 * 0.008;
         let alt = alt_frac * std::f32::consts::FRAC_PI_2;
         let cos_alt = alt.cos();
 
@@ -4018,8 +4021,8 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
 
             // Puff size — center puffs larger, edges smaller
             let size_t = 1.0 - (pi as f32 / num_puffs as f32 - 0.5).abs() * 1.5;
-            let pw = (10.0 + (ph % 15) as f32 * 0.8) * size_t.max(0.5);
-            let phh = (2.5 + (ph % 8) as f32 * 0.3) * size_t.max(0.6);
+            let pw = (12.0 + (ph % 15) as f32 * 1.0) * size_t.max(0.5);
+            let phh = (6.0 + (ph % 8) as f32 * 0.8) * size_t.max(0.6);
 
             // Per-puff color variation (brighter tops, dimmer undersides)
             let bright = ((ph >> 8) % 20) as f32 - 8.0;
@@ -4036,23 +4039,55 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             let p3 = [px - rx * hw, py + hh, pz - rz * hw];
 
             out.push(GpuVertex { pos: p0, color_packed: cc, normal: n });
+            out.push(GpuVertex { pos: p2, color_packed: cc, normal: n });
             out.push(GpuVertex { pos: p1, color_packed: cc, normal: n });
-            out.push(GpuVertex { pos: p2, color_packed: cc, normal: n });
             out.push(GpuVertex { pos: p0, color_packed: cc, normal: n });
-            out.push(GpuVertex { pos: p2, color_packed: cc, normal: n });
             out.push(GpuVertex { pos: p3, color_packed: cc, normal: n });
+            out.push(GpuVertex { pos: p2, color_packed: cc, normal: n });
         }
     }
 
-    // Sun/moon disc — emissive circle on the sky hemisphere
-    let sun_angle = (hour - 6.0) / 12.0 * std::f32::consts::PI;
+    // Sun/moon disc — emissive circles tracking across the sky
+    // Sun arcs east→overhead→west; moon is opposite
+    let sun_angle = (hour - 6.0) / 12.0 * std::f32::consts::PI; // 0 at 6am, PI at 18pm
     let is_day = tc.sun_strength > 0.05;
+    let disc_dist = 220.0;
+
+    // Helper: build a billboard disc facing the camera
+    let emit_disc = |out: &mut Vec<GpuVertex>, cx: f32, cy: f32, cz: f32, radius: f32, color: u32| {
+        let dn = [-(cx - eye[0]), -(cy - eye[1]), -(cz - eye[2])];
+        let dl = (dn[0]*dn[0] + dn[1]*dn[1] + dn[2]*dn[2]).sqrt();
+        let dn = [dn[0]/dl, dn[1]/dl, dn[2]/dl];
+        let up = if dn[1].abs() > 0.99 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        let tx = [up[1]*dn[2] - up[2]*dn[1], up[2]*dn[0] - up[0]*dn[2], up[0]*dn[1] - up[1]*dn[0]];
+        let tl = (tx[0]*tx[0] + tx[1]*tx[1] + tx[2]*tx[2]).sqrt();
+        let tx = [tx[0]/tl, tx[1]/tl, tx[2]/tl];
+        let ty = [dn[1]*tx[2] - dn[2]*tx[1], dn[2]*tx[0] - dn[0]*tx[2], dn[0]*tx[1] - dn[1]*tx[0]];
+        for i in 0..10u32 {
+            let a0 = (i as f32 / 10.0) * std::f32::consts::TAU;
+            let a1 = ((i + 1) as f32 / 10.0) * std::f32::consts::TAU;
+            let p0 = [cx, cy, cz];
+            let p1 = [
+                cx + (a0.cos() * tx[0] + a0.sin() * ty[0]) * radius,
+                cy + (a0.cos() * tx[1] + a0.sin() * ty[1]) * radius,
+                cz + (a0.cos() * tx[2] + a0.sin() * ty[2]) * radius,
+            ];
+            let p2 = [
+                cx + (a1.cos() * tx[0] + a1.sin() * ty[0]) * radius,
+                cy + (a1.cos() * tx[1] + a1.sin() * ty[1]) * radius,
+                cz + (a1.cos() * tx[2] + a1.sin() * ty[2]) * radius,
+            ];
+            out.push(GpuVertex { pos: p0, color_packed: color, normal: dn });
+            out.push(GpuVertex { pos: p2, color_packed: color, normal: dn });
+            out.push(GpuVertex { pos: p1, color_packed: color, normal: dn });
+        }
+    };
 
     if is_day {
+        // Sun position: arcs from east (+x) up through zenith to west (-x)
         let sy = sun_angle.sin().max(0.05);
         let sx = sun_angle.cos();
-        let disc_dist = 220.0;
-        let sun_x = eye[0] + sx * disc_dist * 0.5;
+        let sun_x = eye[0] + sx * disc_dist * 0.8;
         let sun_y = eye[1] + sy * disc_dist;
         let sun_z = eye[2] + disc_dist * 0.3;
 
@@ -4062,77 +4097,22 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
         let sb = (((1.0 - horizon_t * 0.7) * 180.0) / boost).min(255.0) as u32;
         let sun_color = (sr << 16) | (sg << 8) | sb;
 
-        let sun_r = 6.0;
-        let sn = [-(sun_x - eye[0]), -(sun_y - eye[1]), -(sun_z - eye[2])];
-        let sn_len = (sn[0]*sn[0] + sn[1]*sn[1] + sn[2]*sn[2]).sqrt();
-        let sn = [sn[0]/sn_len, sn[1]/sn_len, sn[2]/sn_len];
-        let up = if sn[1].abs() > 0.99 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
-        let tx = [up[1]*sn[2] - up[2]*sn[1], up[2]*sn[0] - up[0]*sn[2], up[0]*sn[1] - up[1]*sn[0]];
-        let tl = (tx[0]*tx[0] + tx[1]*tx[1] + tx[2]*tx[2]).sqrt();
-        let tx = [tx[0]/tl, tx[1]/tl, tx[2]/tl];
-        let ty = [sn[1]*tx[2] - sn[2]*tx[1], sn[2]*tx[0] - sn[0]*tx[2], sn[0]*tx[1] - sn[1]*tx[0]];
-
-        for i in 0..8u32 {
-            let a0 = (i as f32 / 8.0) * std::f32::consts::TAU;
-            let a1 = ((i + 1) as f32 / 8.0) * std::f32::consts::TAU;
-            let p0 = [sun_x, sun_y, sun_z];
-            let p1 = [
-                sun_x + (a0.cos() * tx[0] + a0.sin() * ty[0]) * sun_r,
-                sun_y + (a0.cos() * tx[1] + a0.sin() * ty[1]) * sun_r,
-                sun_z + (a0.cos() * tx[2] + a0.sin() * ty[2]) * sun_r,
-            ];
-            let p2 = [
-                sun_x + (a1.cos() * tx[0] + a1.sin() * ty[0]) * sun_r,
-                sun_y + (a1.cos() * tx[1] + a1.sin() * ty[1]) * sun_r,
-                sun_z + (a1.cos() * tx[2] + a1.sin() * ty[2]) * sun_r,
-            ];
-            out.push(GpuVertex { pos: p0, color_packed: sun_color, normal: sn });
-            out.push(GpuVertex { pos: p1, color_packed: sun_color, normal: sn });
-            out.push(GpuVertex { pos: p2, color_packed: sun_color, normal: sn });
-        }
+        emit_disc(out, sun_x, sun_y, sun_z, 12.0, sun_color);
     } else {
-        // Moon disc — silvery white
-        let moon_angle = sun_angle + std::f32::consts::PI;
-        let my = moon_angle.sin().abs().max(0.15);
-        let mx = moon_angle.cos();
-        let disc_dist = 220.0;
-        let moon_x = eye[0] + mx * disc_dist * 0.4;
-        let moon_y = eye[1] + my * disc_dist * 0.8;
-        let moon_z = eye[2] - disc_dist * 0.3;
+        // Moon disc — silvery white, opposite side of sky from sun
+        let moon_elev = sun_angle.sin().abs().max(0.2);
+        let moon_az = sun_angle.cos();
+        // Moon on the opposite side: flip x and z from sun
+        let moon_x = eye[0] - moon_az * disc_dist * 0.6;
+        let moon_y = eye[1] + moon_elev * disc_dist * 0.9;
+        let moon_z = eye[2] + disc_dist * 0.4;
 
-        let mr = (200.0 / boost).min(255.0) as u32;
-        let mg = (200.0 / boost).min(255.0) as u32;
-        let mb = (210.0 / boost).min(255.0) as u32;
+        let mr = (210.0 / boost).min(255.0) as u32;
+        let mg = (210.0 / boost).min(255.0) as u32;
+        let mb = (225.0 / boost).min(255.0) as u32;
         let moon_color = (mr << 16) | (mg << 8) | mb;
 
-        let moon_r = 5.0;
-        let mn = [-(moon_x - eye[0]), -(moon_y - eye[1]), -(moon_z - eye[2])];
-        let mn_len = (mn[0]*mn[0] + mn[1]*mn[1] + mn[2]*mn[2]).sqrt();
-        let mn = [mn[0]/mn_len, mn[1]/mn_len, mn[2]/mn_len];
-        let up = if mn[1].abs() > 0.99 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
-        let mtx = [up[1]*mn[2] - up[2]*mn[1], up[2]*mn[0] - up[0]*mn[2], up[0]*mn[1] - up[1]*mn[0]];
-        let mtl = (mtx[0]*mtx[0] + mtx[1]*mtx[1] + mtx[2]*mtx[2]).sqrt();
-        let mtx = [mtx[0]/mtl, mtx[1]/mtl, mtx[2]/mtl];
-        let mty = [mn[1]*mtx[2] - mn[2]*mtx[1], mn[2]*mtx[0] - mn[0]*mtx[2], mn[0]*mtx[1] - mn[1]*mtx[0]];
-
-        for i in 0..8u32 {
-            let a0 = (i as f32 / 8.0) * std::f32::consts::TAU;
-            let a1 = ((i + 1) as f32 / 8.0) * std::f32::consts::TAU;
-            let p0 = [moon_x, moon_y, moon_z];
-            let p1 = [
-                moon_x + (a0.cos() * mtx[0] + a0.sin() * mty[0]) * moon_r,
-                moon_y + (a0.cos() * mtx[1] + a0.sin() * mty[1]) * moon_r,
-                moon_z + (a0.cos() * mtx[2] + a0.sin() * mty[2]) * moon_r,
-            ];
-            let p2 = [
-                moon_x + (a1.cos() * mtx[0] + a1.sin() * mty[0]) * moon_r,
-                moon_y + (a1.cos() * mtx[1] + a1.sin() * mty[1]) * moon_r,
-                moon_z + (a1.cos() * mtx[2] + a1.sin() * mty[2]) * moon_r,
-            ];
-            out.push(GpuVertex { pos: p0, color_packed: moon_color, normal: mn });
-            out.push(GpuVertex { pos: p1, color_packed: moon_color, normal: mn });
-            out.push(GpuVertex { pos: p2, color_packed: moon_color, normal: mn });
-        }
+        emit_disc(out, moon_x, moon_y, moon_z, 8.0, moon_color);
     }
 
     // Stars — small emissive dots scattered across the sky, visible at night
@@ -4162,8 +4142,8 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             let star_color = (sr << 16) | (sg << 8) | sb; // alpha=0 emissive
 
             let n = [-(az.cos() * cos_alt), -alt.sin(), -(az.sin() * cos_alt)];
-            // Star as tiny billboard quad (0.5 units)
-            let star_r = 0.4 + (h % 5) as f32 * 0.15;
+            // Star as tiny billboard quad
+            let star_r = 0.6 + (h % 5) as f32 * 0.2;
             let rx = -az.sin();
             let rz = az.cos();
             let p0 = [sx - rx * star_r, sy - star_r, sz - rz * star_r];
@@ -4171,11 +4151,11 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             let p2 = [sx + rx * star_r, sy + star_r, sz + rz * star_r];
             let p3 = [sx - rx * star_r, sy + star_r, sz - rz * star_r];
             out.push(GpuVertex { pos: p0, color_packed: star_color, normal: n });
+            out.push(GpuVertex { pos: p2, color_packed: star_color, normal: n });
             out.push(GpuVertex { pos: p1, color_packed: star_color, normal: n });
-            out.push(GpuVertex { pos: p2, color_packed: star_color, normal: n });
             out.push(GpuVertex { pos: p0, color_packed: star_color, normal: n });
-            out.push(GpuVertex { pos: p2, color_packed: star_color, normal: n });
             out.push(GpuVertex { pos: p3, color_packed: star_color, normal: n });
+            out.push(GpuVertex { pos: p2, color_packed: star_color, normal: n });
         }
     }
 }
