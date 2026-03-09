@@ -262,9 +262,13 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
                 best_perp_z = pz * sign;
             }
         }
-        // Drift toward sidewalk edge
-        npc.x += best_perp_x * 0.5 * dt;
-        npc.z += best_perp_z * 0.5 * dt;
+        // Drift toward sidewalk edge (but not into river)
+        let drift_x = npc.x + best_perp_x * 0.5 * dt;
+        let drift_z = npc.z + best_perp_z * 0.5 * dt;
+        if !on_river_not_bridge(drift_x, drift_z, &world.river_segments, &world.bridges) {
+            npc.x = drift_x;
+            npc.z = drift_z;
+        }
     }
 
     // Try to move forward
@@ -476,8 +480,12 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
         if dist_from_center > 200.0 {
             let push_strength = ((dist_from_center - 200.0) / 50.0).min(1.0) * 2.0 * dt;
             let inv = 1.0 / dist_from_center.max(0.01);
-            npc.x -= npc.x * inv * push_strength * dist_from_center;
-            npc.z -= npc.z * inv * push_strength * dist_from_center;
+            let push_x = npc.x - npc.x * inv * push_strength * dist_from_center;
+            let push_z = npc.z - npc.z * inv * push_strength * dist_from_center;
+            if !on_river_not_bridge(push_x, push_z, &world.river_segments, &world.bridges) {
+                npc.x = push_x;
+                npc.z = push_z;
+            }
         }
         npc.x = npc.x.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
         npc.z = npc.z.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
@@ -851,10 +859,21 @@ pub fn npc_exit_car(world: &mut WorldData, i: usize, terrain: &Terrain, net: &mu
     let car_idx = world.npcs[i].car_idx;
     if car_idx >= world.vehicles.len() { return; }
 
-    // Exit to side of vehicle
+    // Exit to side of vehicle (try both sides, avoid river)
     let v = &world.vehicles[car_idx];
-    let exit_x = v.x + v.rot_y.sin() * 2.5;
-    let exit_z = v.z + v.rot_y.cos() * 2.5;
+    let side_x = v.rot_y.sin() * 2.5;
+    let side_z = v.rot_y.cos() * 2.5;
+    let try1_x = v.x + side_x;
+    let try1_z = v.z + side_z;
+    let try2_x = v.x - side_x;
+    let try2_z = v.z - side_z;
+    let (exit_x, exit_z) = if !on_river_not_bridge(try1_x, try1_z, &world.river_segments, &world.bridges) {
+        (try1_x, try1_z)
+    } else if !on_river_not_bridge(try2_x, try2_z, &world.river_segments, &world.bridges) {
+        (try2_x, try2_z)
+    } else {
+        (v.x, v.z) // fallback to vehicle position
+    };
     let exit_y = terrain.height_at(exit_x, exit_z);
 
     world.npcs[i].x = exit_x;
