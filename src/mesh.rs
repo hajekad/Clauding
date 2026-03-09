@@ -775,9 +775,9 @@ pub fn wave_surface_tris(
             let c = (color & 0xFF000000) | (r << 16) | (g << 8) | b;
 
             let n1 = tri_normal(v00, v11, v10);
-            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: c });
+            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color: c });
             let n2 = tri_normal(v00, v01, v11);
-            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: c });
+            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color: c });
         }
     }
 }

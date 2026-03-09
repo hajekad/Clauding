@@ -579,13 +579,13 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
                 }
             };
 
-            // Reversed winding → CCW screen + upward normals
+            // CW winding (matches mesh.rs convention for GPU backface culling)
             let n1 = normalize_tri_normal(v00, v11, v10);
             let c1 = terrain_color((h00 + h11 + h10) / 3.0, ix, iz, 0);
-            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: c1 });
+            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color: c1 });
             let n2 = normalize_tri_normal(v00, v01, v11);
             let c2 = terrain_color((h00 + h01 + h11) / 3.0, ix, iz, 1);
-            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: c2 });
+            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color: c2 });
         }
     }
 }
@@ -648,9 +648,9 @@ fn generate_road_strip(
         let noise = (h % 12) as i32 - 6;
         let c = jitter_color(color, noise);
 
-        // Reversed winding → CCW screen, keep upward normal for lighting
-        tris.push(WorldTri { v: [v_l0, v_r1, v_r0], normal: [0.0, 1.0, 0.0], color: c });
-        tris.push(WorldTri { v: [v_l0, v_l1, v_r1], normal: [0.0, 1.0, 0.0], color: c });
+        // CW winding (matches mesh.rs convention for GPU backface culling)
+        tris.push(WorldTri { v: [v_l0, v_r0, v_r1], normal: [0.0, 1.0, 0.0], color: c });
+        tris.push(WorldTri { v: [v_l0, v_r1, v_l1], normal: [0.0, 1.0, 0.0], color: c });
     }
 }
 
@@ -1126,11 +1126,11 @@ fn generate_river(
                     let noise = (h % 16) as i32 - 8;
                     let color = jitter_color(base, noise);
 
-                    // Reversed winding → CCW screen + upward normals
+                    // CW winding (matches mesh.rs convention for GPU backface culling)
                     let n1 = normalize_tri_normal(v00, v11, v10);
-                    tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
+                    tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
                     let n2 = normalize_tri_normal(v00, v01, v11);
-                    tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
+                    tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
                 }
             }
         }
@@ -1432,8 +1432,8 @@ fn generate_parking_lots(
             let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
             tris.push(WorldTri {
                 v: [[lx, pool_y, lz],
-                    [lx + a0.cos() * 3.0, pool_y, lz + a0.sin() * 3.0],
-                    [lx + a1.cos() * 3.0, pool_y, lz + a1.sin() * 3.0]],
+                    [lx + a1.cos() * 3.0, pool_y, lz + a1.sin() * 3.0],
+                    [lx + a0.cos() * 3.0, pool_y, lz + a0.sin() * 3.0]],
                 normal: [0.0, 1.0, 0.0], color: pool_color,
             });
         }
@@ -1482,10 +1482,10 @@ fn generate_market_stalls(
         let v1 = [sx + sw * 0.5, roof_y + 0.3, sz - sd * 0.5];
         let v2 = [sx + sw * 0.5, roof_y - 0.1, sz + sd * 0.5];
         let v3 = [sx - sw * 0.5, roof_y - 0.1, sz + sd * 0.5];
-        // Reversed winding → CCW screen; normal points upward for canopy top
+        // CW winding (matches mesh.rs convention for GPU backface culling)
         let roof_n = normalize_tri_normal(v0, v2, v1);
-        tris.push(WorldTri { v: [v0, v2, v1], normal: roof_n, color: canvas_color });
-        tris.push(WorldTri { v: [v0, v3, v2], normal: roof_n, color: canvas_color });
+        tris.push(WorldTri { v: [v0, v1, v2], normal: roof_n, color: canvas_color });
+        tris.push(WorldTri { v: [v0, v2, v3], normal: roof_n, color: canvas_color });
 
         // Counter front — beveled
         mesh::beveled_box_tris(tris, sx, gy + 0.5, sz - sd * 0.5 + 0.1, sw * 0.9, 1.0, 0.2, 0.03, STALL_COUNTER_COLOR);
@@ -2793,8 +2793,8 @@ pub fn generate_world(game: &mut GameState) {
             let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
             tris.push(WorldTri {
                 v: [[pool_x, pool_y, pool_z],
-                    [pool_x + a0.cos() * pool_r, pool_y, pool_z + a0.sin() * pool_r],
-                    [pool_x + a1.cos() * pool_r, pool_y, pool_z + a1.sin() * pool_r]],
+                    [pool_x + a1.cos() * pool_r, pool_y, pool_z + a1.sin() * pool_r],
+                    [pool_x + a0.cos() * pool_r, pool_y, pool_z + a0.sin() * pool_r]],
                 normal: [0.0, 1.0, 0.0], color: pool_color,
             });
         }
@@ -2906,8 +2906,8 @@ pub fn generate_world(game: &mut GameState) {
         let v1 = [b.x + shadow_hw, shadow_y, b.z - shadow_hd];
         let v2 = [b.x + shadow_hw, shadow_y, b.z + shadow_hd];
         let v3 = [b.x - shadow_hw, shadow_y, b.z + shadow_hd];
-        tris.push(WorldTri { v: [v0, v2, v1], normal: [0.0, 1.0, 0.0], color: shadow_color });
-        tris.push(WorldTri { v: [v0, v3, v2], normal: [0.0, 1.0, 0.0], color: shadow_color });
+        tris.push(WorldTri { v: [v0, v1, v2], normal: [0.0, 1.0, 0.0], color: shadow_color });
+        tris.push(WorldTri { v: [v0, v2, v3], normal: [0.0, 1.0, 0.0], color: shadow_color });
     }
 
     // NPC-owned vehicles — one per NPC, all start parked
