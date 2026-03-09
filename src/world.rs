@@ -25,6 +25,7 @@ const GROUND_LOW: u32 = 0xFF2A6B2A;  // darker green in valleys
 const GROUND_HIGH: u32 = 0xFF44AA44; // lighter green on hills
 const ROAD_COLOR: u32 = 0xFF444444;
 const ROAD_LINE_COLOR: u32 = 0xFFCCCC33;
+const ROAD_EDGE_COLOR: u32 = 0xFFBBBBBB;
 const SIDEWALK_COLOR: u32 = 0xFF888888;
 const FIELD_ROAD_COLOR: u32 = 0xFF665544;
 const LAMP_POLE_COLOR: u32 = 0xFF666666;
@@ -640,9 +641,16 @@ fn generate_road_strip(
         let v_l1 = [lx1, hl1, lz1];
         let v_r1 = [rx1, hr1, rz1];
 
+        // Per-quad color jitter for asphalt variation
+        let h = (sx0 as i32 as u32).wrapping_mul(73856093)
+            ^ (sz0 as i32 as u32).wrapping_mul(19349663)
+            ^ (s as u32).wrapping_mul(2654435761);
+        let noise = (h % 12) as i32 - 6;
+        let c = jitter_color(color, noise);
+
         // Reversed winding → CCW screen, keep upward normal for lighting
-        tris.push(WorldTri { v: [v_l0, v_r1, v_r0], normal: [0.0, 1.0, 0.0], color });
-        tris.push(WorldTri { v: [v_l0, v_l1, v_r1], normal: [0.0, 1.0, 0.0], color });
+        tris.push(WorldTri { v: [v_l0, v_r1, v_r0], normal: [0.0, 1.0, 0.0], color: c });
+        tris.push(WorldTri { v: [v_l0, v_l1, v_r1], normal: [0.0, 1.0, 0.0], color: c });
     }
 }
 
@@ -1416,6 +1424,19 @@ fn generate_parking_lots(
         let lgy = terrain.height_at(lx, lz);
         mesh::cylinder_tris(tris, lx, lgy + 2.5, lz, 0.06, 5.0, 6, LAMP_POLE_COLOR);
         mesh::sphere_tris(tris, lx, lgy + 5.2, lz, 0.2, 1, LAMP_GLOW_COLOR);
+        // Ground light pool
+        let pool_y = lgy + 0.03;
+        let pool_color: u32 = 0x00553810;
+        for pi in 0..8u32 {
+            let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
+            let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
+            tris.push(WorldTri {
+                v: [[lx, pool_y, lz],
+                    [lx + a0.cos() * 3.0, pool_y, lz + a0.sin() * 3.0],
+                    [lx + a1.cos() * 3.0, pool_y, lz + a1.sin() * 3.0]],
+                normal: [0.0, 1.0, 0.0], color: pool_color,
+            });
+        }
         street_lights.push(StreetLight { x: lx, z: lz });
     }
 }
@@ -2192,17 +2213,33 @@ pub fn generate_world(game: &mut GameState) {
                 // Road surface
                 generate_road_strip(&mut tris, &game.terrain,
                     seg.x0, seg.z0, seg.x1, seg.z1, hw, 0.05, ROAD_COLOR);
-                // Center line
+                // Center line (yellow)
                 generate_road_strip(&mut tris, &game.terrain,
                     seg.x0, seg.z0, seg.x1, seg.z1, 0.15, 0.08, ROAD_LINE_COLOR);
 
-                // Direction for sidewalk offset
+                // Direction for edge lines + sidewalks
                 let dx = seg.x1 - seg.x0;
                 let dz = seg.z1 - seg.z0;
                 let len = (dx * dx + dz * dz).sqrt();
                 if len > 0.01 {
                     let perp_x = -dz / len;
                     let perp_z = dx / len;
+
+                    // White edge lines along both sides of road
+                    let edge_offset = hw - 0.2;
+                    let el_x0 = seg.x0 + perp_x * edge_offset;
+                    let el_z0 = seg.z0 + perp_z * edge_offset;
+                    let el_x1 = seg.x1 + perp_x * edge_offset;
+                    let el_z1 = seg.z1 + perp_z * edge_offset;
+                    generate_road_strip(&mut tris, &game.terrain,
+                        el_x0, el_z0, el_x1, el_z1, 0.08, 0.07, ROAD_EDGE_COLOR);
+                    let er_x0 = seg.x0 - perp_x * edge_offset;
+                    let er_z0 = seg.z0 - perp_z * edge_offset;
+                    let er_x1 = seg.x1 - perp_x * edge_offset;
+                    let er_z1 = seg.z1 - perp_z * edge_offset;
+                    generate_road_strip(&mut tris, &game.terrain,
+                        er_x0, er_z0, er_x1, er_z1, 0.08, 0.07, ROAD_EDGE_COLOR);
+
                     let sw_hw = SIDEWALK_WIDTH * 0.5;
                     let sw_offset = hw + sw_hw;
 
@@ -2745,6 +2782,23 @@ pub fn generate_world(game: &mut GameState) {
         mesh::sphere_tris(&mut tris, x + arm_dx, ground_y + 5.1, z + arm_dz,
             0.2, 1, LAMP_GLOW_COLOR);
 
+        // Ground light pool — warm emissive disc beneath the lamp
+        let pool_x = x + arm_dx;
+        let pool_z = z + arm_dz;
+        let pool_y = ground_y + 0.03; // just above ground to avoid z-fighting
+        let pool_r = 3.0;
+        let pool_color: u32 = 0x00553810; // warm emissive ground glow
+        for pi in 0..8u32 {
+            let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
+            let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
+            tris.push(WorldTri {
+                v: [[pool_x, pool_y, pool_z],
+                    [pool_x + a0.cos() * pool_r, pool_y, pool_z + a0.sin() * pool_r],
+                    [pool_x + a1.cos() * pool_r, pool_y, pool_z + a1.sin() * pool_r]],
+                normal: [0.0, 1.0, 0.0], color: pool_color,
+            });
+        }
+
         game.world.street_lights.push(StreetLight { x, z });
     }
 
@@ -2840,6 +2894,21 @@ pub fn generate_world(game: &mut GameState) {
     generate_decorations(&mut tris, &game.terrain, &mut rng,
         &game.road_network, &game.world.buildings,
         &mut game.world.walls, &mut game.world.rocks, &mut game.world.street_lights);
+
+    // Building ground shadows — dark disc at base for contact grounding
+    for b in &game.world.buildings {
+        let shadow_y = b.ground_y + 0.02;
+        let shadow_hw = b.w * 0.5 + 0.5;
+        let shadow_hd = b.d * 0.5 + 0.5;
+        let shadow_color: u32 = 0xFF1A2A1A; // dark green-tinted shadow
+        // Simple quad shadow footprint
+        let v0 = [b.x - shadow_hw, shadow_y, b.z - shadow_hd];
+        let v1 = [b.x + shadow_hw, shadow_y, b.z - shadow_hd];
+        let v2 = [b.x + shadow_hw, shadow_y, b.z + shadow_hd];
+        let v3 = [b.x - shadow_hw, shadow_y, b.z + shadow_hd];
+        tris.push(WorldTri { v: [v0, v2, v1], normal: [0.0, 1.0, 0.0], color: shadow_color });
+        tris.push(WorldTri { v: [v0, v3, v2], normal: [0.0, 1.0, 0.0], color: shadow_color });
+    }
 
     // NPC-owned vehicles — one per NPC, all start parked
     let total_spots = game.road_network.parking_spots.len();
