@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static RUNNING: AtomicBool = AtomicBool::new(true);
 static START_TIME: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
 
-const FIXED_DT: f32 = 1.0 / 20.0;  // coarser than game (1/60) — 3x faster training
+// Intentionally coarser than state::HEADLESS_DT (1/30) — fewer ticks per day = faster training.
+// Training doesn't need simulation accuracy, just enough fidelity for brains to learn behaviors.
+const FIXED_DT: f32 = 1.0 / 20.0;
 
 fn main() {
     // Ctrl+C handler via raw signal
@@ -66,6 +68,22 @@ fn main() {
             if game.neat_population.generation % 10 == 0 {
                 neat::save_population("neat_trained.bin", &game.neat_population);
             }
+
+            // Multi-seed world rotation — regenerate every 25 generations so brains generalize
+            if game.neat_population.generation % 25 == 0 && game.neat_population.generation > 0 {
+                let new_seed = seed + (game.neat_population.generation as u64 / 25);
+                eprintln!("  Rotating world: new seed={}", new_seed);
+                let mut temp = state::GameState::new(1, 1, new_seed);
+                world::generate_world(&mut temp);
+                game.world = temp.world;
+                game.terrain = temp.terrain;
+                game.road_network = temp.road_network;
+                game.spawn_rng = temp.spawn_rng;
+                // Recompile brains for the new world (population/genomes carry over)
+                game.neat_brains = game.neat_population.genomes.iter()
+                    .map(|g| neat::NeatBrain::compile(g))
+                    .collect();
+            }
         }
 
         // Vehicle AI (needed for NPC driving)
@@ -90,7 +108,7 @@ fn main() {
         combat::sys_ragdoll_update(&mut game.world, &game.terrain, FIXED_DT);
 
         // Headless NPC-NPC combat (no particles/rendering needed)
-        headless_combat(&mut game.world, &game.terrain, FIXED_DT);
+        combat::sys_combat_headless(&mut game.world, &game.terrain, FIXED_DT);
 
         // Final river escape — catches any NPC pushed into river by collision/knockback
         npc::sys_river_escape(&mut game.world, &game.terrain);
@@ -208,116 +226,6 @@ fn print_diagnostic(game: &state::GameState) {
             eprintln!("    Key inputs: carry={:.0} item_dx={:.3} item_dz={:.3} near_item={:.0} hunger={:.2} thirst={:.2} bias={:.0}",
                 inputs[0], inputs[6], inputs[7], inputs[15], inputs[33], inputs[34], inputs[27]);
         }
-    }
-}
-
-/// Stripped-down combat for headless training: NPC-NPC attacks only, no particles
-fn headless_combat(world: &mut state::WorldData, terrain: &state::Terrain, dt: f32) {
-    let n = world.npcs.len();
-
-    // Tick cooldowns
-    for npc in &mut world.npcs {
-        npc.attack_cooldown = (npc.attack_cooldown - dt).max(0.0);
-        npc.attack_phase = (npc.attack_phase - dt).max(0.0);
-        npc.hit_flash = (npc.hit_flash - dt).max(0.0);
-    }
-
-    // Process NPC attack intents
-    for i in 0..n {
-        let intent = world.npcs[i].attack_intent;
-        world.npcs[i].attack_intent = 0;
-        if intent == 0 { continue; }
-        if world.npcs[i].attack_cooldown > 0.0 { continue; }
-        if world.npcs[i].state == state::NpcState::KnockedOut { continue; }
-        if world.npcs[i].state == state::NpcState::Sleeping { continue; }
-
-        if intent == 2 {
-            // Attack nearest NPC
-            let ax = world.npcs[i].x;
-            let az = world.npcs[i].z;
-            let arot = world.npcs[i].rot_y;
-            let mut best_dist = state::ATTACK_RANGE * state::ATTACK_RANGE;
-            let mut best_j = None;
-            for j in 0..n {
-                if j == i { continue; }
-                if world.npcs[j].state == state::NpcState::KnockedOut { continue; }
-                let dx = world.npcs[j].x - ax;
-                let dz = world.npcs[j].z - az;
-                let d2 = dx * dx + dz * dz;
-                if d2 < best_dist { best_dist = d2; best_j = Some(j); }
-            }
-            if let Some(j) = best_j {
-                let dx = world.npcs[j].x - ax;
-                let dz = world.npcs[j].z - az;
-                let dist = (dx * dx + dz * dz).sqrt();
-                if dist < 0.01 { continue; }
-                let (sin_r, cos_r) = arot.sin_cos();
-                let fwd_x = -sin_r;
-                let fwd_z = -cos_r;
-                let dot = (dx / dist) * fwd_x + (dz / dist) * fwd_z;
-                if dot < state::ATTACK_CONE_COS { continue; }
-
-                world.npcs[i].attack_cooldown = state::ATTACK_COOLDOWN;
-                world.npcs[i].attack_phase = state::ATTACK_ANIM_DURATION;
-                world.npcs[i].fitness_hits_landed += 1;
-
-                world.npcs[j].health -= state::NPC_ATTACK_DAMAGE;
-                world.npcs[j].hit_flash = state::HIT_FLASH_DURATION;
-                world.npcs[j].knockback_vx += dx / dist * state::KNOCKBACK_FORCE * 0.7;
-                world.npcs[j].knockback_vz += dz / dist * state::KNOCKBACK_FORCE * 0.7;
-                world.npcs[j].vel_y = state::KNOCKBACK_UP * 0.7;
-
-                if world.npcs[j].health <= 0.0 {
-                    world.npcs[j].health = 0.0;
-                    world.npcs[j].state = state::NpcState::KnockedOut;
-                    world.npcs[j].knockout_timer = state::KNOCKOUT_TIME;
-                    world.npcs[j].carrying_item = false;
-                    world.npcs[j].carrying_bin = None;
-                    world.npcs[j].fitness_knockouts += 1;
-                    world.npcs[j].sound = [0.0; 3];
-                }
-            }
-        }
-        // intent == 1 (attack player) is ignored in headless mode
-    }
-
-    // Knockback friction + knockout recovery + health regen
-    for i in 0..n {
-        let npc = &mut world.npcs[i];
-
-        if npc.knockback_vx.abs() > 0.01 || npc.knockback_vz.abs() > 0.01 {
-            let kb_x = npc.x + npc.knockback_vx * dt;
-            let kb_z = npc.z + npc.knockback_vz * dt;
-            if !world::on_river_not_bridge(kb_x, kb_z, &world.river_segments, &world.bridges) {
-                npc.x = kb_x;
-                npc.z = kb_z;
-            } else {
-                npc.knockback_vx = 0.0;
-                npc.knockback_vz = 0.0;
-            }
-            npc.x = npc.x.clamp(-state::WORLD_HALF, state::WORLD_HALF);
-            npc.z = npc.z.clamp(-state::WORLD_HALF, state::WORLD_HALF);
-            let friction = (-state::KNOCKBACK_FRICTION * dt).exp();
-            npc.knockback_vx *= friction;
-            npc.knockback_vz *= friction;
-        }
-
-        if npc.state == state::NpcState::KnockedOut && !npc.starving_dead {
-            npc.knockout_timer -= dt;
-            if npc.knockout_timer <= 0.0 {
-                npc.health = state::KNOCKOUT_REGEN_HP;
-                npc.state = state::NpcState::Working;
-                npc.knockout_timer = 0.0;
-                npc.state_timer = 0.0;
-            }
-        }
-
-        if npc.state != state::NpcState::KnockedOut && npc.health < state::NPC_HEALTH_MAX {
-            npc.health = (npc.health + state::HEALTH_REGEN_RATE * dt).min(state::NPC_HEALTH_MAX);
-        }
-
-        let ground = terrain.height_at(npc.x, npc.z);
-        if npc.y < ground { npc.y = ground; }
     }
 }
 

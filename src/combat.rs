@@ -151,6 +151,117 @@ pub fn sys_combat(
     }
 }
 
+/// Headless combat: NPC-NPC attacks only (no player attacks, no particles).
+/// Used by headless binaries (train, observe) that run without rendering.
+pub fn sys_combat_headless(world: &mut WorldData, terrain: &Terrain, dt: f32) {
+    let n = world.npcs.len();
+
+    // Tick cooldowns
+    for npc in &mut world.npcs {
+        npc.attack_cooldown = (npc.attack_cooldown - dt).max(0.0);
+        npc.attack_phase = (npc.attack_phase - dt).max(0.0);
+        npc.hit_flash = (npc.hit_flash - dt).max(0.0);
+    }
+
+    // Process NPC attack intents
+    for i in 0..n {
+        let intent = world.npcs[i].attack_intent;
+        world.npcs[i].attack_intent = 0;
+        if intent == 0 { continue; }
+        if world.npcs[i].attack_cooldown > 0.0 { continue; }
+        if world.npcs[i].state == NpcState::KnockedOut { continue; }
+        if world.npcs[i].state == NpcState::Sleeping { continue; }
+
+        if intent == 2 {
+            // Attack nearest NPC
+            let ax = world.npcs[i].x;
+            let az = world.npcs[i].z;
+            let arot = world.npcs[i].rot_y;
+            let mut best_dist = ATTACK_RANGE * ATTACK_RANGE;
+            let mut best_j = None;
+            for j in 0..n {
+                if j == i { continue; }
+                if world.npcs[j].state == NpcState::KnockedOut { continue; }
+                let dx = world.npcs[j].x - ax;
+                let dz = world.npcs[j].z - az;
+                let d2 = dx * dx + dz * dz;
+                if d2 < best_dist { best_dist = d2; best_j = Some(j); }
+            }
+            if let Some(j) = best_j {
+                let dx = world.npcs[j].x - ax;
+                let dz = world.npcs[j].z - az;
+                let dist = (dx * dx + dz * dz).sqrt();
+                if dist < 0.01 { continue; }
+                let (sin_r, cos_r) = arot.sin_cos();
+                let fwd_x = -sin_r;
+                let fwd_z = -cos_r;
+                let dot = (dx / dist) * fwd_x + (dz / dist) * fwd_z;
+                if dot < ATTACK_CONE_COS { continue; }
+
+                world.npcs[i].attack_cooldown = ATTACK_COOLDOWN;
+                world.npcs[i].attack_phase = ATTACK_ANIM_DURATION;
+                world.npcs[i].fitness_hits_landed += 1;
+
+                world.npcs[j].health -= NPC_ATTACK_DAMAGE;
+                world.npcs[j].hit_flash = HIT_FLASH_DURATION;
+                world.npcs[j].knockback_vx += dx / dist * KNOCKBACK_FORCE * 0.7;
+                world.npcs[j].knockback_vz += dz / dist * KNOCKBACK_FORCE * 0.7;
+                world.npcs[j].vel_y = KNOCKBACK_UP * 0.7;
+
+                if world.npcs[j].health <= 0.0 {
+                    world.npcs[j].health = 0.0;
+                    world.npcs[j].state = NpcState::KnockedOut;
+                    world.npcs[j].knockout_timer = KNOCKOUT_TIME;
+                    world.npcs[j].carrying_item = false;
+                    world.npcs[j].carrying_bin = None;
+                    world.npcs[j].fitness_knockouts += 1;
+                    world.npcs[j].sound = [0.0; 3];
+                }
+            }
+        }
+        // intent == 1 (attack player) is ignored in headless mode
+    }
+
+    // Knockback friction + knockout recovery + health regen
+    for i in 0..n {
+        let npc = &mut world.npcs[i];
+
+        if npc.knockback_vx.abs() > 0.01 || npc.knockback_vz.abs() > 0.01 {
+            let kb_x = npc.x + npc.knockback_vx * dt;
+            let kb_z = npc.z + npc.knockback_vz * dt;
+            if !crate::world::on_river_not_bridge(kb_x, kb_z, &world.river_segments, &world.bridges) {
+                npc.x = kb_x;
+                npc.z = kb_z;
+            } else {
+                npc.knockback_vx = 0.0;
+                npc.knockback_vz = 0.0;
+            }
+            npc.x = npc.x.clamp(-WORLD_HALF, WORLD_HALF);
+            npc.z = npc.z.clamp(-WORLD_HALF, WORLD_HALF);
+            let friction = (-KNOCKBACK_FRICTION * dt).exp();
+            npc.knockback_vx *= friction;
+            npc.knockback_vz *= friction;
+        }
+
+        if npc.state == NpcState::KnockedOut && !npc.starving_dead {
+            npc.knockout_timer -= dt;
+            if npc.knockout_timer <= 0.0 {
+                npc.health = KNOCKOUT_REGEN_HP;
+                npc.state = NpcState::Working;
+                npc.knockout_timer = 0.0;
+                npc.state_timer = 0.0;
+            }
+        }
+
+        if npc.state != NpcState::KnockedOut && npc.health < NPC_HEALTH_MAX {
+            npc.health = (npc.health + HEALTH_REGEN_RATE * dt).min(NPC_HEALTH_MAX);
+        }
+
+        let ground = terrain.height_at(npc.x, npc.z);
+        if npc.y < ground { npc.y = ground; }
+    }
+}
+
 fn player_attack_npcs(world: &mut WorldData, player: &mut Player, particles: &mut ParticleSystem) {
     let (sin_r, cos_r) = player.rot_y.sin_cos();
     let fwd_x = -sin_r;

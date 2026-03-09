@@ -1,11 +1,12 @@
 // Simulation observer: runs headless game and dumps behavioral analysis
-// Usage: cargo run --bin observe -- [seed] [days]
-// Outputs: /tmp/clauding_observe.txt with detailed game dynamics
+// Usage: cargo run --bin observe -- [seed] [days] [output_path]
+// Outputs: debug/observe_s{seed}.txt (or custom path) with detailed game dynamics
 
 use clauding::{state, world, npc, neat, vehicle, collision, combat};
 use std::fmt::Write;
 
-const FIXED_DT: f32 = 1.0 / 30.0; // moderate timestep for accuracy
+// Use shared headless timestep from state module
+const FIXED_DT: f32 = state::HEADLESS_DT;
 
 fn main() {
     let _ = std::fs::create_dir_all("debug");
@@ -50,6 +51,21 @@ fn main() {
     let mut total_items_picked: u32 = 0; // accumulated across all days (survives midnight reset)
     let mut total_items_deposited: u32 = 0;
 
+    // Per-job tracking
+    let mut per_job_items_picked = [0u32; state::NPC_JOB_COUNT];
+    let mut per_job_items_deposited = [0u32; state::NPC_JOB_COUNT];
+    let mut per_job_state_time = [[0u32; 8]; state::NPC_JOB_COUNT]; // [job][state] tick counts
+
+    // Per-NPC productivity
+    let mut per_npc_items_picked: Vec<u32> = vec![0; n_npcs];
+
+    // Stuck episode counting (separate from continuous stuck_ticks)
+    let mut npc_stuck_episodes: Vec<u32> = vec![0; n_npcs];
+    let mut npc_was_stuck: Vec<bool> = vec![false; n_npcs];
+
+    // Vehicle-on-river tracking
+    let mut veh_river_ticks: Vec<u32> = vec![0; n_vehicles];
+
     // Per-hour snapshots
     let mut prev_time_of_day: f32 = game.time_of_day;
     let _ = prev_time_of_day;
@@ -67,9 +83,13 @@ fn main() {
 
         // Capture pre-reset metrics before midnight clears them
         if prev_time_of_day > 23.5 && game.time_of_day < 0.5 {
-            for npc in &game.world.npcs {
+            for (i, npc) in game.world.npcs.iter().enumerate() {
                 total_items_picked += npc.fitness_items_picked;
                 total_items_deposited += npc.items_deposited_today;
+                let ji = job_index(npc.job);
+                per_job_items_picked[ji] += npc.fitness_items_picked;
+                per_job_items_deposited[ji] += npc.items_deposited_today;
+                per_npc_items_picked[i] += npc.fitness_items_picked;
             }
         }
         // Midnight reset
@@ -107,7 +127,7 @@ fn main() {
         combat::sys_ragdoll_update(&mut game.world, &game.terrain, FIXED_DT);
 
         // Headless NPC-NPC combat
-        headless_combat(&mut game.world, &game.terrain, FIXED_DT);
+        combat::sys_combat_headless(&mut game.world, &game.terrain, FIXED_DT);
 
         // Final river escape — catches any NPC pushed into river by collision/knockback
         npc::sys_river_escape(&mut game.world, &game.terrain);
@@ -132,8 +152,13 @@ fn main() {
                 );
                 if dist < 0.05 && npc.state == state::NpcState::Working && is_mobile_job {
                     npc_stuck_ticks[i] += 1;
+                    if !npc_was_stuck[i] {
+                        npc_stuck_episodes[i] += 1;
+                        npc_was_stuck[i] = true;
+                    }
                 } else {
                     npc_stuck_ticks[i] = 0;
+                    npc_was_stuck[i] = false;
                 }
 
                 if !npc.in_vehicle && world::on_river_not_bridge(npc.x, npc.z, &game.world.river_segments, &game.world.bridges) {
@@ -154,6 +179,7 @@ fn main() {
                     state::NpcState::KnockedOut => 7,
                 };
                 state_time_accum[idx] += 1;
+                per_job_state_time[job_index(npc.job)][idx] += 1;
             }
 
             for i in 0..n_vehicles {
@@ -165,6 +191,9 @@ fn main() {
                     veh_stuck_ticks[i] += 1;
                 } else if v.ai_active {
                     veh_stuck_ticks[i] = 0;
+                }
+                if world::on_river_not_bridge(v.x, v.z, &game.world.river_segments, &game.world.bridges) {
+                    veh_river_ticks[i] += 1;
                 }
                 prev_veh_pos[i] = (v.x, v.z);
             }
@@ -205,11 +234,13 @@ fn main() {
                 state::NpcJob::TaxiDriver
             );
             if !is_mobile_job { continue; }
-            let _ = writeln!(out, "  NPC[{:2}] stuck_score={:4} pos=({:6.1},{:6.1}) total_dist={:6.1}m job={:12}",
-                i, peak_stuck_ticks[i], npc.x, npc.z, npc_total_dist[i], npc_job_name(npc.job));
+            let _ = writeln!(out, "  NPC[{:2}] stuck_score={:4} episodes={:2} pos=({:6.1},{:6.1}) total_dist={:6.1}m job={:12}",
+                i, peak_stuck_ticks[i], npc_stuck_episodes[i], npc.x, npc.z, npc_total_dist[i], npc_job_name(npc.job));
             stuck_npcs += 1;
         }
     }
+    let total_episodes: u32 = npc_stuck_episodes.iter().sum();
+    let _ = writeln!(out, "  Total stuck episodes (all NPCs): {}", total_episodes);
     if stuck_npcs == 0 { let _ = writeln!(out, "  No stuck NPCs detected!"); }
 
     // River exposure
@@ -238,6 +269,19 @@ fn main() {
     }
     if stuck_vehs == 0 { let _ = writeln!(out, "  No stuck vehicles detected!"); }
 
+    // Vehicle-on-river analysis
+    let _ = writeln!(out, "\n--- VEHICLE RIVER EXPOSURE ---");
+    let mut veh_river_count = 0;
+    for i in 0..n_vehicles {
+        if veh_river_ticks[i] > 0 {
+            let v = &game.world.vehicles[i];
+            let _ = writeln!(out, "  Vehicle[{:3}] river_ticks={:4} pos=({:6.1},{:6.1}) owner={:?}",
+                i, veh_river_ticks[i], v.x, v.z, v.owner_npc);
+            veh_river_count += 1;
+        }
+    }
+    if veh_river_count == 0 { let _ = writeln!(out, "  No vehicles entered the river!"); }
+
     // NPC movement stats
     let _ = writeln!(out, "\n--- NPC MOVEMENT STATS ---");
     let mut dists: Vec<(usize, f32)> = (0..n_npcs).map(|i| (i, npc_total_dist[i])).collect();
@@ -264,6 +308,21 @@ fn main() {
         let _ = writeln!(out, "  {:12} {:5.1}% ({} ticks)", name, pct, state_time_accum[i]);
     }
 
+    // Per-job state time breakdown
+    let _ = writeln!(out, "\n--- STATE TIME BY JOB (% of ticks for that job) ---");
+    for ji in 0..state::NPC_JOB_COUNT {
+        let job_total: u32 = per_job_state_time[ji].iter().sum();
+        if job_total == 0 { continue; }
+        let mut parts = String::new();
+        for (si, &name) in names.iter().enumerate() {
+            let pct = per_job_state_time[ji][si] as f32 / job_total as f32 * 100.0;
+            if pct > 0.5 {
+                let _ = write!(parts, " {}={:.0}%", name, pct);
+            }
+        }
+        let _ = writeln!(out, "  {:12}{}", JOB_NAMES[ji], parts);
+    }
+
     // Building (home) distribution
     let _ = writeln!(out, "\n--- BUILDING/HOME DISTRIBUTION ---");
     let mut bq = [0u32; 4];
@@ -286,6 +345,16 @@ fn main() {
     let items_active = game.world.items.iter().filter(|it| it.active).count();
     let cur_picked: u32 = game.world.npcs.iter().map(|n| n.fitness_items_picked).sum();
     let cur_dep: u32 = game.world.npcs.iter().map(|n| n.items_deposited_today).sum();
+    // Add current day's per-job/per-NPC data
+    let mut final_per_job_picked = per_job_items_picked;
+    let mut final_per_job_deposited = per_job_items_deposited;
+    let mut final_per_npc_picked = per_npc_items_picked.clone();
+    for (i, npc) in game.world.npcs.iter().enumerate() {
+        let ji = job_index(npc.job);
+        final_per_job_picked[ji] += npc.fitness_items_picked;
+        final_per_job_deposited[ji] += npc.items_deposited_today;
+        final_per_npc_picked[i] += npc.fitness_items_picked;
+    }
     let _ = writeln!(out, "\n--- ITEM ECONOMY ---");
     let _ = writeln!(out, "  Active items: {}/{}", items_active, state::NUM_ITEMS);
     let _ = writeln!(out, "  Total picked (all days): {}", total_items_picked + cur_picked);
@@ -293,6 +362,37 @@ fn main() {
     let total_npc_money: f32 = game.world.npcs.iter().map(|n| n.money).sum();
     let avg_npc_money = total_npc_money / n_npcs.max(1) as f32;
     let _ = writeln!(out, "  Total NPC money: ${:.0} (avg ${:.0})", total_npc_money, avg_npc_money);
+
+    // Per-job item breakdown
+    let _ = writeln!(out, "\n  Per-job breakdown:");
+    for ji in 0..state::NPC_JOB_COUNT {
+        if final_per_job_picked[ji] > 0 || final_per_job_deposited[ji] > 0 {
+            let _ = writeln!(out, "    {:12} picked={:4} deposited={:4}",
+                JOB_NAMES[ji], final_per_job_picked[ji], final_per_job_deposited[ji]);
+        }
+    }
+
+    // Per-NPC productivity top/bottom 5
+    let _ = writeln!(out, "\n  Top 5 productive NPCs:");
+    let mut prod: Vec<(usize, u32)> = (0..n_npcs).map(|i| (i, final_per_npc_picked[i])).collect();
+    prod.sort_by(|a, b| b.1.cmp(&a.1));
+    for &(i, count) in prod.iter().take(5) {
+        let npc = &game.world.npcs[i];
+        let _ = writeln!(out, "    NPC[{:2}] picked={:3} deposited={:3} job={:12} dist={:.0}m",
+            i, count, npc.items_deposited_today, npc_job_name(npc.job), npc_total_dist[i]);
+    }
+    let _ = writeln!(out, "  Bottom 5 productive NPCs (mobile jobs):");
+    let mobile_prod: Vec<(usize, u32)> = prod.iter()
+        .filter(|&&(i, _)| matches!(game.world.npcs[i].job,
+            state::NpcJob::Collector | state::NpcJob::GarbageCollector |
+            state::NpcJob::DeliveryCourier | state::NpcJob::MailCarrier |
+            state::NpcJob::Scavenger))
+        .copied().collect();
+    for &(i, count) in mobile_prod.iter().rev().take(5) {
+        let npc = &game.world.npcs[i];
+        let _ = writeln!(out, "    NPC[{:2}] picked={:3} deposited={:3} job={:12} dist={:.0}m",
+            i, count, npc.items_deposited_today, npc_job_name(npc.job), npc_total_dist[i]);
+    }
 
     // Survival stats
     let avg_hunger = game.world.npcs.iter().map(|n| n.hunger).sum::<f32>() / n_npcs.max(1) as f32;
@@ -358,8 +458,8 @@ fn main() {
     let _ = writeln!(out, "\n--- VEHICLE ACTIVITY ---");
     let _ = writeln!(out, "  Active (AI/occupied): {}  Moving: {}  Parked: {}", active_vehicles, moving_vehicles, parked_vehicles);
 
-    let path = "debug/observe.txt";
-    std::fs::write(path, &out).unwrap();
+    let path = args.get(3).cloned().unwrap_or_else(|| format!("debug/observe_s{}.txt", seed));
+    std::fs::write(&path, &out).unwrap();
     eprintln!("Wrote {} bytes to {}", out.len(), path);
 }
 
@@ -442,101 +542,29 @@ fn npc_state_name(s: state::NpcState) -> &'static str {
     }
 }
 
-/// Headless NPC-NPC combat (same as train.rs)
-fn headless_combat(world: &mut state::WorldData, terrain: &state::Terrain, dt: f32) {
-    let n = world.npcs.len();
-    for npc in &mut world.npcs {
-        npc.attack_cooldown = (npc.attack_cooldown - dt).max(0.0);
-        npc.attack_phase = (npc.attack_phase - dt).max(0.0);
-        npc.hit_flash = (npc.hit_flash - dt).max(0.0);
-    }
-
-    for i in 0..n {
-        let intent = world.npcs[i].attack_intent;
-        world.npcs[i].attack_intent = 0;
-        if intent == 0 || world.npcs[i].attack_cooldown > 0.0 { continue; }
-        if world.npcs[i].state == state::NpcState::KnockedOut { continue; }
-        if world.npcs[i].state == state::NpcState::Sleeping { continue; }
-
-        if intent == 2 {
-            let ax = world.npcs[i].x;
-            let az = world.npcs[i].z;
-            let arot = world.npcs[i].rot_y;
-            let mut best_dist = state::ATTACK_RANGE * state::ATTACK_RANGE;
-            let mut best_j = None;
-            for j in 0..n {
-                if j == i { continue; }
-                if world.npcs[j].state == state::NpcState::KnockedOut { continue; }
-                let dx = world.npcs[j].x - ax;
-                let dz = world.npcs[j].z - az;
-                let d2 = dx * dx + dz * dz;
-                if d2 < best_dist { best_dist = d2; best_j = Some(j); }
-            }
-            if let Some(j) = best_j {
-                let dx = world.npcs[j].x - ax;
-                let dz = world.npcs[j].z - az;
-                let dist = (dx * dx + dz * dz).sqrt();
-                if dist < 0.01 { continue; }
-                let (sin_r, cos_r) = arot.sin_cos();
-                let fwd_x = -sin_r;
-                let fwd_z = -cos_r;
-                let dot = (dx / dist) * fwd_x + (dz / dist) * fwd_z;
-                if dot < state::ATTACK_CONE_COS { continue; }
-
-                world.npcs[i].attack_cooldown = state::ATTACK_COOLDOWN;
-                world.npcs[i].attack_phase = state::ATTACK_ANIM_DURATION;
-                world.npcs[i].fitness_hits_landed += 1;
-
-                world.npcs[j].health -= state::NPC_ATTACK_DAMAGE;
-                world.npcs[j].hit_flash = state::HIT_FLASH_DURATION;
-                world.npcs[j].knockback_vx += dx / dist * state::KNOCKBACK_FORCE * 0.7;
-                world.npcs[j].knockback_vz += dz / dist * state::KNOCKBACK_FORCE * 0.7;
-                world.npcs[j].vel_y = state::KNOCKBACK_UP * 0.7;
-
-                if world.npcs[j].health <= 0.0 {
-                    world.npcs[j].health = 0.0;
-                    world.npcs[j].state = state::NpcState::KnockedOut;
-                    world.npcs[j].knockout_timer = state::KNOCKOUT_TIME;
-                    world.npcs[j].carrying_item = false;
-                    world.npcs[j].carrying_bin = None;
-                    world.npcs[j].fitness_knockouts += 1;
-                    world.npcs[j].sound = [0.0; 3];
-                }
-            }
-        }
-    }
-
-    for i in 0..n {
-        let npc = &mut world.npcs[i];
-        if npc.knockback_vx.abs() > 0.01 || npc.knockback_vz.abs() > 0.01 {
-            let kb_x = npc.x + npc.knockback_vx * dt;
-            let kb_z = npc.z + npc.knockback_vz * dt;
-            if !world::on_river_not_bridge(kb_x, kb_z, &world.river_segments, &world.bridges) {
-                npc.x = kb_x;
-                npc.z = kb_z;
-            } else {
-                npc.knockback_vx = 0.0;
-                npc.knockback_vz = 0.0;
-            }
-            npc.x = npc.x.clamp(-state::WORLD_HALF, state::WORLD_HALF);
-            npc.z = npc.z.clamp(-state::WORLD_HALF, state::WORLD_HALF);
-            let friction = (-state::KNOCKBACK_FRICTION * dt).exp();
-            npc.knockback_vx *= friction;
-            npc.knockback_vz *= friction;
-        }
-        if npc.state == state::NpcState::KnockedOut && !npc.starving_dead {
-            npc.knockout_timer -= dt;
-            if npc.knockout_timer <= 0.0 {
-                npc.health = state::KNOCKOUT_REGEN_HP;
-                npc.state = state::NpcState::Working;
-                npc.knockout_timer = 0.0;
-                npc.state_timer = 0.0;
-            }
-        }
-        if npc.state != state::NpcState::KnockedOut && npc.health < state::NPC_HEALTH_MAX {
-            npc.health = (npc.health + state::HEALTH_REGEN_RATE * dt).min(state::NPC_HEALTH_MAX);
-        }
-        let ground = terrain.height_at(npc.x, npc.z);
-        if npc.y < ground { npc.y = ground; }
+fn job_index(j: state::NpcJob) -> usize {
+    match j {
+        state::NpcJob::Collector => 0,
+        state::NpcJob::GarbageCollector => 1,
+        state::NpcJob::TaxiDriver => 2,
+        state::NpcJob::DeliveryCourier => 3,
+        state::NpcJob::MailCarrier => 4,
+        state::NpcJob::Paramedic => 5,
+        state::NpcJob::Firefighter => 6,
+        state::NpcJob::PolicePatrol => 7,
+        state::NpcJob::StreetVendor => 8,
+        state::NpcJob::Mechanic => 9,
+        state::NpcJob::ConstructionWorker => 10,
+        state::NpcJob::Fisherman => 11,
+        state::NpcJob::Farmer => 12,
+        state::NpcJob::Lumberjack => 13,
+        state::NpcJob::Scavenger => 14,
     }
 }
+
+const JOB_NAMES: [&str; 15] = [
+    "Collector", "Garbage", "Taxi", "Delivery", "Mail",
+    "Paramedic", "Firefighter", "Police", "Vendor", "Mechanic",
+    "Construction", "Fisherman", "Farmer", "Lumberjack", "Scavenger",
+];
+
