@@ -297,10 +297,14 @@ pub fn sys_ragdoll_update(world: &mut WorldData, terrain: &Terrain, dt: f32) {
         // Timer
         npc.ragdoll_timer -= dt;
         if npc.ragdoll_timer <= 0.0 {
-            // Snap NPC to hips position
-            npc.x = npc.ragdoll_points[0][0];
-            npc.y = terrain.height_at(npc.ragdoll_points[0][0], npc.ragdoll_points[0][2]);
-            npc.z = npc.ragdoll_points[0][2];
+            // Snap NPC to hips position (avoid landing in river)
+            let snap_x = npc.ragdoll_points[0][0];
+            let snap_z = npc.ragdoll_points[0][2];
+            if !crate::world::on_river_not_bridge(snap_x, snap_z, &world.river_segments, &world.bridges) {
+                npc.x = snap_x;
+                npc.z = snap_z;
+            }
+            npc.y = terrain.height_at(npc.x, npc.z);
             npc.ragdoll_active = false;
             npc.knockback_vx = 0.0;
             npc.knockback_vz = 0.0;

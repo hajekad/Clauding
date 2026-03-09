@@ -338,10 +338,18 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
                 let nx = dx / d;
                 let nz = dz / d;
                 let push = overlap * 0.5;
-                world.npcs[i].x -= nx * push;
-                world.npcs[i].z -= nz * push;
-                world.npcs[j].x += nx * push;
-                world.npcs[j].z += nz * push;
+                let new_ix = world.npcs[i].x - nx * push;
+                let new_iz = world.npcs[i].z - nz * push;
+                let new_jx = world.npcs[j].x + nx * push;
+                let new_jz = world.npcs[j].z + nz * push;
+                if !crate::world::on_river_not_bridge(new_ix, new_iz, &world.river_segments, &world.bridges) {
+                    world.npcs[i].x = new_ix;
+                    world.npcs[i].z = new_iz;
+                }
+                if !crate::world::on_river_not_bridge(new_jx, new_jz, &world.river_segments, &world.bridges) {
+                    world.npcs[j].x = new_jx;
+                    world.npcs[j].z = new_jz;
+                }
             }
         }
     }
@@ -504,7 +512,7 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
         }
     }
 
-    // NPC → NPC push-apart
+    // NPC → NPC push-apart (avoid pushing into river)
     for i in 0..nn {
         if world.npcs[i].in_vehicle || world.npcs[i].state == NpcState::Sleeping { continue; }
         if world.npcs[i].ragdoll_active { continue; }
@@ -521,10 +529,18 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
                 let nx = dx / d;
                 let nz = dz / d;
                 let push = overlap * 0.5;
-                world.npcs[i].x -= nx * push;
-                world.npcs[i].z -= nz * push;
-                world.npcs[j].x += nx * push;
-                world.npcs[j].z += nz * push;
+                let new_ix = world.npcs[i].x - nx * push;
+                let new_iz = world.npcs[i].z - nz * push;
+                let new_jx = world.npcs[j].x + nx * push;
+                let new_jz = world.npcs[j].z + nz * push;
+                if !crate::world::on_river_not_bridge(new_ix, new_iz, &world.river_segments, &world.bridges) {
+                    world.npcs[i].x = new_ix;
+                    world.npcs[i].z = new_iz;
+                }
+                if !crate::world::on_river_not_bridge(new_jx, new_jz, &world.river_segments, &world.bridges) {
+                    world.npcs[j].x = new_jx;
+                    world.npcs[j].z = new_jz;
+                }
             }
         }
     }
