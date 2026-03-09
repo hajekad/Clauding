@@ -302,7 +302,7 @@ pub fn sys_menu_render(
 }
 
 fn draw_menu_box(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize) {
-    draw_rect(fb, x.wrapping_sub(2), y.wrapping_sub(2), w + 4, h + 4, 0xFF888888);
+    draw_rect(fb, x.saturating_sub(2), y.saturating_sub(2), w + 4, h + 4, 0xFF888888);
     draw_rect(fb, x, y, w, h, 0xEE111111);
 }
 

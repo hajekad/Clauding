@@ -1851,7 +1851,7 @@ impl GpuContext {
                 rasterizer_discard_enable: 0,
                 polygon_mode: VK_POLYGON_MODE_FILL,
                 cull_mode: VK_CULL_MODE_BACK_BIT,
-                front_face: _VK_FRONT_FACE_COUNTER_CLOCKWISE, // mesh.rs primitives = CCW screen = front
+                front_face: _VK_FRONT_FACE_COUNTER_CLOCKWISE, // mesh.rs primitives = CCW world-space
                 depth_bias_enable: 0,
                 depth_bias_constant_factor: 0.0,
                 depth_bias_clamp: 0.0,

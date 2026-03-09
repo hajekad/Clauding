@@ -328,7 +328,7 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
 
 fn draw_bar(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize, fill: f32, color: u32) {
     // Border
-    draw_rect(fb, x.wrapping_sub(1), y.wrapping_sub(1), w + 2, h + 2, BAR_BORDER);
+    draw_rect(fb, x.saturating_sub(1), y.saturating_sub(1), w + 2, h + 2, BAR_BORDER);
     // Background
     draw_rect(fb, x, y, w, h, BAR_BG);
     // Fill
@@ -503,8 +503,11 @@ fn draw_minimap_line(fb: &mut Framebuffer, x0: usize, y0: usize, x1: usize, y1: 
         // Draw a filled square at (cx, cy) for thickness
         for ty in -half..=(half) {
             for tx in -half..=(half) {
-                let px = (cx + tx) as usize;
-                let py = (cy + ty) as usize;
+                let sx = cx + tx;
+                let sy = cy + ty;
+                if sx < 0 || sy < 0 { continue; }
+                let px = sx as usize;
+                let py = sy as usize;
                 if px < fb.w && py < fb.h {
                     fb.pixels[py * fb.w + px] = color;
                 }

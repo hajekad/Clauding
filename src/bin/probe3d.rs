@@ -1061,7 +1061,7 @@ fn analyze_slopes(world: &state::WorldData, terrain: &state::Terrain, step: f32)
         }
         x += step;
     }
-    steep_spots.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    steep_spots.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     steep_spots.truncate(10);
 
     println!("Top {} steep locations (>8°, spaced >20m):", steep_spots.len());

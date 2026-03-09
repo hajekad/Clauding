@@ -122,6 +122,7 @@ fn render_screenshot(
     render::generate_dynamic_gpu_vertices(
         &game.world, &game.player, &fake_cam,
         render_scratch, dynamic_verts,
+        game.time_of_day,
     );
 
     // Build VP matrix + lighting push constants

@@ -314,10 +314,12 @@ pub fn sys_ragdoll_update(world: &mut WorldData, terrain: &Terrain, dt: f32) {
             }
         }
 
-        // Keep NPC position synced to hips during ragdoll
-        npc.x = npc.ragdoll_points[0][0];
-        npc.y = npc.ragdoll_points[0][1];
-        npc.z = npc.ragdoll_points[0][2];
+        // Keep NPC position synced to hips during active ragdoll
+        if npc.ragdoll_active {
+            npc.x = npc.ragdoll_points[0][0];
+            npc.y = npc.ragdoll_points[0][1];
+            npc.z = npc.ragdoll_points[0][2];
+        }
     }
 }
 

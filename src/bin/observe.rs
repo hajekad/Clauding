@@ -238,7 +238,7 @@ fn main() {
     // NPC movement stats
     let _ = writeln!(out, "\n--- NPC MOVEMENT STATS ---");
     let mut dists: Vec<(usize, f32)> = (0..n_npcs).map(|i| (i, npc_total_dist[i])).collect();
-    dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     let _ = writeln!(out, "  Least mobile NPCs:");
     for &(i, d) in dists.iter().take(5) {
         let npc = &game.world.npcs[i];

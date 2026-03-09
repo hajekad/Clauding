@@ -283,6 +283,7 @@ fn main() {
             render::generate_dynamic_gpu_vertices(
                 &game.world, &game.player, &game.camera,
                 &mut render_scratch, &mut gpu_dynamic_verts,
+                game.time_of_day,
             );
 
             // Build VP matrix (Vulkan depth [0,1] + Y-flip) + lighting push constants

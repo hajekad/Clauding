@@ -448,9 +448,11 @@ fn npc_work_delivery(world: &mut WorldData, i: usize, net: &mut RoadNetwork, ter
             world.npcs[i].fitness_items_picked += 1;
             world.npcs[i].job_timer = 0.0;
             // Pick delivery destination
-            let dest = world.npcs[i].rng.next() as usize % world.buildings.len();
-            world.npcs[i].job_target_x = world.buildings[dest].x;
-            world.npcs[i].job_target_z = world.buildings[dest].z;
+            if !world.buildings.is_empty() {
+                let dest = world.npcs[i].rng.next() as usize % world.buildings.len();
+                world.npcs[i].job_target_x = world.buildings[dest].x;
+                world.npcs[i].job_target_z = world.buildings[dest].z;
+            }
         } else if was_stuck || no_progress {
             pick_random_building_target(world, i);
             stuck_recovery(world, i, net);
@@ -902,7 +904,7 @@ fn npc_work_scavenger(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
 /// Check if the straight-line path from (ax,az) to (bx,bz) crosses a river.
 /// Only checks river — NPCs can walk around buildings via detour/stuck recovery,
 /// but rivers are truly impassable. Samples every ~8m along the path.
-fn path_clear(world: &WorldData, ax: f32, az: f32, bx: f32, bz: f32, _home_idx: usize) -> bool {
+fn path_clear(world: &WorldData, ax: f32, az: f32, bx: f32, bz: f32, home_idx: usize) -> bool {
     let dx = bx - ax;
     let dz = bz - az;
     let dist = (dx * dx + dz * dz).sqrt();
@@ -913,6 +915,15 @@ fn path_clear(world: &WorldData, ax: f32, az: f32, bx: f32, bz: f32, _home_idx: 
         let sz = az + dz * t;
         if on_river_not_bridge(sx, sz, &world.river_segments, &world.bridges) {
             return false;
+        }
+        // Reject paths that pass through buildings (the main cause of stuck NPCs).
+        // Only check buildings, not smaller obstacles NPCs can detour around.
+        for (bi, b) in world.buildings.iter().enumerate() {
+            if bi == home_idx { continue; }
+            if sx > b.x - b.w * 0.5 && sx < b.x + b.w * 0.5
+            && sz > b.z - b.d * 0.5 && sz < b.z + b.d * 0.5 {
+                return false;
+            }
         }
     }
     true
@@ -1033,6 +1044,7 @@ fn pick_wander(world: &mut WorldData, i: usize, net: &RoadNetwork) {
 }
 
 fn pick_random_building_target(world: &mut WorldData, i: usize) {
+    if world.buildings.is_empty() { return; }
     let bi = world.npcs[i].rng.next() as usize % world.buildings.len();
     world.npcs[i].target_x = world.buildings[bi].x;
     world.npcs[i].target_z = world.buildings[bi].z;

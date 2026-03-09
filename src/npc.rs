@@ -230,6 +230,33 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
     let new_z = npc.z - rot.cos() * speed * dt;
 
     let home_idx = npc.home_idx;
+
+    // Push NPC out of any overlapping placed bin (collision resolution, not rescue)
+    for bi in 0..world.trash_bins.len() {
+        if world.trash_bins[bi].carried_by.is_some() { continue; }
+        let bx = world.trash_bins[bi].x;
+        let bz = world.trash_bins[bi].z;
+        let nx = world.npcs[i].x;
+        let nz = world.npcs[i].z;
+        let bdx = nx - bx;
+        let bdz = nz - bz;
+        let d2 = bdx * bdx + bdz * bdz;
+        let r = 0.85; // npc radius(0.4) + bin radius(0.4) + margin
+        if d2 < r * r && d2 > 0.001 {
+            let d = d2.sqrt();
+            let push = (r - d) + 0.05;
+            let px = nx + bdx / d * push;
+            let pz = nz + bdz / d * push;
+            if !check_npc_walk_collision(world, px, pz, 0.4, home_idx)
+                && !on_river_not_bridge(px, pz, &world.river_segments, &world.bridges)
+            {
+                world.npcs[i].x = px;
+                world.npcs[i].z = pz;
+            }
+            break;
+        }
+    }
+
     // Check river with margin (2m wider than actual river) so NPCs don't hug the edge
     let river_margin = 2.0;
     let on_river_x = {
@@ -266,11 +293,21 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
         world.npcs[i].z = old_z;
     }
 
-    let moved = ((world.npcs[i].x - old_x).abs() + (world.npcs[i].z - old_z).abs()) > speed * dt * 0.3;
-
-    if moved {
-        world.npcs[i].stuck_timer = 0.0;
+    // Animate walk if NPC physically moved (any direction)
+    let any_movement = ((world.npcs[i].x - old_x).abs() + (world.npcs[i].z - old_z).abs()) > speed * dt * 0.3;
+    if any_movement {
         world.npcs[i].walk_phase += dt * speed * 2.5;
+    }
+
+    // Stuck detection: check progress toward current target (detour or real).
+    // Wall-sliding (perpendicular movement) shouldn't reset stuck_timer.
+    let old_dist = ((actual_tx - old_x) * (actual_tx - old_x) + (actual_tz - old_z) * (actual_tz - old_z)).sqrt();
+    let new_dist = ((actual_tx - world.npcs[i].x) * (actual_tx - world.npcs[i].x)
+                  + (actual_tz - world.npcs[i].z) * (actual_tz - world.npcs[i].z)).sqrt();
+    let progressed = old_dist - new_dist > speed * dt * 0.2;
+
+    if progressed {
+        world.npcs[i].stuck_timer = 0.0;
     } else {
         world.npcs[i].stuck_timer += dt;
 

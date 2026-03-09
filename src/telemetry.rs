@@ -24,9 +24,9 @@ pub fn sys_telemetry(game: &GameState) {
     let _ = writeln!(s, "pos=({:.1}, {:.1}, {:.1}) rot={:.2}", p.x, p.y, p.z, p.rot_y);
     let _ = writeln!(s, "health={:.0} stamina={:.0} hunger={:.0} thirst={:.0} money=${:.0} bank=${:.0}", p.health, p.stamina, p.hunger, p.thirst, p.money, p.bank_balance);
     let _ = write!(s, "flags:");
-    if p.in_vehicle.is_some() { let _ = write!(s, " in_vehicle({})", p.in_vehicle.unwrap()); }
+    if let Some(vi) = p.in_vehicle { let _ = write!(s, " in_vehicle({})", vi); }
     if p.carrying_item { let _ = write!(s, " carrying_item"); }
-    if p.carrying_bin.is_some() { let _ = write!(s, " carrying_bin({})", p.carrying_bin.unwrap()); }
+    if let Some(bi) = p.carrying_bin { let _ = write!(s, " carrying_bin({})", bi); }
     if p.sitting { let _ = write!(s, " sitting"); }
     if p.job_menu_open { let _ = write!(s, " job_menu_open"); }
     if p.sprinting { let _ = write!(s, " sprinting"); }
