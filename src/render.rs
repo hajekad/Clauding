@@ -2878,21 +2878,25 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
     // ── FENDER FLARES (RS5 wide-body — prominent muscular bulges) ──
     for &side in &[-1.0f32, 1.0] {
         // Front fender flare (large, wraps over front arch)
-        mesh::ellipsoid_tris(tris, side * 0.86, 0.52, fwz, 0.16, 0.34, 0.58, 0, c);
+        mesh::ellipsoid_tris(tris, side * 0.88, 0.50, fwz, 0.20, 0.40, 0.58, 0, c);
         // Rear fender flare (wider — RS5 muscular rear haunches)
-        mesh::ellipsoid_tris(tris, side * 0.88, 0.52, rwz, 0.18, 0.36, 0.62, 0, c);
+        mesh::ellipsoid_tris(tris, side * 0.90, 0.50, rwz, 0.24, 0.44, 0.62, 0, c);
         // Fender lip ridge above each arch
-        push_box(tris, side * 0.92, 0.72, fwz, 0.02, 0.02, 0.42, c_dkr);
-        push_box(tris, side * 0.92, 0.72, rwz, 0.02, 0.02, 0.46, c_dkr);
+        push_box(tris, side * 0.96, 0.74, fwz, 0.02, 0.02, 0.42, c_dkr);
+        push_box(tris, side * 0.98, 0.74, rwz, 0.02, 0.02, 0.46, c_dkr);
     }
 
-    // ── HOOD SURFACE DETAIL ──
+    // ── HOOD SURFACE ──
+    // Sloping hood panel (cowl to body front — creates visible slope in side profile)
+    mesh::push_quad(tris,
+        [-0.90, 0.86, -0.88], [0.90, 0.86, -0.88],
+        [0.93, 0.78, -1.45], [-0.93, 0.78, -1.45], c);
     // Power bulge (center hood ridge)
-    mesh::ellipsoid_tris(tris, 0.0, 0.80, -1.50, 0.30, 0.025, 0.60, 0, c_dk);
-    // Hood crease lines (two sharp creases)
-    push_box(tris, -0.40, 0.79, -1.50, 0.012, 0.004, 0.65, c_dkr);
-    push_box(tris, 0.40, 0.79, -1.50, 0.012, 0.004, 0.65, c_dkr);
-    // Hood panel gap
+    mesh::ellipsoid_tris(tris, 0.0, 0.82, -1.20, 0.30, 0.03, 0.70, 0, c_dk);
+    // Hood crease lines
+    push_box(tris, -0.40, 0.81, -1.20, 0.012, 0.004, 0.70, c_dkr);
+    push_box(tris, 0.40, 0.81, -1.20, 0.012, 0.004, 0.70, c_dkr);
+    // Hood panel gap at cowl
     push_box(tris, 0.0, 0.84, -0.88, 0.85, 0.003, 0.005, c_shadow);
 
     // ── SINGLEFRAME GRILLE (massive hexagonal opening) ──
@@ -2953,74 +2957,117 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
     }
 
     // ══════════════════════════════════════════════════════════════
-    //  CABIN / GREENHOUSE
+    //  CABIN / GREENHOUSE — lofted cross-sections for flowing profile
     // ══════════════════════════════════════════════════════════════
 
-    // Cabin core volume (beltline at ~0.86, roof at ~1.39)
-    mesh::beveled_box_tris(tris, 0.0, 1.10, -0.10, 1.52, 0.50, 1.70, 0.06, c_dk);
-    // Roof panel (flat section, B-pillar to C-pillar)
-    mesh::beveled_box_tris(tris, 0.0, 1.38, -0.20, 1.40, 0.06, 1.20, 0.04, c);
+    // Cross-sections: (z, roof_y, belt_y, roof_half_x, belt_half_x)
+    let gh: [(f32,f32,f32,f32,f32); 7] = [
+        (-0.88, 0.92, 0.86, 0.72, 0.76),  // cowl (windshield base)
+        (-0.15, 1.37, 0.86, 0.70, 0.76),  // top of windshield / front roof
+        ( 0.30, 1.39, 0.86, 0.70, 0.76),  // roof peak
+        ( 0.60, 1.38, 0.86, 0.70, 0.76),  // roof plateau end
+        ( 1.00, 1.24, 0.86, 0.69, 0.75),  // sportback upper
+        ( 1.40, 1.04, 0.85, 0.67, 0.74),  // sportback mid
+        ( 1.80, 0.88, 0.84, 0.66, 0.72),  // sportback end
+    ];
 
-    // ── SPORTBACK REAR SLOPE (quad-based for visible diagonal) ──
-    // Roof sweeps from y=1.38 at z=0.40 down to y=0.88 at z=1.80
-    let cab_xh = 0.72_f32; // cabin half-width at side
-    // Sportback roof surface (top, angled)
-    mesh::push_quad(tris,
-        [-cab_xh, 1.38, 0.40], [cab_xh, 1.38, 0.40],
-        [cab_xh, 0.88, 1.80], [-cab_xh, 0.88, 1.80],
-        c);
-    // Sportback right side panel (visible diagonal from right)
-    mesh::push_quad(tris,
-        [cab_xh, 1.34, 0.40], [cab_xh, 0.88, 1.80],
-        [cab_xh, 0.84, 1.80], [cab_xh, 0.86, 0.40],
-        c_dk);
-    // Sportback left side panel
-    mesh::push_quad(tris,
-        [-cab_xh, 0.86, 0.40], [-cab_xh, 0.84, 1.80],
-        [-cab_xh, 0.88, 1.80], [-cab_xh, 1.34, 0.40],
-        c_dk);
-    // Sportback rear face (small vertical face at the tail of the greenhouse)
-    mesh::push_quad(tris,
-        [-cab_xh, 0.84, 1.80], [cab_xh, 0.84, 1.80],
-        [cab_xh, 0.88, 1.80], [-cab_xh, 0.88, 1.80],
-        c_dk);
+    // Loft greenhouse shell between cross-sections
+    for i in 0..gh.len()-1 {
+        let (z0, ry0, by0, rx0, bx0) = gh[i];
+        let (z1, ry1, by1, rx1, bx1) = gh[i+1];
 
-    // Volume fill for sportback taper (gives thickness to the C/D pillar area)
-    mesh::beveled_box_tris(tris, 0.0, 1.08, 1.10, 1.20, 0.44, 0.60, 0.04, c);
-    mesh::beveled_box_tris(tris, 0.0, 0.96, 1.50, 1.00, 0.24, 0.30, 0.03, c);
+        // Roof surface (normal up)
+        mesh::push_quad(tris,
+            [-rx1, ry1, z1], [rx1, ry1, z1],
+            [rx0, ry0, z0], [-rx0, ry0, z0], c);
+
+        // Right side (tumblehome: roof narrower than belt, normal +X)
+        mesh::push_quad(tris,
+            [rx0, ry0, z0], [rx1, ry1, z1],
+            [bx1, by1, z1], [bx0, by0, z0], c_dk);
+
+        // Left side (normal -X)
+        mesh::push_quad(tris,
+            [-bx0, by0, z0], [-bx1, by1, z1],
+            [-rx1, ry1, z1], [-rx0, ry0, z0], c_dk);
+    }
+
+    // Rear face of greenhouse (sportback end cap)
+    {
+        let (z, ry, by, rx, bx) = gh[gh.len()-1];
+        mesh::push_quad(tris,
+            [-bx, by, z], [bx, by, z], [rx, ry, z], [-rx, ry, z], c_dk);
+    }
+
+    // Volume fill (prevents see-through at extreme angles)
+    mesh::beveled_box_tris(tris, 0.0, 1.08, 0.10, 1.28, 0.40, 1.60, 0.04, c_dk);
+    mesh::beveled_box_tris(tris, 0.0, 0.96, 1.30, 1.10, 0.22, 0.50, 0.03, c);
+
+    // Shoulder transition (body top to greenhouse beltline)
+    for &side in &[-1.0f32, 1.0] {
+        let (a, b, d2, d) = (
+            [side * 0.92, 0.83, -0.90], [side * 0.92, 0.83, 1.80],
+            [side * 0.76, 0.86, 1.80], [side * 0.76, 0.86, -0.90],
+        );
+        if side > 0.0 { mesh::push_quad(tris, a, b, d2, d, c); }
+        else { mesh::push_quad(tris, d, d2, b, a, c); }
+    }
 
     // ── PILLARS ──
     for &side in &[-1.0f32, 1.0] {
-        // A-pillar (raked forward, connects cowl to roof)
-        push_box(tris, side * 0.73, 1.14, -0.82, 0.05, 0.46, 0.06, trim);
-        // B-pillar (gloss black)
-        push_box(tris, side * 0.75, 1.10, 0.14, 0.05, 0.48, 0.05, trim);
-        // C-pillar (sportback — thick, sweeps rearward as diagonal)
-        mesh::push_quad(tris,
-            [side * 0.74, 1.32, 0.80],
-            [side * 0.74, 0.88, 1.60],
-            [side * 0.74, 0.84, 1.60],
-            [side * 0.74, 1.28, 0.80],
-            trim);
+        // A-pillar (heavily raked — follows windshield angle)
+        let (a, b, p2, d) = (
+            [side * 0.75, 0.90, -0.88],
+            [side * 0.72, 1.37, -0.15],
+            [side * 0.70, 1.33, -0.15],
+            [side * 0.73, 0.88, -0.88],
+        );
+        if side > 0.0 { mesh::push_quad(tris, a, b, p2, d, trim); }
+        else { mesh::push_quad(tris, d, p2, b, a, trim); }
+        // B-pillar
+        push_box(tris, side * 0.76, 1.10, 0.14, 0.04, 0.48, 0.05, trim);
+        // C-pillar (sportback sweep)
+        let (a, b, p2, d) = (
+            [side * 0.72, 1.34, 0.80],
+            [side * 0.68, 0.90, 1.76],
+            [side * 0.66, 0.86, 1.76],
+            [side * 0.70, 1.30, 0.80],
+        );
+        if side > 0.0 { mesh::push_quad(tris, a, b, p2, d, trim); }
+        else { mesh::push_quad(tris, d, p2, b, a, trim); }
     }
 
     // ── WINDSHIELDS ──
-    // Front windshield (raked)
-    push_box(tris, 0.0, 1.16, -0.86, 1.32, 0.38, 0.04, glass);
-    // Rear window (sportback — shallow angle, large)
-    push_box(tris, 0.0, 1.14, 1.38, 1.10, 0.24, 0.04, glass);
-    push_box(tris, 0.0, 1.00, 1.60, 0.96, 0.14, 0.04, glass);
+    // Front windshield (raked quad — matches greenhouse slope)
+    mesh::push_quad(tris,
+        [-0.66, 1.34, -0.17], [0.66, 1.34, -0.17],
+        [0.70, 0.92, -0.86], [-0.70, 0.92, -0.86], glass);
+    // Rear window (sportback angle)
+    mesh::push_quad(tris,
+        [-0.62, 0.92, 1.76], [0.62, 0.92, 1.76],
+        [0.64, 1.30, 0.84], [-0.64, 1.30, 0.84], glass);
 
     // ── SIDE WINDOWS ──
     for &side in &[-1.0f32, 1.0] {
-        // Front door window
-        push_box(tris, side * 0.77, 1.12, -0.32, 0.03, 0.34, 0.64, glass);
-        // Rear door window
-        push_box(tris, side * 0.76, 1.12, 0.58, 0.03, 0.30, 0.54, glass);
-        // Quarter window (at C-pillar)
-        push_box(tris, side * 0.72, 1.14, 1.06, 0.03, 0.20, 0.16, glass);
-        // Chrome window surround trim
-        push_box(tris, side * 0.78, 1.32, -0.10, 0.005, 0.005, 1.50, chrome);
+        let s = side;
+        // Front door window (A-pillar to B-pillar, trapezoidal)
+        let (a, b, w2, d) = (
+            [s * 0.77, 0.88, -0.76], [s * 0.73, 1.34, -0.22],
+            [s * 0.75, 1.32, 0.08], [s * 0.77, 0.88, 0.08],
+        );
+        if s > 0.0 { mesh::push_quad(tris, a, b, w2, d, glass); }
+        else { mesh::push_quad(tris, d, w2, b, a, glass); }
+        // Rear door window (B-pillar to C-pillar)
+        let (a, b, w2, d) = (
+            [s * 0.77, 0.88, 0.24], [s * 0.76, 1.30, 0.24],
+            [s * 0.74, 1.28, 0.74], [s * 0.77, 0.88, 0.74],
+        );
+        if s > 0.0 { mesh::push_quad(tris, a, b, w2, d, glass); }
+        else { mesh::push_quad(tris, d, w2, b, a, glass); }
+        // Quarter window
+        push_box(tris, s * 0.72, 1.06, 1.06, 0.03, 0.16, 0.14, glass);
+        // Chrome window surround
+        push_box(tris, s * 0.78, 1.26, -0.10, 0.005, 0.005, 1.40, chrome);
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -3030,11 +3077,11 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
     // ── CHARACTER LINES ──
     for &side in &[-1.0f32, 1.0] {
         // Upper character line (shoulder crease, headlight → tail)
-        push_box(tris, side * 0.93, 0.76, -0.10, 0.006, 0.006, 2.40, c_dkr);
+        push_box(tris, side * 0.93, 0.78, -0.10, 0.006, 0.006, 2.40, c_dkr);
         // Lower character line (door crease)
-        push_box(tris, side * 0.92, 0.52, -0.10, 0.006, 0.006, 2.10, c_shadow);
-        // Beltline (at window bottom)
-        push_box(tris, side * 0.78, 0.92, -0.10, 0.006, 0.006, 1.70, c_dkr);
+        push_box(tris, side * 0.93, 0.52, -0.10, 0.006, 0.006, 2.10, c_shadow);
+        // Beltline (at window bottom, matches greenhouse belt)
+        push_box(tris, side * 0.77, 0.87, -0.10, 0.006, 0.006, 1.70, c_dkr);
     }
 
     // ── SIDE SKIRTS (gloss black aero) ──
@@ -4085,6 +4132,50 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             out.push(GpuVertex { pos: p0, color_packed: moon_color, normal: mn });
             out.push(GpuVertex { pos: p1, color_packed: moon_color, normal: mn });
             out.push(GpuVertex { pos: p2, color_packed: moon_color, normal: mn });
+        }
+    }
+
+    // Stars — small emissive dots scattered across the sky, visible at night
+    if tc.sun_strength < 0.15 {
+        let star_alpha = ((0.15 - tc.sun_strength) / 0.15).clamp(0.0, 1.0);
+        let star_dist = 230.0;
+        for si in 0..80u32 {
+            let h = si.wrapping_mul(2654435761).wrapping_add(0xDEAD);
+            let h2 = h.wrapping_mul(1664525).wrapping_add(1013904223);
+            // Distribute stars across hemisphere using hash-based spherical coords
+            let az = (h % 10000) as f32 / 10000.0 * std::f32::consts::TAU;
+            let alt = ((h2 % 10000) as f32 / 10000.0 * 0.7 + 0.1) * std::f32::consts::FRAC_PI_2;
+            let cos_alt = alt.cos();
+            let sx = eye[0] + az.cos() * cos_alt * star_dist;
+            let sy = eye[1] + alt.sin() * star_dist;
+            let sz = eye[2] + az.sin() * cos_alt * star_dist;
+
+            // Star brightness varies
+            let brightness = (140.0 + (h % 116) as f32) * star_alpha;
+            let b = (brightness / boost).min(255.0) as u32;
+            // Slight color variation: most white, some blue-ish, some yellow-ish
+            let (sr, sg, sb) = match h2 % 10 {
+                0..=1 => (b, b, (b + 15).min(255)), // blue tint
+                2 => ((b + 10).min(255), (b + 5).min(255), b.saturating_sub(10)), // yellow tint
+                _ => (b, b, b), // white
+            };
+            let star_color = (sr << 16) | (sg << 8) | sb; // alpha=0 emissive
+
+            let n = [-(az.cos() * cos_alt), -alt.sin(), -(az.sin() * cos_alt)];
+            // Star as tiny billboard quad (0.5 units)
+            let star_r = 0.4 + (h % 5) as f32 * 0.15;
+            let rx = -az.sin();
+            let rz = az.cos();
+            let p0 = [sx - rx * star_r, sy - star_r, sz - rz * star_r];
+            let p1 = [sx + rx * star_r, sy - star_r, sz + rz * star_r];
+            let p2 = [sx + rx * star_r, sy + star_r, sz + rz * star_r];
+            let p3 = [sx - rx * star_r, sy + star_r, sz - rz * star_r];
+            out.push(GpuVertex { pos: p0, color_packed: star_color, normal: n });
+            out.push(GpuVertex { pos: p1, color_packed: star_color, normal: n });
+            out.push(GpuVertex { pos: p2, color_packed: star_color, normal: n });
+            out.push(GpuVertex { pos: p0, color_packed: star_color, normal: n });
+            out.push(GpuVertex { pos: p2, color_packed: star_color, normal: n });
+            out.push(GpuVertex { pos: p3, color_packed: star_color, normal: n });
         }
     }
 }
