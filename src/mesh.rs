@@ -775,9 +775,9 @@ pub fn wave_surface_tris(
             let c = (color & 0xFF000000) | (r << 16) | (g << 8) | b;
 
             let n1 = tri_normal(v00, v11, v10);
-            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color: c });
+            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: c });
             let n2 = tri_normal(v00, v01, v11);
-            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color: c });
+            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: c });
         }
     }
 }
@@ -1082,7 +1082,7 @@ pub fn leaf_canopy_tris(
 
 // ── Grass ───────────────────────────────────────────────────────────────────
 
-/// Single grass blade: thin triangle leaning slightly. 1 tri.
+/// Single grass blade: tapered quad (wide base, narrow mid, pointed tip). 3 tris.
 /// `lean` in [0..1] controls how much it tilts, `lean_angle` is direction in radians.
 fn grass_blade_tri(
     tris: &mut Vec<WorldTri>,
@@ -1096,17 +1096,39 @@ fn grass_blade_tri(
     // Base left/right perpendicular to lean direction
     let base_l = [x - hw * cl, y, z - hw * sl];
     let base_r = [x + hw * cl, y, z + hw * sl];
+    // Mid-blade: wider taper (70% of base) for more visible blade body
+    let mid_lean = lean * 0.4;
+    let mid_hw = hw * 0.7;
+    let mid_y = y + height * 0.45;
+    let mid_x = x + mid_lean * height * 0.15 * sl;
+    let mid_z = z - mid_lean * height * 0.15 * cl;
+    let mid_l = [mid_x - mid_hw * cl, mid_y, mid_z - mid_hw * sl];
+    let mid_r = [mid_x + mid_hw * cl, mid_y, mid_z + mid_hw * sl];
     // Tip leans in lean_angle direction
     let tip = [
         x + lean * height * 0.3 * sl,
         y + height,
         z - lean * height * 0.3 * cl,
     ];
-    let normal = tri_normal(base_l, tip, base_r);
-    tris.push(WorldTri { v: [base_l, tip, base_r], normal, color });
+    // Brighter yellow-green tip for sunlit gradient
+    let tip_color = brighten_color(color, 30);
+    // Lower quad: base to mid (2 tris)
+    let n1 = tri_normal(base_l, mid_l, base_r);
+    tris.push(WorldTri { v: [base_l, mid_l, base_r], normal: n1, color });
+    tris.push(WorldTri { v: [base_r, mid_l, mid_r], normal: n1, color });
+    // Upper triangle: mid to tip (1 tri)
+    let n2 = tri_normal(mid_l, tip, mid_r);
+    tris.push(WorldTri { v: [mid_l, tip, mid_r], normal: n2, color: tip_color });
 }
 
-/// Generate a patch of grass blades in a circular area. Each blade is 1 tri.
+fn brighten_color(c: u32, delta: i32) -> u32 {
+    let r = (((c >> 16) & 0xFF) as i32 + delta).clamp(0, 255) as u32;
+    let g = (((c >> 8) & 0xFF) as i32 + delta + delta / 2).clamp(0, 255) as u32;
+    let b = ((c & 0xFF) as i32 + delta).clamp(0, 255) as u32;
+    (c & 0xFF000000) | (r << 16) | (g << 8) | b
+}
+
+/// Generate a patch of grass blades in a circular area. Each blade is 3 tris.
 pub fn grass_patch_tris(
     tris: &mut Vec<WorldTri>,
     cx: f32, cy: f32, cz: f32,
@@ -1481,5 +1503,126 @@ pub fn loft_y_tris_caps(
             let b = [tpts[pn][0], yt, tpts[pn][1]];
             tris.push(WorldTri { v: [tc, b, a], normal: [0.0, 1.0, 0.0], color: tcol });
         }
+    }
+}
+
+// ── Glow halo ────────────────────────────────────────────────────────────────
+
+/// Emit a radial glow halo in a given plane around a center point.
+/// The halo is a fan of triangles with the bright emissive color at center,
+/// fading through 2 concentric rings to a dim outer edge.
+///
+/// `normal` defines the plane orientation (the disc is perpendicular to it).
+/// `inner_r` is the solid bright core radius; `outer_r` is the dim edge radius.
+/// `color` is the base emissive color (alpha=0x00, will be dimmed for outer rings).
+/// `segments` controls smoothness of the disc (8-12 is typical).
+fn glow_disc(
+    tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32,
+    normal: [f32; 3], inner_r: f32, outer_r: f32,
+    segments: usize, color: u32,
+) {
+    let n = segments.max(6);
+    let step = std::f32::consts::TAU / n as f32;
+
+    // Build two tangent vectors perpendicular to normal
+    let (tx, ty, tz) = (normal[0], normal[1], normal[2]);
+    // Pick a non-parallel vector to cross with
+    let (ax, ay, az) = if tx.abs() < 0.9 { (1.0, 0.0, 0.0) } else { (0.0, 1.0, 0.0) };
+    // u = normalize(cross(normal, arbitrary))
+    let (ux, uy, uz) = (ty * az - tz * ay, tz * ax - tx * az, tx * ay - ty * ax);
+    let ul = (ux * ux + uy * uy + uz * uz).sqrt();
+    let (ux, uy, uz) = (ux / ul, uy / ul, uz / ul);
+    // v = normalize(cross(normal, u))
+    let (vx, vy, vz) = (ty * uz - tz * uy, tz * ux - tx * uz, tx * uy - ty * ux);
+
+    // Ring radii: core, mid, outer
+    let mid_r = inner_r + (outer_r - inner_r) * 0.45;
+
+    // Color dimming for rings (emissive colors have alpha=0x00)
+    let r = (color >> 16) & 0xFF;
+    let g = (color >> 8) & 0xFF;
+    let b = color & 0xFF;
+    // Mid ring: ~40% brightness
+    let mid_color = ((r * 40 / 100) << 16) | ((g * 40 / 100) << 8) | (b * 40 / 100);
+    // Outer ring: ~12% brightness
+    let out_color = ((r * 12 / 100) << 16) | ((g * 12 / 100) << 8) | (b * 12 / 100);
+
+    // Helper to get point on disc at angle and radius
+    let pt = |angle: f32, radius: f32| -> [f32; 3] {
+        let (sa, ca) = angle.sin_cos();
+        let dx = ux * ca + vx * sa;
+        let dy = uy * ca + vy * sa;
+        let dz = uz * ca + vz * sa;
+        [cx + dx * radius, cy + dy * radius, cz + dz * radius]
+    };
+
+    let center = [cx, cy, cz];
+
+    for i in 0..n {
+        let a0 = i as f32 * step;
+        let a1 = (i + 1) as f32 * step;
+
+        // Core: center to inner_r (full brightness, CCW winding)
+        let p0 = pt(a0, inner_r);
+        let p1 = pt(a1, inner_r);
+        tris.push(WorldTri { v: [center, p0, p1], normal, color });
+
+        // Mid ring: inner_r to mid_r
+        let m0 = pt(a0, mid_r);
+        let m1 = pt(a1, mid_r);
+        tris.push(WorldTri { v: [p0, m0, m1], normal, color: mid_color });
+        tris.push(WorldTri { v: [p0, m1, p1], normal, color: mid_color });
+
+        // Outer ring: mid_r to outer_r
+        let o0 = pt(a0, outer_r);
+        let o1 = pt(a1, outer_r);
+        tris.push(WorldTri { v: [m0, o0, o1], normal, color: out_color });
+        tris.push(WorldTri { v: [m0, o1, m1], normal, color: out_color });
+    }
+}
+
+/// Emit a multi-plane glow halo visible from all angles.
+/// Creates glow discs in 3 perpendicular planes (XY, YZ, XZ) for omnidirectional visibility.
+/// `core_r` = bright center radius, `glow_r` = dim outer edge radius.
+pub fn glow_halo(
+    tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32,
+    core_r: f32, glow_r: f32, segments: usize, color: u32,
+) {
+    // XY plane (faces Z)
+    glow_disc(tris, cx, cy, cz, [0.0, 0.0, 1.0], core_r, glow_r, segments, color);
+    // YZ plane (faces X)
+    glow_disc(tris, cx, cy, cz, [1.0, 0.0, 0.0], core_r, glow_r, segments, color);
+    // XZ plane (faces Y) — horizontal disc (ground-visible glow)
+    glow_disc(tris, cx, cy, cz, [0.0, 1.0, 0.0], core_r, glow_r, segments, color);
+}
+
+/// Emit a directional glow halo (for headlights/tail lights that face a specific direction).
+/// Creates one disc facing the given direction plus a smaller perpendicular halo for side visibility.
+pub fn glow_directional(
+    tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32,
+    dir: [f32; 3], core_r: f32, glow_r: f32, segments: usize, color: u32,
+) {
+    // Main disc facing the light direction
+    glow_disc(tris, cx, cy, cz, dir, core_r, glow_r, segments, color);
+    // Horizontal disc for top/bottom visibility (smaller)
+    let side_r = glow_r * 0.6;
+    let side_core = core_r * 0.7;
+    glow_disc(tris, cx, cy, cz, [0.0, 1.0, 0.0], side_core, side_r, segments, color);
+    // Cross-plane disc perpendicular to dir (vertical, rotated 90 degrees)
+    // If dir is along Z, cross with Y to get X-axis disc
+    let (dx, _dy, dz) = (dir[0], dir[1], dir[2]);
+    let (cx2, cy2, cz2) = if dz.abs() > 0.5 {
+        // Facing Z: add XY cross disc
+        (1.0_f32, 0.0, 0.0)
+    } else if dx.abs() > 0.5 {
+        // Facing X: add YZ cross disc
+        (0.0, 0.0, 1.0)
+    } else {
+        // Facing Y: add XZ cross disc
+        (dx, 0.0, dz)
+    };
+    let l = (cx2 * cx2 + cy2 * cy2 + cz2 * cz2).sqrt();
+    if l > 0.01 {
+        glow_disc(tris, cx, cy, cz, [cx2/l, cy2/l, cz2/l], side_core, side_r, segments, color);
     }
 }

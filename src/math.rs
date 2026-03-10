@@ -82,11 +82,11 @@ pub fn terrain_rot3x3(normal: Vec3, rot_y: f32) -> [f32; 9] {
     let right = v3_normalize(v3_cross(fwd_flat, up));
     // Recompute forward = cross(up, right) to ensure orthogonality
     let fwd = v3_cross(up, right);
-    // Column-major 3x3: columns are -right, up, -forward
-    // det=-1 (improper rotation / reflection) — maps local -Z to world forward
-    // while preserving model orientation. The reflection flips winding order.
+    // Column-major 3x3: columns are right, up, -forward
+    // det=+1 (proper rotation) — maps local -Z to world forward.
+    // Model +X maps to world right, +Y to terrain normal, -Z to facing direction.
     [
-       -right[0], -right[1], -right[2],
+        right[0],  right[1],  right[2],
         up[0],     up[1],     up[2],
        -fwd[0],   -fwd[1],   -fwd[2],
     ]
