@@ -1,5 +1,6 @@
 // sys_render: transform world + player geometry to screen, rasterize
 // Near-plane clipping, backface/distance culling, day/night lighting
+// G-fixes: sculpted face geometry, hair for hatless NPCs, detailed bracers
 
 use crate::gpu::GpuVertex;
 use crate::math::*;
@@ -73,8 +74,8 @@ fn male_proportions() -> BodyProportions {
         leg_rx_scale: 1.0,
         shoulder_joint_x: 0.22,
         hip_joint_x: 0.12,
-        neck_rx: 0.10,
-        neck_rz: 0.085,
+        neck_rx: 0.15,     // F5: thicker neck (was 0.12)
+        neck_rz: 0.13,     // F5: thicker neck (was 0.10)
         has_adams_apple: true,
         has_breasts: false,
         breast_rx: 0.0, breast_ry: 0.0, breast_rz: 0.0,
@@ -101,8 +102,8 @@ fn female_proportions() -> BodyProportions {
         leg_rx_scale: 0.90,
         shoulder_joint_x: 0.20,
         hip_joint_x: 0.13,
-        neck_rx: 0.07,
-        neck_rz: 0.065,
+        neck_rx: 0.11,     // F5: thicker neck (was 0.09)
+        neck_rz: 0.10,     // F5: thicker neck (was 0.08)
         has_adams_apple: false,
         has_breasts: true,
         breast_rx: 0.065,
@@ -310,6 +311,9 @@ const VEST_COLORS: [u32; 6] = [
     0xFF887755, 0xFF998866, 0xFF776655, 0xFF667744, 0xFF886644, 0xFF998877,
 ];
 const SASH_COLORS: [u32; 4] = [0xFFAA2222, 0xFF882222, 0xFFCC3333, 0xFF993322];
+const BELT_COLORS: [u32; 5] = [
+    0xFF3A2A1A, 0xFF2A1A0A, 0xFF4A3A2A, 0xFF332211, 0xFF1A1A1A, // brown/tan/black leather variants
+];
 const BOOT_BROWN: u32 = 0xFF3D2816;
 const BOOT_BLACK: u32 = 0xFF1A1A1A;
 const LEATHER_DARK: u32 = 0xFF3A2A1A;
@@ -336,6 +340,7 @@ struct NpcAppearance {
     boot_type: u8,        // 0=buckled shoes, 1=mid-boot, 2=tall-boot
     boot_col: u32,
     sash_col: u32,
+    belt_col: u32,        // belt leather color — varies per NPC
     face_age: u8,         // 0=young, 1=mid, 2=old (wrinkle density)
     is_female: bool,
     face: FaceSliders,
@@ -362,6 +367,7 @@ fn npc_appearance(seed: u32) -> NpcAppearance {
         boot_type: ((s / 19) % 3) as u8,
         boot_col: if s % 2 == 0 { BOOT_BROWN } else { BOOT_BLACK },
         sash_col: SASH_COLORS[(s / 23) as usize % SASH_COLORS.len()],
+        belt_col: BELT_COLORS[(s / 31) as usize % BELT_COLORS.len()],
         face_age: ((s / 29) % 3) as u8,
         is_female,
         face: FaceSliders::randomized(&face_base, s),
@@ -385,6 +391,7 @@ fn player_appearance(is_female: bool) -> NpcAppearance {
         boot_type: 2,          // tall boots
         boot_col: BOOT_BROWN,
         sash_col: 0xFFAA2222,  // red sash
+        belt_col: LEATHER_DARK,
         face_age: 0,
         is_female,
         face,
@@ -409,48 +416,157 @@ struct TimeColors {
     sun_strength: f32,
 }
 
-fn time_colors(hour: f32) -> TimeColors {
-    let (sky, amb, sun) = if hour < 4.5 {
-        (0xFF0C0C24, 0.12, 0.0)
-    } else if hour < 5.5 {
-        let t = (hour - 4.5) / 1.0;
-        (lerp_color(0xFF0C0C24, 0xFF553366, t), 0.12 + t * 0.15, t * 0.1)
-    } else if hour < 6.5 {
-        let t = (hour - 5.5) / 1.0;
-        (lerp_color(0xFF553366, 0xFFEE9944, t), 0.27 + t * 0.2, 0.1 + t * 0.35)
-    } else if hour < 8.0 {
-        let t = (hour - 6.5) / 1.5;
-        (lerp_color(0xFFEE9944, 0xFF88CCEE, t), 0.47 + t * 0.18, 0.45 + t * 0.2)
-    } else if hour < 16.0 {
-        (0xFF88CCEE, 0.65, 0.65)
-    } else if hour < 17.5 {
-        let t = (hour - 16.0) / 1.5;
-        (lerp_color(0xFF88CCEE, 0xFFEEAA55, t), 0.65 - t * 0.1, 0.65 - t * 0.15)
-    } else if hour < 18.5 {
-        let t = (hour - 17.5) / 1.0;
-        (lerp_color(0xFFEEAA55, 0xFFCC4422, t), 0.55 - t * 0.15, 0.50 - t * 0.2)
-    } else if hour < 19.5 {
-        let t = (hour - 18.5) / 1.0;
-        (lerp_color(0xFFCC4422, 0xFF332244, t), 0.40 - t * 0.2, 0.30 - t * 0.25)
-    } else if hour < 20.5 {
-        let t = (hour - 19.5) / 1.0;
-        (lerp_color(0xFF332244, 0xFF0C0C24, t), 0.20 - t * 0.08, 0.05 - t * 0.05)
+/// Compute fog-specific color that tracks sky but biases warm during sunset/sunrise.
+/// During golden hour transitions, the sky color is a desaturated blend of blue and
+/// orange that appears whitish. This biases the fog toward warm amber so distant
+/// objects fade into a cohesive warm haze rather than a pale disconnect.
+fn fog_color_for_hour(sky: u32, hour: f32) -> (f32, f32, f32) {
+    let sr = ((sky >> 16) & 0xFF) as f32;
+    let sg = ((sky >> 8) & 0xFF) as f32;
+    let sb = (sky & 0xFF) as f32;
+
+    // Sunset warm bias (hours 16-19.5): push fog toward warm amber
+    let sunset_bias = if hour >= 16.0 && hour < 17.5 {
+        (hour - 16.0) / 1.5 * 0.45 // ramp up to 45% warm bias by peak sunset
+    } else if hour >= 17.5 && hour < 18.5 {
+        0.45 - (hour - 17.5) * 0.20 // ease off as sky catches up to deep red
+    } else if hour >= 18.5 && hour < 19.5 {
+        0.25 - (hour - 18.5) * 0.25 // fade out during dusk
     } else {
-        (0xFF0C0C24, 0.12, 0.0)
+        0.0
     };
 
-    let fr = ((sky >> 16) & 0xFF) as f32;
-    let fg = ((sky >> 8) & 0xFF) as f32;
-    let fb = (sky & 0xFF) as f32;
+    // Sunrise warm bias (hours 5.5-8.0): push fog toward warm gold
+    let sunrise_bias = if hour >= 5.5 && hour < 6.5 {
+        (hour - 5.5) / 1.0 * 0.40 // ramp up during sunrise
+    } else if hour >= 6.5 && hour < 8.0 {
+        0.40 - (hour - 6.5) / 1.5 * 0.40 // fade out as morning brightens
+    } else {
+        0.0
+    };
 
+    let bias = (sunset_bias + sunrise_bias).min(0.5);
+    if bias > 0.001 {
+        // Warm target: amber tones scaled to current sky brightness
+        let brightness = (sr + sg + sb) / 3.0;
+        let warm_r = (brightness * 1.35).min(255.0);
+        let warm_g = brightness * 0.75;
+        let warm_b = brightness * 0.35;
+        (
+            sr + (warm_r - sr) * bias,
+            sg + (warm_g - sg) * bias,
+            sb + (warm_b - sb) * bias,
+        )
+    } else {
+        (sr, sg, sb)
+    }
+}
+
+fn time_colors(hour: f32) -> TimeColors {
+    // Smooth easing helper: cubic ease-in-out for natural transitions
+    let ease = |t: f32| -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 }
+    };
+
+    // --- Sky color, ambient, and sun_strength as continuous curves ---
+    // Night: subtle variation (moonlight waxes/wanes, pre-dawn glow)
+    // Day: morning warmup -> midday peak -> afternoon decline
+    // Transitions: gradual twilight zones
+
+    let (sky, amb, sun) = if hour < 3.0 {
+        // Deep night -> pre-dawn hint: ambient subtly rises from 0.08 at midnight
+        // to 0.10 at 3AM (moon overhead gives faint light)
+        let t = hour / 3.0;
+        let night_amb = 0.08 + t * 0.02;
+        (lerp_color(0xFF080818, 0xFF0A0A20, t), night_amb, 0.0)
+    } else if hour < 4.5 {
+        // Pre-dawn: sky begins to lighten on horizon, ambient slowly rises
+        let t = (hour - 3.0) / 1.5;
+        let te = ease(t);
+        (lerp_color(0xFF0A0A20, 0xFF1A1535, te), 0.10 + te * 0.06, 0.0)
+    } else if hour < 5.5 {
+        // Civil twilight begins: purple/pink horizon glow, first hint of sun
+        let t = (hour - 4.5) / 1.0;
+        let te = ease(t);
+        (lerp_color(0xFF1A1535, 0xFF553366, te), 0.16 + te * 0.16, te * 0.08)
+    } else if hour < 6.5 {
+        // Sunrise: orange/gold horizon, rapid ambient increase
+        let t = (hour - 5.5) / 1.0;
+        let te = ease(t);
+        (lerp_color(0xFF553366, 0xFFEE9944, te), 0.32 + te * 0.20, 0.08 + te * 0.30)
+    } else if hour < 8.0 {
+        // Golden hour -> morning: warm light transitions to blue sky
+        let t = (hour - 6.5) / 1.5;
+        let te = ease(t);
+        (lerp_color(0xFFEE9944, 0xFF88CCEE, te), 0.52 + te * 0.16, 0.38 + te * 0.22)
+    } else if hour < 10.0 {
+        // Morning: brightening toward midday
+        let t = (hour - 8.0) / 2.0;
+        (lerp_color(0xFF88CCEE, 0xFF99DDFF, t), 0.68 + t * 0.07, 0.60 + t * 0.08)
+    } else if hour < 14.0 {
+        // Midday plateau: sun near zenith, brightest period with subtle arc
+        let t = (hour - 10.0) / 4.0; // 0 at 10, 1 at 14
+        // Sine arc peaks at solar noon (12:00)
+        let noon_t = (hour - 10.0) / 4.0 * std::f32::consts::PI;
+        let noon_boost = noon_t.sin() * 0.05;
+        (lerp_color(0xFF99DDFF, 0xFF88CCEE, t), 0.75 + noon_boost, 0.68 + noon_boost)
+    } else if hour < 16.0 {
+        // Afternoon: gradual decline from midday
+        let t = (hour - 14.0) / 2.0;
+        (lerp_color(0xFF88CCEE, 0xFF88CCEE, t), 0.75 - t * 0.05, 0.68 - t * 0.10)
+    } else if hour < 17.5 {
+        // Late afternoon -> golden hour: warm tones return
+        let t = (hour - 16.0) / 1.5;
+        let te = ease(t);
+        (lerp_color(0xFF88CCEE, 0xFFEEAA55, te), 0.70 - te * 0.10, 0.58 - te * 0.15)
+    } else if hour < 18.5 {
+        // Sunset: orange to deep red
+        let t = (hour - 17.5) / 1.0;
+        let te = ease(t);
+        (lerp_color(0xFFEEAA55, 0xFFCC4422, te), 0.60 - te * 0.14, 0.43 - te * 0.18)
+    } else if hour < 19.5 {
+        // Dusk: red to purple, sun below horizon
+        let t = (hour - 18.5) / 1.0;
+        let te = ease(t);
+        (lerp_color(0xFFCC4422, 0xFF332244, te), 0.46 - te * 0.18, 0.25 - te * 0.18)
+    } else if hour < 21.0 {
+        // Late dusk -> night: purple fading to deep blue
+        let t = (hour - 19.5) / 1.5;
+        let te = ease(t);
+        (lerp_color(0xFF332244, 0xFF0A0A20, te), 0.28 - te * 0.16, 0.07 - te * 0.07)
+    } else {
+        // Night: very gradual darkening toward midnight
+        let t = (hour - 21.0) / 3.0; // 0 at 21, 1 at midnight
+        let night_amb = 0.12 - t * 0.04;
+        (lerp_color(0xFF0A0A20, 0xFF080818, t), night_amb, 0.0)
+    };
+
+    // Fog color: tracks sky but biases warm during sunset/sunrise transitions
+    // to prevent desaturated "white fog against orange sky" disconnect.
+    let (fr, fg, fb) = fog_color_for_hour(sky, hour);
+
+    // --- Sun direction: full arc across the sky ---
+    // Sun rises in the east (negative X), arcs overhead, sets in the west (positive X).
+    // The z-component shifts from south to overhead to north, giving parallax on building faces.
+    // sun_angle: 0 at 6:00 (horizon east), PI/2 at 12:00 (zenith), PI at 18:00 (horizon west)
     let sun_angle = (hour - 6.0) / 12.0 * std::f32::consts::PI;
     let light_dir = if sun > 0.0 {
-        let sy = sun_angle.sin().max(0.1);
-        let sx = sun_angle.cos() * 0.5;
-        let len = (sx * sx + sy * sy + 0.25).sqrt();
-        [sx / len, sy / len, 0.5 / len]
+        // Y = height (sin of elevation), X = east-west, Z = slight south bias
+        let elevation = sun_angle.sin().max(0.05);
+        let east_west = sun_angle.cos(); // full range: -1 (east) to +1 (west)
+        // Slight southward bias that shifts through the day
+        let south_bias = 0.3 * (sun_angle * 0.5).sin();
+        let len = (east_west * east_west + elevation * elevation + south_bias * south_bias).sqrt();
+        [east_west / len, elevation / len, south_bias / len]
     } else {
-        [0.0, 1.0, 0.0]
+        // Moonlight direction: high and slightly offset for faint directional fill
+        // Rotates slowly through the night for subtle variation
+        let moon_angle = ((hour + 6.0) % 24.0) / 12.0 * std::f32::consts::PI;
+        let my = 0.7 + 0.3 * moon_angle.sin();
+        let mx = moon_angle.cos() * 0.3;
+        let len = (mx * mx + my * my + 0.04).sqrt();
+        [mx / len, my / len, 0.2 / len]
     };
 
     TimeColors { sky, fog_r: fr, fog_g: fg, fog_b: fb, light_dir, ambient: amb, sun_strength: sun }
@@ -530,8 +646,16 @@ fn render_tris(fb: &mut Framebuffer, vp: &Mat4, tris: &[WorldTri], cam_pos: Vec3
         let dist = dist_sq.sqrt();
 
         // Compute final color before clipping (flat shading)
-        let sun_lit = v3_dot(tri.normal, tc.light_dir).max(0.0) * tc.sun_strength;
-        let intensity = sun_lit + tc.ambient;
+        // Half-Lambert wrap diffuse: (dot*0.5+0.5)^2 gives softer shadow falloff
+        // so building faces perpendicular to the sun still receive some light
+        let dot_nl = v3_dot(tri.normal, tc.light_dir);
+        let wrap = (dot_nl * 0.5 + 0.5) * (dot_nl * 0.5 + 0.5);
+        let sun_lit = wrap * tc.sun_strength;
+        // Faint directional moonlight at night — provides surface differentiation
+        let moon_lit = if tc.sun_strength < 0.01 {
+            dot_nl.max(0.0) * 0.04
+        } else { 0.0 };
+        let intensity = sun_lit + moon_lit + tc.ambient;
         let fog = (dist / FOG_DIST).min(1.0);
         let color = shade_and_fog(tri.color, intensity, fog, tc);
 
@@ -617,10 +741,21 @@ fn shade_and_fog(color: u32, intensity: f32, fog: f32, tc: &TimeColors) -> u32 {
     let g = ((color >> 8) & 0xFF) as f32;
     let b = (color & 0xFF) as f32;
     let i = intensity.clamp(0.1, 1.3);
-    let mix = fog * fog;
-    let ro = ((r * i * (1.0 - mix) + tc.fog_r * mix) as u32).min(255);
-    let go = ((g * i * (1.0 - mix) + tc.fog_g * mix) as u32).min(255);
-    let bo = ((b * i * (1.0 - mix) + tc.fog_b * mix) as u32).min(255);
+    // Smoothstep fog curve: zero derivative at both endpoints gives gentle fade-in
+    // near the camera and smooth fade-out at the fog boundary, preventing the abrupt
+    // pop-in/pop-out of distant buildings. Matches the GPU shader's SmoothStep.
+    let t = fog.clamp(0.0, 1.0);
+    let mix = t * t * (3.0 - 2.0 * t);
+    // At night (low sun_strength), add cool blue moonlight tint so surfaces stay visible.
+    // This gives roads, vehicles, river etc. a faint blue-silver appearance instead of pure black.
+    let moonlight = (1.0 - tc.sun_strength.min(1.0)) * 0.06;
+    let mr = r * i + moonlight * r * 0.5;  // red suppressed under moonlight
+    let mg = g * i + moonlight * g * 0.7;  // green slightly present
+    let mb = b * i + moonlight * b * 1.2;  // blue boosted for cool moonlit look
+    // Round to nearest (not truncate) for closer parity with GPU float pipeline
+    let ro = ((mr * (1.0 - mix) + tc.fog_r * mix + 0.5) as u32).min(255);
+    let go = ((mg * (1.0 - mix) + tc.fog_g * mix + 0.5) as u32).min(255);
+    let bo = ((mb * (1.0 - mix) + tc.fog_b * mix + 0.5) as u32).min(255);
     0xFF000000 | (ro << 16) | (go << 8) | bo
 }
 
@@ -654,26 +789,27 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     let jawline = sl(0.004, 0.024, f.jaw_width);
     let gonial = sl(0.003, 0.035, f.jaw_definition);
     let masseter = sl(0.002, 0.020, f.masseter);
-    let brow_shelf = sl(0.002, 0.035, f.brow_ridge);
-    let brow_boss = sl(0.002, 0.020, f.brow_ridge);
-    let glabella = sl(0.001, 0.015, f.brow_ridge);
-    let supraorb = sl(0.002, 0.018, f.brow_ridge);
-    let cheek = sl(0.008, 0.050, f.cheekbone);
+    let brow_shelf = sl(0.008, 0.045, f.brow_ridge);
+    let brow_boss = sl(0.005, 0.028, f.brow_ridge);
+    let glabella = sl(0.003, 0.020, f.brow_ridge);
+    let supraorb = sl(0.005, 0.025, f.brow_ridge);
+    let cheek = sl(0.014, 0.060, f.cheekbone);
     let chin_proj = sl(0.010, 0.070, f.chin_projection);
     let chin_w = sl(0.045, 0.080, f.chin_width);  // min 0.045 prevents spike chin
-    let nose_size = sl(0.018, 0.050, f.nose_size);
-    let nose_br = sl(0.008, 0.020, f.nose_bridge);
+    let nose_size = sl(0.024, 0.060, f.nose_size);
+    let nose_br = sl(0.012, 0.028, f.nose_bridge);
     let lip_full = sl(0.6, 1.6, f.lip_fullness);
     let eye_x = sl(0.060, 0.100, f.eye_spacing);
     let eye_r = sl(0.018, 0.034, f.eye_size);
-    let eye_z = sl(-0.220, -0.270, f.eye_depth);
+    let eye_z = sl(-0.290, -0.340, f.eye_depth);
     let fh_off = sl(-0.03, 0.03, f.forehead_height);
     let ear_s = sl(0.70, 1.30, f.ear_size);
     let fem = app.is_female;
 
     // Orbital socket depth — negative displacement at eye positions
     // Creates concavity that eyeballs sit inside
-    let orb_depth = sl(-0.012, -0.035, f.eye_depth);
+    // Deep sockets ensure eyes visibly sit in sculpted recesses
+    let orb_depth = sl(-0.045, -0.080, f.eye_depth);
 
     // ══════════════════════════════════════════════════════════════
     // SKULL LOFT — anatomically structured head surface
@@ -711,26 +847,26 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
             (hp - 0.3, 0.2, masseter * 0.9), (le + 0.3, 0.2, masseter * 0.9),
         ], n), sk),
 
-        // ── MOUTH LEVEL — face center shifted forward (cz=0.01) ──
+        // ── MOUTH LEVEL — face center shifted forward for muzzle projection ──
         (1.65, body_ring(0.0, 0.01 * skd, 0.195 * skw, 0.21 * skd, &[
-            (0.0, 0.20, 0.012),
+            (0.0, 0.25, 0.028),
             (0.20, 0.08, -0.004), (TAU - 0.20, 0.08, -0.004),
         ], n), sk),
         (1.67, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.23 * skd, &[
-            (0.0, 0.25, 0.016),
+            (0.0, 0.28, 0.035),
             (hp - 0.3, 0.2, masseter * 0.7), (le + 0.3, 0.2, masseter * 0.7),
             (0.22, 0.08, -0.008), (TAU - 0.22, 0.08, -0.008),
         ], n), sk),
 
-        // ── NOSE BASE — piriform aperture ──
+        // ── NOSE BASE — piriform aperture, forward projection ──
         (1.69, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.24 * skd, &[
-            (0.0, 0.10, 0.020),
+            (0.0, 0.12, 0.038),
             (0.22, 0.08, -0.008), (TAU - 0.22, 0.08, -0.008),
         ], n), sk),
         // Nose mid — tip + alar projection
         (1.72, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.25 * skd, &[
-            (0.0, 0.06, nose_size * 1.2),
-            (0.12, 0.05, nose_br * 0.8), (TAU - 0.12, 0.05, nose_br * 0.8),
+            (0.0, 0.08, nose_size * 1.5),
+            (0.12, 0.06, nose_br * 1.0), (TAU - 0.12, 0.06, nose_br * 1.0),
             (0.25, 0.08, -0.008), (TAU - 0.25, 0.08, -0.008),
         ], n), sk),
 
@@ -817,11 +953,11 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     for &side in &[-1.0f32, 1.0] {
         let brow_thick = sl(0.003, 0.007, f.brow_ridge);
         // Inner brow — narrower to stay on skull surface
-        mesh::ellipsoid_tris(tris, side * eye_x, 1.82, -0.280,
-            0.028, brow_thick, 0.010, 0, darken(hair, 0.85));
-        // Brow tail — small, hugging skull surface
-        mesh::ellipsoid_tris(tris, side * (eye_x + 0.014), 1.823, -0.258,
-            0.010, brow_thick * 0.5, 0.006, 0, darken(hair, 0.80));
+        mesh::ellipsoid_tris(tris, side * eye_x, 1.82, -0.310,
+            0.030, brow_thick, 0.012, 0, darken(hair, 0.85));
+        // Brow tail — follows brow ridge
+        mesh::ellipsoid_tris(tris, side * (eye_x + 0.014), 1.823, -0.290,
+            0.012, brow_thick * 0.5, 0.008, 0, darken(hair, 0.80));
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -830,43 +966,43 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     // ══════════════════════════════════════════════════════════════
     let ns = nose_size;
     let nb = nose_br;
-    // Nasal bone — tall ridge forming the bridge
-    mesh::ellipsoid_tris(tris, 0.0, 1.76, -0.290, nb * 1.2, 0.040, nb * 1.0, 1, sk);
+    // Nasal bone — tall ridge forming the bridge (pushed well forward past skull)
+    mesh::ellipsoid_tris(tris, 0.0, 1.76, -0.355, nb * 1.6, 0.044, nb * 1.4, 1, sk);
     // Dorsum — continuous bridge from nasion to tip
-    mesh::ellipsoid_tris(tris, 0.0, 1.74, -0.285, nb * 1.0, 0.030, nb * 0.8, 1, sk);
+    mesh::ellipsoid_tris(tris, 0.0, 1.74, -0.348, nb * 1.4, 0.034, nb * 1.2, 1, sk);
     // Lateral walls — defined planes flanking the bridge
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * nb * 1.2, 1.73, -0.268,
-            nb * 0.7, 0.038, nb * 0.6, 0, sk);
+        mesh::ellipsoid_tris(tris, side * nb * 1.3, 1.73, -0.330,
+            nb * 0.9, 0.042, nb * 0.8, 0, sk);
     }
-    // Nose tip — defined ball
-    mesh::ellipsoid_tris(tris, 0.0, 1.715, -0.300, ns * 0.50, 0.016, ns * 0.50, 1, darken(sk, 0.96));
+    // Nose tip — defined ball (prominent forward projection)
+    mesh::ellipsoid_tris(tris, 0.0, 1.715, -0.375, ns * 0.65, 0.022, ns * 0.65, 1, darken(sk, 0.96));
     // Alar wings — fleshy lateral flaps
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * ns * 0.70, 1.712, -0.278,
-            ns * 0.55, 0.018, ns * 0.45, 1, sk);
+        mesh::ellipsoid_tris(tris, side * ns * 0.75, 1.712, -0.345,
+            ns * 0.65, 0.024, ns * 0.55, 1, sk);
         // Alar crease
-        mesh::ellipsoid_tris(tris, side * ns * 0.80, 1.710, -0.265,
-            ns * 0.22, 0.012, ns * 0.16, 0, darken(sk, 0.88));
+        mesh::ellipsoid_tris(tris, side * ns * 0.85, 1.710, -0.328,
+            ns * 0.28, 0.014, ns * 0.22, 0, darken(sk, 0.88));
         // Wing underside
-        mesh::ellipsoid_tris(tris, side * ns * 0.50, 1.705, -0.285,
-            ns * 0.42, 0.008, ns * 0.32, 0, darken(sk, 0.88));
+        mesh::ellipsoid_tris(tris, side * ns * 0.55, 1.705, -0.358,
+            ns * 0.50, 0.010, ns * 0.40, 0, darken(sk, 0.88));
     }
     // Columella — central pillar between nostrils
-    mesh::ellipsoid_tris(tris, 0.0, 1.706, -0.292, 0.008, 0.013, 0.012, 0, darken(sk, 0.93));
+    mesh::ellipsoid_tris(tris, 0.0, 1.706, -0.362, 0.011, 0.016, 0.016, 0, darken(sk, 0.93));
     // Nostrils — dark openings
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * ns * 0.35, 1.703, -0.282,
-            ns * 0.26, 0.008, 0.010, 0, darken(sk, 0.25));
+        mesh::ellipsoid_tris(tris, side * ns * 0.38, 1.703, -0.350,
+            ns * 0.32, 0.010, 0.014, 0, darken(sk, 0.25));
     }
     // ── PHILTRUM — two visible ridges from columella to Cupid's bow ──
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.007, 1.695, -0.255,
-            0.005, 0.022, 0.008, 0, sk_sh);
+        mesh::ellipsoid_tris(tris, side * 0.008, 1.695, -0.318,
+            0.006, 0.024, 0.010, 0, sk_sh);
     }
     // Philtrum groove
-    mesh::ellipsoid_tris(tris, 0.0, 1.695, -0.257,
-        0.004, 0.020, 0.004, 0, darken(sk, 0.88));
+    mesh::ellipsoid_tris(tris, 0.0, 1.695, -0.320,
+        0.005, 0.022, 0.005, 0, darken(sk, 0.88));
 
     // ══════════════════════════════════════════════════════════════
     // MOUTH — Cupid's bow upper lip, full lower lip, vermilion borders
@@ -875,29 +1011,32 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     let lo_lip_col = if fem { 0xFFDD9999 } else { 0xFFCC9988 };
     let lf = lip_full;
 
+    // Muzzle — skin-colored base that pushes the mouth area forward from skull
+    mesh::ellipsoid_tris(tris, 0.0, 1.668, -0.280, 0.048, 0.025, 0.030, 1, sk);
+
     // Upper lip — two halves for Cupid's bow
-    mesh::ellipsoid_tris(tris, -0.013, 1.676, -0.248, 0.028, 0.006 * lf, 0.012 * lf, 0, lip_col);
-    mesh::ellipsoid_tris(tris,  0.013, 1.676, -0.248, 0.028, 0.006 * lf, 0.012 * lf, 0, lip_col);
+    mesh::ellipsoid_tris(tris, -0.014, 1.676, -0.310, 0.034, 0.008 * lf, 0.016 * lf, 0, lip_col);
+    mesh::ellipsoid_tris(tris,  0.014, 1.676, -0.310, 0.034, 0.008 * lf, 0.016 * lf, 0, lip_col);
     // Cupid's bow peak
-    mesh::ellipsoid_tris(tris, 0.0, 1.680, -0.251, 0.008, 0.004 * lf, 0.006 * lf, 0, lip_col);
+    mesh::ellipsoid_tris(tris, 0.0, 1.680, -0.285, 0.010, 0.005 * lf, 0.008 * lf, 0, lip_col);
 
     // Lower lip
-    mesh::ellipsoid_tris(tris, 0.0, 1.654, -0.245, 0.040, 0.012 * lf, 0.014 * lf, 1, lo_lip_col);
+    mesh::ellipsoid_tris(tris, 0.0, 1.654, -0.278, 0.044, 0.014 * lf, 0.018 * lf, 1, lo_lip_col);
     // Vermilion border
-    mesh::ellipsoid_tris(tris, 0.0, 1.665, -0.251, 0.042, 0.002, 0.004, 0, darken(lip_col, 0.80));
+    mesh::ellipsoid_tris(tris, 0.0, 1.665, -0.285, 0.046, 0.003, 0.005, 0, darken(lip_col, 0.80));
 
     // Mouth line
-    push_box(tris, 0.0, 1.666, -0.253, 0.036, 0.001, 0.003, darken(sk, 0.40));
+    push_box(tris, 0.0, 1.666, -0.288, 0.038, 0.001, 0.004, darken(sk, 0.40));
     // Commissures
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.035, 1.664, -0.247,
-            0.006, 0.004, 0.004, 0, darken(sk, 0.55));
+        mesh::ellipsoid_tris(tris, side * 0.038, 1.664, -0.278,
+            0.007, 0.005, 0.005, 0, darken(sk, 0.55));
     }
 
     // Nasolabial folds
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.034, 1.69, -0.250,
-            0.005, 0.025, 0.005, 0, darken(sk, 0.86));
+        mesh::ellipsoid_tris(tris, side * 0.036, 1.69, -0.282,
+            0.006, 0.028, 0.006, 0, darken(sk, 0.86));
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -975,7 +1114,61 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
             push_box(tris, side * 0.17, 1.74, -0.02, 0.015, 0.05, 0.03, hair);
             push_box(tris, side * 0.16, 1.76, 0.04, 0.02, 0.04, 0.08, hair);
         }
+    } else if !hat {
+        gen_hair_full(tris, hair, skw, skd, fh_off);
     }
+}
+
+/// Full hair for hatless NPCs — skull-hugging lofted cap covering top and back,
+/// with sideburns, back volume, and hairline fringe.
+fn gen_hair_full(tris: &mut Vec<WorldTri>, hair: u32, skw: f32, skd: f32, fh_off: f32) {
+    use std::f32::consts::PI;
+    let hd = darken(hair, 0.92);
+    let hl = darken(hair, 0.85);
+
+    // Hair cap — lofted rings covering top and back of skull
+    let hair_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+        // Hairline — starts just above brow, wraps around sides and back
+        (1.84 + fh_off, body_ring(0.0, 0.02 * skd, 0.215 * skw, 0.29 * skd, &[
+            (0.0, 0.40, -0.020),
+            (PI, 0.4, 0.012),
+        ], 32), hair),
+        // Mid-cranium — full coverage
+        (1.88 + fh_off, body_ring(0.0, 0.05 * skd, 0.225 * skw, 0.30 * skd, &[
+            (PI, 0.35, 0.020),
+        ], 32), hair),
+        (1.93 + fh_off, body_ring(0.0, 0.07 * skd, 0.225 * skw, 0.30 * skd, &[
+            (PI, 0.35, 0.025),
+        ], 32), hair),
+        // Crown
+        (1.98 + fh_off, body_ring(0.0, 0.08 * skd, 0.22 * skw, 0.29 * skd, &[
+            (PI, 0.35, 0.028),
+        ], 32), hair),
+        (2.02 + fh_off, body_ring(0.0, 0.07 * skd, 0.20 * skw, 0.27 * skd, &[
+            (PI, 0.35, 0.022),
+        ], 32), hair),
+        // Top — converging
+        (2.06 + fh_off, body_ring(0.0, 0.06 * skd, 0.17 * skw, 0.22 * skd, &[], 32), hd),
+        (2.09 + fh_off, body_ring(0.0, 0.05 * skd, 0.13 * skw, 0.17 * skd, &[], 32), hd),
+        (2.11 + fh_off, body_ring(0.0, 0.04 * skd, 0.09 * skw, 0.12 * skd, &[], 32), hd),
+        (2.13 + fh_off, body_ring(0.0, 0.03 * skd, 0.05 * skw, 0.06 * skd, &[], 32), hd),
+    ];
+    mesh::loft_y_tris(tris, &hair_rings);
+
+    // Sideburns — visible hair alongside ears
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.195 * skw, 1.76, 0.0,
+            0.025, 0.06, 0.04, 0, hd);
+        mesh::ellipsoid_tris(tris, side * 0.19 * skw, 1.72, -0.01,
+            0.022, 0.04, 0.03, 0, hd);
+    }
+
+    // Back volume — hair draping over nape
+    mesh::ellipsoid_tris(tris, 0.0, 1.78, 0.17 * skd, 0.14 * skw, 0.10, 0.08 * skd, 1, hl);
+    mesh::ellipsoid_tris(tris, 0.0, 1.70, 0.15 * skd, 0.12 * skw, 0.06, 0.06 * skd, 0, hl);
+
+    // Hairline fringe — subtle forehead boundary
+    mesh::ellipsoid_tris(tris, 0.0, 1.84 + fh_off, -0.20 * skd, 0.12 * skw, 0.010, 0.015, 0, hd);
 }
 
 /// Neck — ring-lofted with SCM muscles and larynx. Continuous head-to-neck topology.
@@ -1541,9 +1734,10 @@ fn gen_nude_arm(
     let hp = PI * 0.5;
 
     // ── JOINT POSITIONS ──
+    // F4: Longer arms — wrist lowered from 0.66→0.54, elbow from 1.00→0.96
     let shoulder = [side * props.shoulder_joint_x, 1.42, 0.0];
-    let elbow = [side * (props.shoulder_joint_x + 0.10), 1.06, fwd * 0.35];
-    let wrist = [side * (props.shoulder_joint_x + 0.06), 0.80, fwd * 0.15 - bend];
+    let elbow = [side * (props.shoulder_joint_x + 0.10), 0.96, fwd * 0.35];
+    let wrist = [side * (props.shoulder_joint_x + 0.06), 0.54, fwd * 0.15 - bend];
 
     // ── SINGLE CONTINUOUS ARM LOFT (shoulder → elbow → wrist) ──
     // Upper arm rings are wide at shoulder to overlap with torso volume.
@@ -1602,40 +1796,40 @@ fn gen_nude_arm(
             (PI + hp, 0.40, 0.028),            // inner taper
         ]),
         // Elbow — olecranon point + narrowest transition
-        (1.08, 0.055, 0.052, vec![
-            (PI, 0.20, 0.014 * m),             // olecranon — bony protrusion
+        (0.98, 0.055, 0.052, vec![
+            (PI, 0.20, 0.014 * m),             // olecranon
         ]),
-        (1.06, 0.052, 0.050, vec![
+        (0.96, 0.052, 0.050, vec![
             (PI, 0.18, 0.012 * m),             // olecranon point
-            (0.0, 0.25, -0.004),               // cubital fossa (front concavity)
+            (0.0, 0.25, -0.004),               // cubital fossa
         ]),
-        (1.04, 0.055, 0.052, vec![]),
+        (0.94, 0.055, 0.052, vec![]),
         // Forearm — widens for muscle belly, tapers, cross-section flattens toward wrist
-        (1.00, 0.058, 0.054, vec![
+        (0.88, 0.058, 0.054, vec![
             (hp - 0.3, 0.35, 0.024 * m),       // brachioradialis (outer bulge)
             (PI + hp + 0.3, 0.3, 0.018 * m),   // flexor group
             (hp + 0.3, 0.3, 0.016 * m),        // extensor group
             (PI + hp, 0.15, 0.006),            // ulnar border (bony ridge)
         ]),
-        (0.95, 0.054, 0.050, vec![
+        (0.82, 0.054, 0.050, vec![
             (hp - 0.3, 0.35, 0.022 * m),       // brachioradialis taper
             (PI + hp + 0.3, 0.3, 0.014 * m),   // flexor group
             (PI + hp, 0.12, 0.006),            // ulnar border
         ]),
-        (0.90, 0.048, 0.044, vec![
+        (0.74, 0.048, 0.044, vec![
             (hp, 0.3, 0.012 * m),              // extensor carpi
-            (PI + hp, 0.20, 0.008),            // ulnar border (more prominent)
+            (PI + hp, 0.20, 0.008),            // ulnar border
         ]),
-        (0.84, 0.044, 0.036, vec![             // flatter cross-section toward wrist
+        (0.64, 0.044, 0.036, vec![
             (PI + hp, 0.15, 0.006),            // ulnar border
         ]),
-        // Wrist — oval, flatter than circular (radius/ulna crossing)
-        (0.80, 0.038, 0.030, vec![]),
+        // Wrist (F4: lowered from 0.66 to 0.54)
+        (0.54, 0.038, 0.030, vec![]),
     ];
 
     let shoulder_y = 1.44; // top of arm loft (overlaps torso)
-    let elbow_y = 1.06;
-    let wrist_y = 0.80;
+    let elbow_y = 0.96;
+    let wrist_y = 0.54;
     let arm_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = arm_heights.iter().map(|&(ref y, rx, rz, ref bumps)| {
         // Interpolate center position along shoulder→elbow→wrist path
         // Upper arm uses cubic ease-in: arm center stays near body even longer,
@@ -1750,86 +1944,86 @@ fn gen_nude_leg(
     // ── SINGLE CONTINUOUS LEG LOFT (hip → knee → ankle) ──
     let leg_heights: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
         // Hip top — wide to overlap with torso
-        (0.92, 0.090, 0.082, vec![
+        (0.92, 0.145, 0.132, vec![
             (PI, 0.5, 0.015 * m),              // glute transition
         ]),
-        (0.88, 0.094, 0.084, vec![
-            (PI, 0.5, 0.020 * m),              // glute-ham
-            (PI + hp, 0.4, 0.016 * m),         // adductors
-        ]),
-        (0.84, 0.096, 0.086, vec![
-            (0.0, 0.4, 0.022 * m),             // quads
-            (PI, 0.5, 0.025 * m),              // hamstrings
+        (0.88, 0.152, 0.136, vec![
+            (PI, 0.5, 0.024 * m),              // glute-ham
             (PI + hp, 0.4, 0.020 * m),         // adductors
         ]),
-        (0.78, 0.098, 0.088, vec![
-            (0.0, 0.4, 0.028 * m),             // quads peak
-            (hp - 0.3, 0.35, 0.020 * m),       // VL
-            (PI, 0.5, 0.028 * m),              // hamstrings
-            (PI + hp, 0.4, 0.022 * m),         // adductors
+        (0.84, 0.156, 0.140, vec![
+            (0.0, 0.4, 0.028 * m),             // quads
+            (PI, 0.5, 0.030 * m),              // hamstrings
+            (PI + hp, 0.4, 0.024 * m),         // adductors
         ]),
-        (0.70, 0.094, 0.084, vec![
-            (0.0, 0.4, 0.030 * m),             // rectus femoris (peak)
+        (0.78, 0.158, 0.142, vec![
+            (0.0, 0.4, 0.034 * m),             // quads peak
+            (hp - 0.3, 0.35, 0.024 * m),       // VL
+            (PI, 0.5, 0.034 * m),              // hamstrings
+            (PI + hp, 0.4, 0.026 * m),         // adductors
+        ]),
+        (0.70, 0.150, 0.134, vec![
+            (0.0, 0.4, 0.036 * m),             // rectus femoris (peak)
+            (hp - 0.3, 0.35, 0.028 * m),       // vastus lateralis
+            (PI + hp + 0.3, 0.3, 0.022 * m),   // vastus medialis
+            (PI, 0.5, 0.034 * m),              // hamstrings (peak)
+            (PI + hp, 0.4, 0.024 * m),         // adductors
+        ]),
+        (0.62, 0.134, 0.122, vec![
+            (0.0, 0.4, 0.034 * m),             // rectus femoris
             (hp - 0.3, 0.35, 0.024 * m),       // vastus lateralis
-            (PI + hp + 0.3, 0.3, 0.018 * m),   // vastus medialis
-            (PI, 0.5, 0.028 * m),              // hamstrings (peak)
-            (PI + hp, 0.4, 0.020 * m),         // adductors
+            (PI + hp + 0.3, 0.3, 0.020 * m),   // vastus medialis
+            (PI, 0.5, 0.028 * m),              // hamstrings
         ]),
-        (0.62, 0.084, 0.076, vec![
-            (0.0, 0.4, 0.028 * m),             // rectus femoris
-            (hp - 0.3, 0.35, 0.020 * m),       // vastus lateralis
-            (PI + hp + 0.3, 0.3, 0.016 * m),   // vastus medialis
-            (PI, 0.5, 0.024 * m),              // hamstrings
-        ]),
-        (0.54, 0.070, 0.064, vec![
-            (0.0, 0.35, 0.022 * m),            // lower quad
-            (PI + hp + 0.3, 0.3, 0.014 * m),   // VM teardrop
+        (0.54, 0.110, 0.100, vec![
+            (0.0, 0.35, 0.026 * m),            // lower quad
+            (PI + hp + 0.3, 0.3, 0.018 * m),   // VM teardrop
         ]),
         // Knee — patella on front, popliteal fossa on back
-        (0.50, 0.058, 0.055, vec![
-            (0.0, 0.20, 0.018 * m),            // patella — oval raised form
+        (0.50, 0.088, 0.082, vec![
+            (0.0, 0.20, 0.020 * m),            // patella — oval raised form
             (PI, 0.25, -0.006 * m),            // popliteal fossa (concavity)
         ]),
-        (0.48, 0.055, 0.052, vec![
-            (0.0, 0.18, 0.016 * m),            // patella
+        (0.48, 0.084, 0.078, vec![
+            (0.0, 0.18, 0.018 * m),            // patella
             (PI, 0.20, -0.005 * m),            // popliteal fossa
-            (PI - 0.4, 0.15, 0.006 * m),       // hamstring tendon (medial)
-            (PI + 0.4, 0.15, 0.006 * m),       // hamstring tendon (lateral)
+            (PI - 0.4, 0.15, 0.008 * m),       // hamstring tendon (medial)
+            (PI + 0.4, 0.15, 0.008 * m),       // hamstring tendon (lateral)
         ]),
-        (0.46, 0.058, 0.055, vec![
-            (0.0, 0.15, 0.006),                // tibial tuberosity
+        (0.46, 0.088, 0.082, vec![
+            (0.0, 0.15, 0.007),                // tibial tuberosity
         ]),
         // Calf — gastrocnemius heart shape, tibial ridge on front
-        (0.42, 0.060, 0.056, vec![
-            (PI, 0.5, 0.020 * m),              // soleus
-            (0.0, 0.10, 0.006),                // tibial ridge (shin bone)
+        (0.42, 0.090, 0.082, vec![
+            (PI, 0.5, 0.024 * m),              // soleus
+            (0.0, 0.10, 0.007),                // tibial ridge (shin bone)
         ]),
-        (0.36, 0.064, 0.058, vec![
-            (PI - 0.3, 0.30, 0.028 * m),       // gastrocnemius medial (larger, lower)
-            (PI + 0.3, 0.30, 0.020 * m),       // gastrocnemius lateral (smaller)
-            (0.0, 0.30, 0.016 * m),            // tibialis anterior
+        (0.36, 0.094, 0.086, vec![
+            (PI - 0.3, 0.30, 0.034 * m),       // gastrocnemius medial (larger, lower)
+            (PI + 0.3, 0.30, 0.024 * m),       // gastrocnemius lateral (smaller)
+            (0.0, 0.30, 0.020 * m),            // tibialis anterior
+            (0.0, 0.08, 0.007),                // tibial ridge
+        ]),
+        (0.30, 0.088, 0.078, vec![
+            (PI - 0.3, 0.30, 0.036 * m),       // gastrocnemius medial (peak)
+            (PI + 0.3, 0.30, 0.028 * m),       // gastrocnemius lateral
+            (0.0, 0.30, 0.022 * m),            // tibialis anterior (peak)
+            (0.0, 0.08, 0.007),                // tibial ridge
+        ]),
+        (0.22, 0.070, 0.064, vec![
+            (PI, 0.4, 0.024 * m),              // soleus taper
+            (0.0, 0.25, 0.014 * m),            // tibialis anterior
             (0.0, 0.08, 0.006),                // tibial ridge
         ]),
-        (0.30, 0.060, 0.054, vec![
-            (PI - 0.3, 0.30, 0.030 * m),       // gastrocnemius medial (peak)
-            (PI + 0.3, 0.30, 0.024 * m),       // gastrocnemius lateral
-            (0.0, 0.30, 0.018 * m),            // tibialis anterior (peak)
-            (0.0, 0.08, 0.006),                // tibial ridge
-        ]),
-        (0.22, 0.048, 0.044, vec![
-            (PI, 0.4, 0.020 * m),              // soleus taper
-            (0.0, 0.25, 0.012 * m),            // tibialis anterior
-            (0.0, 0.08, 0.005),                // tibial ridge
-        ]),
-        (0.14, 0.040, 0.036, vec![
-            (PI, 0.15, 0.012),                 // Achilles tendon — visible ridge
-            (0.0, 0.08, 0.004),                // tibial ridge (fading)
+        (0.14, 0.058, 0.052, vec![
+            (PI, 0.15, 0.014),                 // Achilles tendon — visible ridge
+            (0.0, 0.08, 0.005),                // tibial ridge (fading)
         ]),
         // Ankle — malleoli (ankle bones) + Achilles
-        (0.08, 0.034, 0.032, vec![
-            (hp, 0.15, 0.006),                 // lateral malleolus
-            (PI + hp, 0.15, 0.008),            // medial malleolus (slightly larger)
-            (PI, 0.12, 0.008),                 // Achilles insertion
+        (0.08, 0.048, 0.046, vec![
+            (hp, 0.15, 0.008),                 // lateral malleolus
+            (PI + hp, 0.15, 0.010),            // medial malleolus (slightly larger)
+            (PI, 0.12, 0.010),                 // Achilles insertion
         ]),
     ];
 
@@ -1867,8 +2061,8 @@ fn gen_nude_attack_arm(tris: &mut Vec<WorldTri>, side: f32, extend: f32, skin: u
 
     let sx = props.shoulder_joint_x;
     let shoulder = [side * sx, 1.42, 0.0];
-    let elbow = [side * (sx + 0.10), 1.10, -0.15 - extend * 0.20];
-    let wrist = [side * (sx + 0.06), 0.92, -0.35 - extend * 0.35];
+    let elbow = [side * (sx + 0.10), 1.00, -0.15 - extend * 0.20];
+    let wrist = [side * (sx + 0.06), 0.66, -0.35 - extend * 0.35];
 
     // ── SINGLE CONTINUOUS ATTACK ARM LOFT ──
     let arm_heights: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
@@ -1896,23 +2090,23 @@ fn gen_nude_attack_arm(tris: &mut Vec<WorldTri>, side: f32, extend: f32, skin: u
             (0.0, 0.35, 0.016 * m), (PI, 0.4, 0.014 * m),
             (PI + hp, 0.35, 0.028),            // inner taper
         ]),
-        // Elbow — continuous through
-        (1.12, 0.048, 0.046, vec![(PI, 0.3, 0.008 * m)]),
-        (1.10, 0.046, 0.044, vec![]),
-        (1.08, 0.048, 0.046, vec![]),
+        // Elbow (F4: lowered to match new joint)
+        (1.02, 0.048, 0.046, vec![(PI, 0.3, 0.008 * m)]),
+        (1.00, 0.046, 0.044, vec![]),
+        (0.98, 0.048, 0.046, vec![]),
         // Forearm
-        (1.02, 0.052, 0.048, vec![
+        (0.88, 0.052, 0.048, vec![
             (hp - 0.3, 0.35, 0.016 * m), (PI + hp + 0.3, 0.3, 0.012 * m),
         ]),
-        (0.96, 0.044, 0.040, vec![
+        (0.76, 0.044, 0.040, vec![
             (hp - 0.3, 0.35, 0.010 * m),
         ]),
-        (0.92, 0.036, 0.034, vec![]),
+        (0.66, 0.036, 0.034, vec![]),
     ];
 
     let shoulder_y = 1.42;
-    let elbow_y = 1.10;
-    let wrist_y = 0.92;
+    let elbow_y = 1.00;
+    let wrist_y = 0.66;
     let arm_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = arm_heights.iter().map(|&(ref y, rx, rz, ref bumps)| {
         let (cx, cz) = if *y >= elbow_y {
             let t_lin = (shoulder_y - *y) / (shoulder_y - elbow_y);
@@ -1985,6 +2179,9 @@ fn gen_player_clothing(
             (y, body_ring(0.0, 0.0, rx * sf + co, rz * sf + co, &ab, n), coat)
         };
         let coat_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+            // F1: Extended coat below waist to eliminate midriff gap
+            coat_ring(0.78, 0.16, 0.14, &[(PI, 0.5, 0.04)]),
+            coat_ring(0.82, 0.15, 0.13, &[(PI, 0.5, 0.04)]),
             coat_ring(0.88, 0.14, 0.12, &[(PI, 0.5, 0.04)]),
             coat_ring(0.92, 0.18, 0.14, &[
                 (hp, 0.40, 0.05), (PI + hp, 0.40, 0.05), (PI, 0.5, 0.06),
@@ -2078,7 +2275,7 @@ fn gen_player_clothing(
             }
         }
         // Back seam
-        push_seam(tris, 0.0, 0.88, 1.40, 0.14 * sh + co + 0.005, STITCH_DARK);
+        push_seam(tris, 0.0, 0.78, 1.40, 0.14 * sh + co + 0.005, STITCH_DARK);
 
         // ── COAT TAILS — 3D lofted curtains ──
         let tail_sway = swing * 0.08;
@@ -2127,6 +2324,9 @@ fn gen_player_clothing(
             (y, body_ring(0.0, 0.0, rx * sf + vco, rz * sf + vco, &[], n), vest)
         };
         let vest_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+            // F1: Extended vest below waist to eliminate midriff gap
+            vest_ring(0.78, 0.16, 0.14),
+            vest_ring(0.82, 0.15, 0.13),
             vest_ring(0.88, 0.14, 0.12),
             vest_ring(0.92, 0.18, 0.14),
             vest_ring(1.00, 0.15, 0.13),
@@ -2163,9 +2363,11 @@ fn gen_player_clothing(
     // ── BELT SYSTEM ──
     let belt_y = 0.88;
     let belt_r = 0.18 * sh + co + 0.01;
-    mesh::cylinder_tris(tris, 0.0, belt_y, 0.0, belt_r, 0.025, 12, LEATHER_DARK);
-    mesh::cylinder_tris(tris, 0.0, belt_y + 0.013, 0.0, belt_r + 0.003, 0.003, 12, STITCH_DARK);
-    mesh::cylinder_tris(tris, 0.0, belt_y - 0.013, 0.0, belt_r + 0.003, 0.003, 12, STITCH_DARK);
+    // F8: Per-NPC belt color instead of uniform LEATHER_DARK
+    let belt_col = app.belt_col;
+    mesh::cylinder_tris(tris, 0.0, belt_y, 0.0, belt_r, 0.025, 12, belt_col);
+    mesh::cylinder_tris(tris, 0.0, belt_y + 0.013, 0.0, belt_r + 0.003, 0.003, 12, darken(belt_col, 0.7));
+    mesh::cylinder_tris(tris, 0.0, belt_y - 0.013, 0.0, belt_r + 0.003, 0.003, 12, darken(belt_col, 0.7));
     push_box(tris, 0.0, belt_y, -(belt_r + 0.005), 0.025, 0.018, 0.008, BUCKLE_BRASS);
     push_box(tris, 0.0, belt_y, -(belt_r + 0.010), 0.004, 0.014, 0.004, BUCKLE_BRASS);
     // Pouches
@@ -2209,26 +2411,26 @@ fn gen_player_clothing(
         // Inner-thigh bumps push rings past body centerline for overlap coverage
         let pco = 0.030;
         let pants_data: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
-            (0.92, 0.100, 0.095, vec![
+            (0.92, 0.130, 0.120, vec![
                 (PI + hp, 0.70, 0.085), (PI, 0.60, 0.060), (0.0, 0.60, 0.055),
             ]),
-            (0.88, 0.102, 0.097, vec![
+            (0.88, 0.132, 0.122, vec![
                 (PI + hp, 0.70, 0.080), (PI, 0.60, 0.055), (0.0, 0.60, 0.050),
             ]),
-            (0.84, 0.104, 0.097, vec![
+            (0.84, 0.134, 0.124, vec![
                 (PI + hp, 0.65, 0.065), (PI, 0.55, 0.045), (0.0, 0.55, 0.040),
             ]),
-            (0.78, 0.104, 0.097, vec![
+            (0.78, 0.134, 0.124, vec![
                 (PI + hp, 0.60, 0.050), (PI, 0.50, 0.035), (0.0, 0.50, 0.030),
             ]),
-            (0.70, 0.100, 0.093, vec![
+            (0.70, 0.128, 0.118, vec![
                 (PI + hp, 0.55, 0.030), (PI, 0.45, 0.020), (0.0, 0.45, 0.015),
             ]),
-            (0.62, 0.088, 0.082, vec![
+            (0.62, 0.112, 0.104, vec![
                 (PI + hp, 0.50, 0.015),
             ]),
-            (0.54, 0.074, 0.068, vec![]),
-            (0.48, 0.058, 0.055, vec![]),
+            (0.54, 0.092, 0.084, vec![]),
+            (0.48, 0.072, 0.066, vec![]),
         ];
         let pants_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = pants_data.iter().map(|(y, rx, rz, bumps)| {
             let cz = if *y >= knee_y {
@@ -2242,7 +2444,7 @@ fn gen_player_clothing(
         // Knee band
         let knee_pt = [lx, knee_y, knee_cz];
         mesh::cylinder_tris(tris, knee_pt[0], knee_pt[1] - 0.02, knee_pt[2],
-            (0.060 + pco) * l, 0.020, 8, darken(pants_col, 0.84));
+            (0.060 + pco) * l, 0.020, 8, darken(pants_col, 0.93));
         for ki in 0..3 {
             let kbx = knee_pt[0] + side * (0.035 + ki as f32 * 0.012) * l;
             mesh::sphere_tris(tris, kbx, knee_pt[1] - 0.02, knee_pt[2] - (0.050 + pco) * l,
@@ -2251,14 +2453,15 @@ fn gen_player_clothing(
 
         // Boot loft (knee → ankle) — same interpolation as gen_nude_leg lower half
         let bco = 0.018;
+        // F3: Boot radii increased to match thicker legs
         let boot_data: [(f32, f32, f32); 7] = [
-            (0.48, 0.057, 0.054),
-            (0.42, 0.062, 0.058),
-            (0.36, 0.066, 0.060),
-            (0.30, 0.062, 0.056),
-            (0.22, 0.050, 0.046),
-            (0.14, 0.042, 0.038),
-            (0.08, 0.036, 0.034),
+            (0.48, 0.070, 0.066),
+            (0.42, 0.076, 0.070),
+            (0.36, 0.080, 0.072),
+            (0.30, 0.074, 0.066),
+            (0.22, 0.060, 0.054),
+            (0.14, 0.050, 0.044),
+            (0.08, 0.042, 0.040),
         ];
         let boot_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = boot_data.iter().map(|&(y, rx, rz)| {
             let cz = if y >= knee_y { knee_cz }
@@ -2304,12 +2507,13 @@ fn gen_player_clothing(
 
         // Boot foot
         let ankle_pt = [lx, ankle_y, ankle_cz];
-        mesh::beveled_box_tris(tris, ankle_pt[0], ankle_pt[1] - 0.035, ankle_pt[2] - 0.04,
-            0.10 * l, 0.07, 0.15 * l, 0.015, bc);
-        push_box(tris, ankle_pt[0], ankle_pt[1] - 0.07, ankle_pt[2] - 0.04,
-            0.09 * l, 0.005, 0.14 * l, darken(bc, 0.65));
-        push_box(tris, ankle_pt[0], ankle_pt[1] - 0.05, ankle_pt[2] + 0.06 * l,
-            0.04 * l, 0.020, 0.03 * l, darken(bc, 0.75));
+        // F6: Larger boot foot (was 0.10x0.07x0.15)
+        mesh::beveled_box_tris(tris, ankle_pt[0], ankle_pt[1] - 0.045, ankle_pt[2] - 0.06,
+            0.14 * l, 0.09, 0.22 * l, 0.02, bc);
+        push_box(tris, ankle_pt[0], ankle_pt[1] - 0.09, ankle_pt[2] - 0.06,
+            0.13 * l, 0.006, 0.20 * l, darken(bc, 0.65));
+        push_box(tris, ankle_pt[0], ankle_pt[1] - 0.065, ankle_pt[2] + 0.08 * l,
+            0.06 * l, 0.025, 0.04 * l, darken(bc, 0.75));
         if app.boot_type == 0 {
             push_box(tris, ankle_pt[0], ankle_pt[1] - 0.02, ankle_pt[2] - 0.10 * l,
                 0.02, 0.015, 0.008, BUCKLE_BRASS);
@@ -2331,26 +2535,26 @@ fn gen_player_clothing(
         vec![
             ArmPose { side: -1.0,
                 shoulder: [-sx, 1.42, 0.0],
-                elbow: [-(sx + 0.10), 1.06, -0.2 * 0.35],
-                wrist: [-(sx + 0.06), 0.80, -0.2 * 0.15 - 0.3],
+                elbow: [-(sx + 0.10), 0.96, -0.2 * 0.35],
+                wrist: [-(sx + 0.06), 0.54, -0.2 * 0.15 - 0.3],
             },
             ArmPose { side: 1.0,
                 shoulder: [sx, 1.42, 0.0],
-                elbow: [sx + 0.10, 1.10, -0.15 - extend * 0.20],
-                wrist: [sx + 0.06, 0.92, -0.35 - extend * 0.35],
+                elbow: [sx + 0.10, 1.00, -0.15 - extend * 0.20],
+                wrist: [sx + 0.06, 0.66, -0.35 - extend * 0.35],
             },
         ]
     } else if carrying_item || carrying_bin {
         vec![
             ArmPose { side: -1.0,
                 shoulder: [-sx, 1.42, 0.0],
-                elbow: [-(sx + 0.10), 1.06, -0.63 * 0.35],
-                wrist: [-(sx + 0.06), 0.80, -0.63 * 0.15 - 0.30],
+                elbow: [-(sx + 0.10), 0.96, -0.63 * 0.35],
+                wrist: [-(sx + 0.06), 0.54, -0.63 * 0.15 - 0.30],
             },
             ArmPose { side: 1.0,
                 shoulder: [sx, 1.42, 0.0],
-                elbow: [sx + 0.10, 1.06, -0.63 * 0.35],
-                wrist: [sx + 0.06, 0.80, -0.63 * 0.15 - 0.30],
+                elbow: [sx + 0.10, 0.96, -0.63 * 0.35],
+                wrist: [sx + 0.06, 0.54, -0.63 * 0.15 - 0.30],
             },
         ]
     } else {
@@ -2360,13 +2564,13 @@ fn gen_player_clothing(
         vec![
             ArmPose { side: -1.0,
                 shoulder: [-sx, 1.42, 0.0],
-                elbow: [-(sx + 0.10), 1.06, l_arm_fwd * 0.35],
-                wrist: [-(sx + 0.06), 0.80, l_arm_fwd * 0.15 - bend],
+                elbow: [-(sx + 0.10), 0.96, l_arm_fwd * 0.35],
+                wrist: [-(sx + 0.06), 0.54, l_arm_fwd * 0.15 - bend],
             },
             ArmPose { side: 1.0,
                 shoulder: [sx, 1.42, 0.0],
-                elbow: [sx + 0.10, 1.06, r_arm_fwd * 0.35],
-                wrist: [sx + 0.06, 0.80, r_arm_fwd * 0.15 - bend],
+                elbow: [sx + 0.10, 0.96, r_arm_fwd * 0.35],
+                wrist: [sx + 0.06, 0.54, r_arm_fwd * 0.15 - bend],
             },
         ]
     };
@@ -2420,7 +2624,14 @@ fn gen_player_clothing(
                 (PI + hp, 0.60, 0.065),
                 (0.0, 0.40, 0.025), (PI, 0.40, 0.025),
             ]),
-            (elbow_y, 0.056, vec![]),
+            (1.10, 0.070, vec![
+                (PI + hp, 0.55, 0.045),
+                (0.0, 0.35, 0.015), (PI, 0.35, 0.015),
+            ]),
+            (elbow_y, 0.060, vec![]),
+            // F2: Sleeve extends below elbow to cover upper forearm
+            (elbow_y - 0.06, 0.058, vec![]),
+            (elbow_y - 0.12, 0.054, vec![]),
         ];
         let sleeve_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = sleeve_data.iter().map(|(y, rx, bumps)| {
             let (cx, cz) = if *y >= elbow_y {
@@ -2429,7 +2640,10 @@ fn gen_player_clothing(
                 (shoulder[0] * (1.0 - t) + elbow[0] * t,
                  shoulder[2] * (1.0 - t) + elbow[2] * t)
             } else {
-                (elbow[0], elbow[2])
+                // Below elbow: interpolate toward wrist
+                let t = (elbow_y - *y) / (elbow_y - wrist[1]);
+                (elbow[0] * (1.0 - t) + wrist[0] * t,
+                 elbow[2] * (1.0 - t) + wrist[2] * t)
             };
             let r = (*rx + aco) * a;
             (*y, limb_ring(cx, cz, r, r, arm.side, bumps, 10), sleeve_col)
@@ -2478,18 +2692,28 @@ fn gen_player_clothing(
                  elbow[1] * (1.0 - t) + wrist[1] * t,
                  elbow[2] * (1.0 - t) + wrist[2] * t]
             };
-            let brs = 0.38;
-            let bre = 0.68;
+            let brs = 0.36;
+            let bre = 0.72;
             mesh::tapered_cylinder_between(tris, lerp(brs), lerp(bre),
-                (0.052 + aco) * a, (0.046 + aco) * a, 8, LEATHER_DARK);
+                (0.054 + aco) * a, (0.048 + aco) * a, 12, 0xFF4A3828);
             let brs_p = lerp(brs);
             let bre_p = lerp(bre);
-            mesh::cylinder_tris(tris, brs_p[0], brs_p[1], brs_p[2], (0.054 + aco) * a, 0.007, 8, LEATHER_DARK);
-            mesh::cylinder_tris(tris, bre_p[0], bre_p[1], bre_p[2], (0.048 + aco) * a, 0.007, 8, LEATHER_DARK);
+            mesh::cylinder_tris(tris, brs_p[0], brs_p[1], brs_p[2], (0.058 + aco) * a, 0.006, 12, darken(0xFF4A3828, 0.82));
+            mesh::cylinder_tris(tris, bre_p[0], bre_p[1], bre_p[2], (0.052 + aco) * a, 0.006, 12, darken(0xFF4A3828, 0.82));
             let mb_p = lerp((brs + bre) * 0.5);
-            mesh::cylinder_tris(tris, mb_p[0], mb_p[1], mb_p[2], (0.054 + aco) * a, 0.005, 8, darken(LEATHER_DARK, 0.85));
-            push_box(tris, mb_p[0] + arm.side * (0.054 + aco) * a, mb_p[1], mb_p[2],
-                0.007, 0.008, 0.005, BUCKLE_BRASS);
+            mesh::cylinder_tris(tris, mb_p[0], mb_p[1], mb_p[2], (0.056 + aco) * a, 0.003, 12, 0xFF887755);
+            let st2_p = lerp(0.62);
+            mesh::cylinder_tris(tris, st2_p[0], st2_p[1], st2_p[2], (0.056 + aco) * a, 0.003, 12, 0xFF887755);
+            let strap_r = (0.058 + aco) * a;
+            push_box(tris, mb_p[0] + arm.side * strap_r, mb_p[1], mb_p[2], 0.005, 0.014, 0.008, darken(0xFF4A3828, 1.15));
+            push_box(tris, mb_p[0] + arm.side * (strap_r + 0.003), mb_p[1], mb_p[2], 0.008, 0.010, 0.006, BUCKLE_BRASS);
+            push_box(tris, mb_p[0] + arm.side * (strap_r + 0.005), mb_p[1], mb_p[2], 0.002, 0.006, 0.002, darken(BUCKLE_BRASS, 0.7));
+            for li in 0..4 {
+                let lt = brs + (bre - brs) * (li as f32 + 0.5) / 4.0;
+                let lp = lerp(lt);
+                let rivet_x = lp[0] - arm.side * (0.050 + aco) * a;
+                mesh::sphere_tris(tris, rivet_x, lp[1], lp[2], 0.004, 0, darken(BUCKLE_BRASS, 0.85));
+            }
         }
     }
 }
@@ -2519,7 +2743,7 @@ fn gen_nude_player_body(
             hat_type: 0, hat_col: 0, coat_col: 0, vest_col: 0,
             has_coat: false, has_cape: false, has_sash: false,
             has_cross_strap: false, has_bracers: false,
-            boot_type: 0, boot_col: 0, sash_col: 0,
+            boot_type: 0, boot_col: 0, sash_col: 0, belt_col: 0,
             face_age: 0, is_female, face,
         }
     };
@@ -2539,16 +2763,16 @@ fn gen_nude_player_body(
             let knee_s = [hip_x, 0.46, -0.42];
             let ankle_s = [hip_x, 0.06, -0.44];
             let l = props.leg_rx_scale;
-            mesh::tapered_cylinder_between(tris, hip_s, knee_s, 0.14 * l, 0.090 * l, 10, skin);
-            mesh::sphere_tris(tris, knee_s[0], knee_s[1], knee_s[2], 0.085 * l, 0, skin);
-            mesh::tapered_cylinder_between(tris, knee_s, ankle_s, 0.085 * l, 0.052 * l, 8, skin);
+            mesh::tapered_cylinder_between(tris, hip_s, knee_s, 0.20 * l, 0.12 * l, 10, skin);
+            mesh::sphere_tris(tris, knee_s[0], knee_s[1], knee_s[2], 0.11 * l, 0, skin);
+            mesh::tapered_cylinder_between(tris, knee_s, ankle_s, 0.11 * l, 0.070 * l, 8, skin);
             gen_bare_foot(tris, ankle_s, side, skin);
         }
         for &side in &[-1.0f32, 1.0] {
             let sh_x = side * props.shoulder_joint_x;
             let shoulder = [sh_x, 0.98, 0.0];
-            let elbow = [side * (props.shoulder_joint_x + 0.06), 0.64, -0.15];
-            let wrist = [sh_x, 0.48, -0.30];
+            let elbow = [side * (props.shoulder_joint_x + 0.06), 0.52, -0.15];
+            let wrist = [sh_x, 0.24, -0.30];
             let aa = props.arm_rx_scale;
             mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2], 0.12 * aa, 0.10, 0.10 * aa, 1, skin);
             mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.10 * aa, 0.070 * aa, 8, skin);
@@ -2718,7 +2942,7 @@ pub fn gen_head_standalone(tris: &mut Vec<WorldTri>, face: &FaceSliders, skin: u
         hat_type: 0, hat_col: 0, coat_col: 0, vest_col: 0,
         has_coat: false, has_cape: false, has_sash: false,
         has_cross_strap: false, has_bracers: false,
-        boot_type: 0, boot_col: 0, sash_col: 0,
+        boot_type: 0, boot_col: 0, sash_col: 0, belt_col: 0,
         face_age: 0, is_female, face: face.clone(),
     };
     let head_base = tris.len();
@@ -2746,15 +2970,54 @@ pub fn gen_head_standalone(tris: &mut Vec<WorldTri>, face: &FaceSliders, skin: u
 pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bool) {
     let base = tris.len();
     gen_rs5_body(tris, v.color, show_interior);
+    let s = v.scale;
+    let ch = ((v.color >> 4) ^ (v.color >> 12) ^ (v.color >> 20)) & 0xFF;
+    let sx = s * (1.0 + (ch as f32 - 128.0) * 0.0008);
+    let sz = s * (1.0 - (ch as f32 - 128.0) * 0.0005);
     let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 30.0), v.rot_y);
     for tri in &mut tris[base..] {
         for vert in &mut tri.v {
-            let rv = rot3x3_apply(&rot, *vert);
+            // Apply per-vehicle non-uniform scale, then rotate + translate
+            let sv = [vert[0] * sx, vert[1] * s, vert[2] * sz];
+            let rv = rot3x3_apply(&rot, sv);
             vert[0] = rv[0] + v.x;
             vert[1] = rv[1] + v.y;
             vert[2] = rv[2] + v.z;
         }
         tri.normal = rot3x3_apply(&rot, tri.normal);
+    }
+    // H5: Projected ground shadow — approximate vehicle silhouette
+    gen_vehicle_shadow(v, s, tris);
+}
+fn gen_vehicle_shadow(v: &Vehicle, s: f32, tris: &mut Vec<WorldTri>) {
+    let sy = v.y + 0.02; let sc: u32 = 0xFF0A0A0A;
+    let (snr, csr) = v.rot_y.sin_cos();
+    let p = |lx: f32, lz: f32| -> [f32; 3] {
+        [v.x + lx*s*csr + lz*s*snr, sy, v.z - lx*s*snr + lz*s*csr]
+    };
+    // Vehicle silhouette outline — tapered nose/tail, wide body, wheel arches
+    let outline: [(f32, f32); 16] = [
+        ( 0.00, -2.30), ( 0.60, -2.20), ( 0.80, -1.80), ( 0.93, -1.20),
+        ( 0.78, -1.41), ( 0.93, -1.60), // front wheel arch notch
+        ( 0.93,  1.20), ( 0.78,  1.41), ( 0.93,  1.60), // rear wheel arch notch
+        ( 0.90,  1.80), ( 0.84,  2.20), ( 0.00,  2.30),
+        (-0.84,  2.20), (-0.90,  1.80), (-0.93,  1.20), (-0.93, -1.20),
+    ];
+    let center = p(0.0, 0.0);
+    let n = outline.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (ax, az) = (outline[i].0, outline[i].1);
+        let (bx, bz) = (outline[j].0, outline[j].1);
+        let a = p(ax, az);
+        let b = p(bx, bz);
+        // Pick winding so fan tri has +Y normal (handles concave notch segments)
+        let cross_y = bz * ax - bx * az; // 2D cross from center(0,0)
+        if cross_y >= 0.0 {
+            tris.push(WorldTri { v: [center, b, a], normal: [0.0, 1.0, 0.0], color: sc });
+        } else {
+            tris.push(WorldTri { v: [center, a, b], normal: [0.0, 1.0, 0.0], color: sc });
+        }
     }
 }
 
@@ -2810,15 +3073,15 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
     // Nose volume fill (inner box for solidity)
     mesh::beveled_box_tris(tris, 0.0, 0.42, -1.88, 1.66, 0.50, 0.86, 0.04, c);
 
-    // Right side panel (visible from right — tapers inward + downward)
+    // Right side panel (visible from right — tapers inward + downward, CCW from +X)
     mesh::push_quad(tris,
-        [fb_xh, fb_yt, fb_z], [fn_xh, fn_yt, fn_z],
-        [fn_xh, fn_yb, fn_z], [fb_xh, fb_yb, fb_z],
+        [fb_xh, fb_yb, fb_z], [fn_xh, fn_yb, fn_z],
+        [fn_xh, fn_yt, fn_z], [fb_xh, fb_yt, fb_z],
         c);
-    // Left side panel
+    // Left side panel (CCW from -X)
     mesh::push_quad(tris,
-        [-fb_xh, fb_yb, fb_z], [-fn_xh, fn_yb, fn_z],
-        [-fn_xh, fn_yt, fn_z], [-fb_xh, fb_yt, fb_z],
+        [-fb_xh, fb_yt, fb_z], [-fn_xh, fn_yt, fn_z],
+        [-fn_xh, fn_yb, fn_z], [-fb_xh, fb_yb, fb_z],
         c);
     // Top panel (hood slope — visible from above and slightly from front)
     mesh::push_quad(tris,
@@ -2830,10 +3093,10 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
         [fb_xh, fb_yb, fb_z], [-fb_xh, fb_yb, fb_z],
         [-fn_xh, fn_yb, fn_z], [fn_xh, fn_yb, fn_z],
         undercar);
-    // Front face (nose face)
+    // Front face (nose face, CCW from -Z)
     mesh::push_quad(tris,
-        [-fn_xh, fn_yb, fn_z], [fn_xh, fn_yb, fn_z],
-        [fn_xh, fn_yt, fn_z], [-fn_xh, fn_yt, fn_z],
+        [-fn_xh, fn_yt, fn_z], [fn_xh, fn_yt, fn_z],
+        [fn_xh, fn_yb, fn_z], [-fn_xh, fn_yb, fn_z],
         c_dk);
 
     // ── REAR TAIL (tapered with quad side/top panels) ──
@@ -2849,15 +3112,15 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
     // Rear volume fill
     mesh::beveled_box_tris(tris, 0.0, 0.42, 1.88, 1.72, 0.50, 0.86, 0.04, c);
 
-    // Right side panel
+    // Right side panel (CCW from +X)
     mesh::push_quad(tris,
-        [rb_xh, rb_yb, rb_z], [rn_xh, rn_yb, rn_z],
-        [rn_xh, rn_yt, rn_z], [rb_xh, rb_yt, rb_z],
+        [rb_xh, rb_yt, rb_z], [rn_xh, rn_yt, rn_z],
+        [rn_xh, rn_yb, rn_z], [rb_xh, rb_yb, rb_z],
         c);
-    // Left side panel
+    // Left side panel (CCW from -X)
     mesh::push_quad(tris,
-        [-rb_xh, rb_yt, rb_z], [-rn_xh, rn_yt, rn_z],
-        [-rn_xh, rn_yb, rn_z], [-rb_xh, rb_yb, rb_z],
+        [-rb_xh, rb_yb, rb_z], [-rn_xh, rn_yb, rn_z],
+        [-rn_xh, rn_yt, rn_z], [-rb_xh, rb_yt, rb_z],
         c);
     // Top panel (rear deck)
     mesh::push_quad(tris,
@@ -2944,16 +3207,19 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
         mesh::beveled_box_tris(tris, hx, 0.66, -2.20, 0.38, 0.12, 0.26, 0.02, 0xFF333338);
         // Headlight wraps to side
         push_box(tris, side * 0.92, 0.66, -2.10, 0.02, 0.10, 0.14, 0xFF333338);
-        // LED DRL strip (upper arc — RS5 signature)
-        push_box(tris, hx, 0.73, -2.26, 0.32, 0.015, 0.08, 0x00FFEE88);
-        // Projector lens (main beam)
-        mesh::sphere_tris(tris, hx - side * 0.04, 0.66, -2.28, 0.06, 0, 0x00FFEE88);
-        // Secondary lens (inner)
-        mesh::sphere_tris(tris, hx + side * 0.08, 0.66, -2.26, 0.04, 0, 0x00FFDD66);
-        // Chrome inner reflector
+        // Chrome inner reflector (behind emissive elements)
         push_box(tris, hx, 0.66, -2.22, 0.30, 0.06, 0.04, chrome_dk);
-        // Turn signal (lower outer corner, emissive amber)
-        push_box(tris, hx + side * 0.14, 0.60, -2.24, 0.06, 0.025, 0.06, 0x00FFAA22);
+        // LED DRL strip (upper arc — RS5 signature, proud of housing face)
+        push_box(tris, hx, 0.73, -2.34, 0.32, 0.020, 0.04, 0x00FFEE88);
+        // Projector lens (main beam, proud of housing)
+        mesh::sphere_tris(tris, hx - side * 0.04, 0.66, -2.34, 0.07, 0, 0x00FFEE88);
+        // Headlight glow (forward-facing)
+        mesh::glow_directional(tris, hx - side * 0.04, 0.66, -2.36,
+            [0.0, 0.0, -1.0], 0.10, 0.50, 8, 0x00FFEE88);
+        // Secondary lens (inner, forward of reflector)
+        mesh::sphere_tris(tris, hx + side * 0.08, 0.66, -2.34, 0.05, 0, 0x00FFDD66);
+        // Turn signal (lower outer corner, emissive amber — proud of bumper)
+        push_box(tris, hx + side * 0.14, 0.60, -2.34, 0.07, 0.030, 0.03, 0x00FFAA22);
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -2961,14 +3227,20 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
     // ══════════════════════════════════════════════════════════════
 
     // Cross-sections: (z, roof_y, belt_y, roof_half_x, belt_half_x)
-    let gh: [(f32,f32,f32,f32,f32); 7] = [
-        (-0.88, 0.92, 0.86, 0.72, 0.76),  // cowl (windshield base)
-        (-0.15, 1.37, 0.86, 0.70, 0.76),  // top of windshield / front roof
-        ( 0.30, 1.39, 0.86, 0.70, 0.76),  // roof peak
-        ( 0.60, 1.38, 0.86, 0.70, 0.76),  // roof plateau end
-        ( 1.00, 1.24, 0.86, 0.69, 0.75),  // sportback upper
-        ( 1.40, 1.04, 0.85, 0.67, 0.74),  // sportback mid
-        ( 1.80, 0.88, 0.84, 0.66, 0.72),  // sportback end
+    let gh: [(f32,f32,f32,f32,f32); 13] = [
+        (-0.88, 0.92, 0.86, 0.72, 0.76),   // cowl (windshield base)
+        (-0.52, 1.16, 0.86, 0.71, 0.76),   // windshield mid
+        (-0.15, 1.37, 0.86, 0.70, 0.76),   // top of windshield / front roof
+        ( 0.08, 1.385, 0.86, 0.70, 0.76),  // roof transition
+        ( 0.30, 1.39, 0.86, 0.70, 0.76),   // roof peak
+        ( 0.45, 1.388, 0.86, 0.70, 0.76),  // roof plateau mid
+        ( 0.60, 1.38, 0.86, 0.70, 0.76),   // roof plateau end
+        ( 0.80, 1.31, 0.86, 0.695, 0.755), // sportback start
+        ( 1.00, 1.24, 0.86, 0.69, 0.75),   // sportback upper
+        ( 1.20, 1.14, 0.855, 0.68, 0.745), // sportback mid-upper
+        ( 1.40, 1.04, 0.85, 0.67, 0.74),   // sportback mid
+        ( 1.60, 0.96, 0.845, 0.665, 0.73), // sportback mid-lower
+        ( 1.80, 0.88, 0.84, 0.66, 0.72),   // sportback end
     ];
 
     // Loft greenhouse shell between cross-sections
@@ -3109,9 +3381,13 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
     //  WHEEL WELLS + WHEELS
     // ══════════════════════════════════════════════════════════════
 
-    // Wheel arch cut-outs (dark recesses)
-    for &(awx, awz) in &[(-0.90f32, fwz), (0.90, fwz), (-0.90, rwz), (0.90, rwz)] {
-        push_box(tris, awx, wr, awz, 0.12, wr + 0.04, 0.50, undercar);
+    // Wheel arch inner liners (thin dark panels behind wheels, inboard of tire)
+    // Positioned at the inboard edge so they don't obscure the tire/rim from outside
+    for &(side, awz) in &[(-1.0f32, fwz), (1.0, fwz), (-1.0, rwz), (1.0, rwz)] {
+        let liner_x = side * (wtrk - ww * 0.5 - 0.01); // just inboard of tire inner face
+        push_box(tris, liner_x, wr, awz, 0.02, wr + 0.02, wr + 0.08, undercar);
+        // Top arch surface (inside fender, above wheel)
+        push_box(tris, side * 0.88, wr * 2.0 + 0.04, awz, 0.10, 0.02, wr + 0.08, undercar);
     }
 
     // 20" split 5-spoke alloy wheels
@@ -3159,14 +3435,18 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
     for &side in &[-1.0f32, 1.0] {
         // Outer tail light housing (wraps to side)
         mesh::beveled_box_tris(tris, side * 0.64, 0.74, 2.26, 0.34, 0.10, 0.06, 0.01, 0xFF331111);
-        // LED strip
-        push_box(tris, side * 0.64, 0.74, 2.30, 0.30, 0.030, 0.008, 0x00FF2222);
-        // Inner tail light
+        // Inner tail light housing
         push_box(tris, side * 0.30, 0.74, 2.28, 0.18, 0.07, 0.04, 0xFF331111);
-        push_box(tris, side * 0.30, 0.74, 2.30, 0.14, 0.020, 0.008, 0x00FF2222);
+        // LED strip (proud of housing, visible from rear)
+        push_box(tris, side * 0.64, 0.74, 2.33, 0.30, 0.035, 0.01, 0x00FF2222);
+        // Tail light glow (rear-facing)
+        mesh::glow_directional(tris, side * 0.64, 0.74, 2.34,
+            [0.0, 0.0, 1.0], 0.08, 0.40, 8, 0x00FF2222);
+        // Inner tail light LED (proud of housing)
+        push_box(tris, side * 0.30, 0.74, 2.33, 0.14, 0.025, 0.01, 0x00FF2222);
     }
-    // Connected light bar across full width
-    push_box(tris, 0.0, 0.74, 2.30, 0.84, 0.014, 0.008, 0x00FF2222);
+    // Connected light bar across full width (proud of housing)
+    push_box(tris, 0.0, 0.74, 2.33, 0.84, 0.018, 0.01, 0x00FF2222);
     // Reverse lights
     push_box(tris, -0.34, 0.67, 2.28, 0.08, 0.028, 0.02, 0xFFDDDDDD);
     push_box(tris, 0.34, 0.67, 2.28, 0.08, 0.028, 0.02, 0xFFDDDDDD);
@@ -3566,7 +3846,7 @@ pub fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
     let color = match item.kind {
         ItemKind::Health => 0xFFFF3333,
         ItemKind::Money => 0xFFFFDD33,
-        ItemKind::Stamina => 0xFF33FF33,
+        ItemKind::Stamina => 0xFFFFFF33, // bright yellow — high contrast against green terrain
         ItemKind::Food => 0xFFDD8833,
         ItemKind::Water => 0xFF3388FF,
     };
@@ -3620,7 +3900,30 @@ pub fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
             let profile: [[f32;2]; 5] = [
                 [0.0, -0.2], [0.1, -0.18], [0.1, 0.1], [0.05, 0.18], [0.0, 0.2],
             ];
-            mesh::lathe_tris(tris, 0.0, 0.0, 0.0, &profile, 5, color);
+            mesh::lathe_tris(tris, 0.0, 0.0, 0.0, &profile, 6, color);
+            let (sin_s, cos_s) = item.spin_phase.sin_cos();
+            for tri in &mut tris[base..] {
+                for v in &mut tri.v {
+                    let rx = v[0] * cos_s + v[2] * sin_s;
+                    let rz = -v[0] * sin_s + v[2] * cos_s;
+                    v[0] = rx + item.x;
+                    v[1] += y;
+                    v[2] = rz + item.z;
+                }
+                let nx = tri.normal[0] * cos_s + tri.normal[2] * sin_s;
+                let nz = -tri.normal[0] * sin_s + tri.normal[2] * cos_s;
+                tri.normal[0] = nx;
+                tri.normal[2] = nz;
+            }
+        }
+        ItemKind::Food => {
+            // Apple — sphere body + small brown stem on top
+            let base = tris.len();
+            mesh::sphere_tris(tris, 0.0, 0.0, 0.0, 0.18, 2, color);
+            // Stem — thin brown cylinder poking out the top
+            mesh::cylinder_tris(tris, 0.0, 0.18, 0.0, 0.02, 0.08, 4, 0xFF664422);
+            // Small green leaf at stem base
+            mesh::box_tris(tris, 0.04, 0.19, 0.0, 0.06, 0.02, 0.03, 0xFF44AA44);
             let (sin_s, cos_s) = item.spin_phase.sin_cos();
             for tri in &mut tris[base..] {
                 for v in &mut tri.v {
@@ -3637,8 +3940,8 @@ pub fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
             }
         }
         _ => {
-            // Food, Stamina — sphere
-            mesh::sphere_tris(tris, item.x, y, item.z, 0.2, 1, color);
+            // Stamina — smooth sphere (subdivision 2 for reduced faceting)
+            mesh::sphere_tris(tris, item.x, y, item.z, 0.2, 2, color);
         }
     }
 }
@@ -3730,19 +4033,19 @@ pub fn gen_npc_mesh_mid(npc: &Npc, tris: &mut Vec<WorldTri>) {
     // Head — small sphere (lowered to reduce gap)
     mesh::sphere_tris(tris, 0.0, 1.52, 0.0, 0.14, 0, app.skin);
     // Neck — short cylinder connecting torso to head
-    mesh::cylinder_tris(tris, 0.0, 1.30, 0.0, 0.06, 0.30, 4, app.skin);
+    mesh::cylinder_tris(tris, 0.0, 1.30, 0.0, 0.08, 0.30, 4, app.skin);
     // Torso — tapered cylinder (shirt/coat color)
-    mesh::tapered_cylinder_tris(tris, 0.0, 0.85, 0.0, 0.22, 0.16, 0.70, 5, arm_col);
+    mesh::tapered_cylinder_tris(tris, 0.0, 0.80, 0.0, 0.22, 0.16, 0.80, 5, arm_col);
     // Arms — two thin cylinders
     let swing = npc.walk_phase.sin() * 0.2;
-    mesh::cylinder_tris(tris, -0.24, 1.10, swing * 0.1, 0.05, 0.45, 4, arm_col);
-    mesh::cylinder_tris(tris,  0.24, 1.10, -swing * 0.1, 0.05, 0.45, 4, arm_col);
-    // Legs — two cylinders with walk animation
-    mesh::cylinder_tris(tris, -0.09, 0.30, -swing * 0.15, 0.06, 0.45, 4, npc.pants_color);
-    mesh::cylinder_tris(tris,  0.09, 0.30,  swing * 0.15, 0.06, 0.45, 4, npc.pants_color);
-    // Boots
-    push_box(tris, -0.09, 0.04, -swing * 0.15, 0.05, 0.05, 0.08, BOOT_BROWN);
-    push_box(tris,  0.09, 0.04,  swing * 0.15, 0.05, 0.05, 0.08, BOOT_BROWN);
+    mesh::cylinder_tris(tris, -0.24, 1.00, swing * 0.1, 0.06, 0.55, 4, arm_col);
+    mesh::cylinder_tris(tris,  0.24, 1.00, -swing * 0.1, 0.06, 0.55, 4, arm_col);
+    // Legs (F3: thicker)
+    mesh::cylinder_tris(tris, -0.09, 0.30, -swing * 0.15, 0.08, 0.45, 4, npc.pants_color);
+    mesh::cylinder_tris(tris,  0.09, 0.30,  swing * 0.15, 0.08, 0.45, 4, npc.pants_color);
+    // Boots (F6: larger)
+    push_box(tris, -0.09, 0.04, -swing * 0.15, 0.07, 0.06, 0.11, app.boot_col);
+    push_box(tris,  0.09, 0.04,  swing * 0.15, 0.07, 0.06, 0.11, app.boot_col);
 
     // Apply body stretch + world transform
     let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 25.0), npc.rot_y);
@@ -3895,7 +4198,7 @@ pub fn generate_dynamic_gpu_vertices(
         gen_player_mesh(player, scratch);
     }
     // Convert to GPU format (raw material colors — GPU shader does lighting)
-    out.reserve(scratch.len() * 3 + 16 * 6 * 3); // +sky dome
+    out.reserve(scratch.len() * 3 + 4000); // +sky dome, clouds, sun/moon glow, stars
     for tri in scratch.iter() {
         for i in 0..3 {
             out.push(GpuVertex {
@@ -3911,10 +4214,11 @@ pub fn generate_dynamic_gpu_vertices(
 }
 
 /// Generate sky dome hemisphere as GPU vertices (emissive, no lighting).
-/// Creates a gradient from horizon color (base) to zenith (top).
+/// Smooth gradient from horizon haze through sky color to deep zenith,
+/// with atmospheric clouds, sun/moon glow halos, and proper zenith cap.
 fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
-    const SEGS: usize = 16;   // azimuthal segments
-    const RINGS: usize = 6;   // altitude rings (0=horizon, RINGS=zenith)
+    const SEGS: usize = 24;   // azimuthal segments (smooth horizon)
+    const RINGS: usize = 16;  // altitude rings — smooth gradient
     const RADIUS: f32 = 250.0;
 
     let tc = time_colors(hour);
@@ -3930,6 +4234,11 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
     let zg = hg * 0.35;
     let zb = (hb * 0.7 + 30.0).min(255.0); // keep some blue
 
+    // Horizon haze: warm, slightly brighter band for atmospheric scattering
+    let haze_r = (hr * 1.15 + 15.0).min(255.0);
+    let haze_g = (hg * 1.05 + 8.0).min(255.0);
+    let haze_b = (hb * 0.90 + 5.0).min(255.0);
+
     // Pack color for emissive vertex (alpha=0), compensated for shader boost
     let pack = |r: f32, g: f32, b: f32| -> u32 {
         let cr = (r / boost).min(255.0).max(0.0) as u32;
@@ -3938,10 +4247,9 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
         (cr << 16) | (cg << 8) | cb  // alpha=0x00 (emissive)
     };
 
-    let ring_color = |ring: usize| -> u32 {
-        let t = ring as f32 / RINGS as f32;
-        let t2 = t * t; // ease-in: more horizon color near base
-        pack(hr + (zr - hr) * t2, hg + (zg - hg) * t2, hb + (zb - hb) * t2)
+    let color_at = |t: f32| -> u32 {
+        if t < 0.15 { let ht = (t / 0.15) * (t / 0.15); pack(haze_r + (hr - haze_r) * ht, haze_g + (hg - haze_g) * ht, haze_b + (hb - haze_b) * ht) }
+        else { let st = (t - 0.15) / 0.85; let st2 = st * st; pack(hr + (zr - hr) * st2, hg + (zg - hg) * st2, hb + (zb - hb) * st2) }
     };
 
     // Vertex positions on hemisphere
@@ -3964,31 +4272,41 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
         [-az.cos() * cos_alt, -alt.sin(), -az.sin() * cos_alt]
     };
 
-    // Generate quads between rings
-    for ring in 0..RINGS {
-        let c0 = ring_color(ring);
-        let c1 = ring_color(ring + 1);
+    // Generate quads between rings 0..(RINGS-1); zenith capped separately (E4 fix)
+    for ring in 0..(RINGS - 1) {
+        let c0 = color_at(ring as f32 / RINGS as f32);
+        let c1 = color_at((ring + 1) as f32 / RINGS as f32);
         for seg in 0..SEGS {
             let nseg = (seg + 1) % SEGS;
             let p00 = pos(ring, seg);     let n00 = norm(ring, seg);
             let p10 = pos(ring, nseg);    let n10 = norm(ring, nseg);
             let p01 = pos(ring + 1, seg); let n01 = norm(ring + 1, seg);
             let p11 = pos(ring + 1, nseg); let n11 = norm(ring + 1, nseg);
-
-            // Tri 1: p00, p10, p11
             out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
             out.push(GpuVertex { pos: p10, color_packed: c0, normal: n10 });
             out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
-            // Tri 2: p00, p11, p01
             out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
             out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
             out.push(GpuVertex { pos: p01, color_packed: c1, normal: n01 });
         }
     }
+    // Zenith cap: triangle fan — avoids degenerate near-zero quads at pole (E4)
+    {
+        let zenith_pos: Vec3 = [eye[0], eye[1] + RADIUS, eye[2]];
+        let zenith_norm: Vec3 = [0.0, -1.0, 0.0];
+        let zenith_color = color_at(1.0);
+        let rim_color = color_at((RINGS - 1) as f32 / RINGS as f32);
+        for seg in 0..SEGS {
+            let nseg = (seg + 1) % SEGS;
+            out.push(GpuVertex { pos: pos(RINGS - 1, seg), color_packed: rim_color, normal: norm(RINGS - 1, seg) });
+            out.push(GpuVertex { pos: pos(RINGS - 1, nseg), color_packed: rim_color, normal: norm(RINGS - 1, nseg) });
+            out.push(GpuVertex { pos: zenith_pos, color_packed: zenith_color, normal: zenith_norm });
+        }
+    }
 
     // Clouds — clusters of overlapping puffs on the sky hemisphere
     const CLOUD_RADIUS: f32 = 210.0;
-    const NUM_CLOUDS: u32 = 10;
+    const NUM_CLOUDS: u32 = 14;
 
     // Cloud base color by time of day
     let (cloud_r, cloud_g, cloud_b) = if tc.sun_strength > 0.5 {
@@ -4007,7 +4325,7 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
         if !clouds_visible { break; }
         let ch = ci.wrapping_mul(2654435761);
         let az = (ci as f32 / NUM_CLOUDS as f32) * std::f32::consts::TAU + (ch % 100) as f32 * 0.01;
-        let alt_frac = 0.40 + (ch % 30) as f32 * 0.008;
+        let alt_frac = 0.30 + (ch % 40) as f32 * 0.008;
         let alt = alt_frac * std::f32::consts::FRAC_PI_2;
         let cos_alt = alt.cos();
 
@@ -4020,24 +4338,22 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
         let rz = az.cos();
         let n = [-az.cos() * cos_alt, -alt.sin(), -az.sin() * cos_alt];
 
-        // 3-5 puffs per cloud, overlapping at different offsets
-        let num_puffs = 3 + (ch % 3) as i32;
+        // 4-7 puffs per cloud for fuller shapes
+        let num_puffs = 4 + (ch % 4) as i32;
         for pi in 0..num_puffs {
             let ph = ch.wrapping_add((pi as u32).wrapping_mul(1013904223));
-            // Offset along right axis and slight vertical offset
-            let off_r = ((ph % 40) as f32 - 20.0) * 0.6;
-            let off_y = ((ph >> 4) % 12) as f32 * 0.3 - 1.5;
+            let off_r = ((ph % 50) as f32 - 25.0) * 0.6;
+            let off_y = ((ph >> 4) % 16) as f32 * 0.3 - 2.0;
             let px = base_x + rx * off_r;
             let py = base_y + off_y;
             let pz = base_z + rz * off_r;
 
             // Puff size — center puffs larger, edges smaller
             let size_t = 1.0 - (pi as f32 / num_puffs as f32 - 0.5).abs() * 1.5;
-            let pw = (12.0 + (ph % 15) as f32 * 1.0) * size_t.max(0.5);
-            let phh = (6.0 + (ph % 8) as f32 * 0.8) * size_t.max(0.6);
+            let pw = (14.0 + (ph % 18) as f32 * 1.0) * size_t.max(0.5);
+            let phh = (7.0 + (ph % 10) as f32 * 0.8) * size_t.max(0.6);
 
-            // Per-puff color variation (brighter tops, dimmer undersides)
-            let bright = ((ph >> 8) % 20) as f32 - 8.0;
+            let bright = ((ph >> 8) % 25) as f32 - 10.0;
             let cr = ((cloud_r + bright) / boost).clamp(0.0, 255.0) as u32;
             let cg = ((cloud_g + bright) / boost).clamp(0.0, 255.0) as u32;
             let cb = ((cloud_b + bright * 0.5) / boost).clamp(0.0, 255.0) as u32;
@@ -4065,8 +4381,8 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
     let is_day = tc.sun_strength > 0.05;
     let disc_dist = 220.0;
 
-    // Helper: build a billboard disc facing the camera
-    let emit_disc = |out: &mut Vec<GpuVertex>, cx: f32, cy: f32, cz: f32, radius: f32, color: u32| {
+    // Billboard axes for a point in the sky (reused by disc, glow, stars)
+    let billboard_axes = |cx: f32, cy: f32, cz: f32| -> ([f32; 3], [f32; 3], [f32; 3]) {
         let dn = [-(cx - eye[0]), -(cy - eye[1]), -(cz - eye[2])];
         let dl = (dn[0]*dn[0] + dn[1]*dn[1] + dn[2]*dn[2]).sqrt();
         let dn = [dn[0]/dl, dn[1]/dl, dn[2]/dl];
@@ -4075,55 +4391,76 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
         let tl = (tx[0]*tx[0] + tx[1]*tx[1] + tx[2]*tx[2]).sqrt();
         let tx = [tx[0]/tl, tx[1]/tl, tx[2]/tl];
         let ty = [dn[1]*tx[2] - dn[2]*tx[1], dn[2]*tx[0] - dn[0]*tx[2], dn[0]*tx[1] - dn[1]*tx[0]];
-        for i in 0..10u32 {
-            let a0 = (i as f32 / 10.0) * std::f32::consts::TAU;
-            let a1 = ((i + 1) as f32 / 10.0) * std::f32::consts::TAU;
+        (dn, tx, ty)
+    };
+
+    let emit_disc = |out: &mut Vec<GpuVertex>, cx: f32, cy: f32, cz: f32, radius: f32, color: u32| {
+        let (dn, tx, ty) = billboard_axes(cx, cy, cz);
+        for i in 0..12u32 {
+            let a0 = (i as f32 / 12.0) * std::f32::consts::TAU;
+            let a1 = ((i + 1) as f32 / 12.0) * std::f32::consts::TAU;
             let p0 = [cx, cy, cz];
-            let p1 = [
-                cx + (a0.cos() * tx[0] + a0.sin() * ty[0]) * radius,
-                cy + (a0.cos() * tx[1] + a0.sin() * ty[1]) * radius,
-                cz + (a0.cos() * tx[2] + a0.sin() * ty[2]) * radius,
-            ];
-            let p2 = [
-                cx + (a1.cos() * tx[0] + a1.sin() * ty[0]) * radius,
-                cy + (a1.cos() * tx[1] + a1.sin() * ty[1]) * radius,
-                cz + (a1.cos() * tx[2] + a1.sin() * ty[2]) * radius,
-            ];
+            let p1 = [cx + (a0.cos()*tx[0] + a0.sin()*ty[0])*radius, cy + (a0.cos()*tx[1] + a0.sin()*ty[1])*radius, cz + (a0.cos()*tx[2] + a0.sin()*ty[2])*radius];
+            let p2 = [cx + (a1.cos()*tx[0] + a1.sin()*ty[0])*radius, cy + (a1.cos()*tx[1] + a1.sin()*ty[1])*radius, cz + (a1.cos()*tx[2] + a1.sin()*ty[2])*radius];
             out.push(GpuVertex { pos: p0, color_packed: color, normal: dn });
             out.push(GpuVertex { pos: p2, color_packed: color, normal: dn });
             out.push(GpuVertex { pos: p1, color_packed: color, normal: dn });
         }
     };
 
+    // Glow halo: concentric rings with fading brightness (E3 fix)
+    let emit_glow = |out: &mut Vec<GpuVertex>, cx: f32, cy: f32, cz: f32, inner_r: f32, cc: (f32, f32, f32), nrings: u32| {
+        let (dn, tx, ty) = billboard_axes(cx, cy, cz);
+        for ring in 0..nrings {
+            let r0 = inner_r + inner_r * (ring as f32 * 0.55);
+            let r1 = inner_r + inner_r * ((ring + 1) as f32 * 0.55);
+            let f0 = (1.0 - ring as f32 / nrings as f32).powi(2) * 0.50;
+            let f1 = (1.0 - (ring + 1) as f32 / nrings as f32).powi(2) * 0.50;
+            let ci = ((((cc.0*f0)/boost).clamp(0.0,255.0) as u32) << 16) | ((((cc.1*f0)/boost).clamp(0.0,255.0) as u32) << 8) | (((cc.2*f0)/boost).clamp(0.0,255.0) as u32);
+            let co = ((((cc.0*f1)/boost).clamp(0.0,255.0) as u32) << 16) | ((((cc.1*f1)/boost).clamp(0.0,255.0) as u32) << 8) | (((cc.2*f1)/boost).clamp(0.0,255.0) as u32);
+            for i in 0..16u32 {
+                let a0 = (i as f32 / 16.0) * std::f32::consts::TAU;
+                let a1 = ((i+1) as f32 / 16.0) * std::f32::consts::TAU;
+                let pi0 = [cx+(a0.cos()*tx[0]+a0.sin()*ty[0])*r0, cy+(a0.cos()*tx[1]+a0.sin()*ty[1])*r0, cz+(a0.cos()*tx[2]+a0.sin()*ty[2])*r0];
+                let pi1 = [cx+(a1.cos()*tx[0]+a1.sin()*ty[0])*r0, cy+(a1.cos()*tx[1]+a1.sin()*ty[1])*r0, cz+(a1.cos()*tx[2]+a1.sin()*ty[2])*r0];
+                let po0 = [cx+(a0.cos()*tx[0]+a0.sin()*ty[0])*r1, cy+(a0.cos()*tx[1]+a0.sin()*ty[1])*r1, cz+(a0.cos()*tx[2]+a0.sin()*ty[2])*r1];
+                let po1 = [cx+(a1.cos()*tx[0]+a1.sin()*ty[0])*r1, cy+(a1.cos()*tx[1]+a1.sin()*ty[1])*r1, cz+(a1.cos()*tx[2]+a1.sin()*ty[2])*r1];
+                out.push(GpuVertex { pos: pi0, color_packed: ci, normal: dn });
+                out.push(GpuVertex { pos: po1, color_packed: co, normal: dn });
+                out.push(GpuVertex { pos: pi1, color_packed: ci, normal: dn });
+                out.push(GpuVertex { pos: pi0, color_packed: ci, normal: dn });
+                out.push(GpuVertex { pos: po0, color_packed: co, normal: dn });
+                out.push(GpuVertex { pos: po1, color_packed: co, normal: dn });
+            }
+        }
+    };
+
     if is_day {
-        // Sun position: arcs from east (+x) up through zenith to west (-x)
         let sy = sun_angle.sin().max(0.05);
         let sx = sun_angle.cos();
         let sun_x = eye[0] + sx * disc_dist * 0.8;
         let sun_y = eye[1] + sy * disc_dist;
         let sun_z = eye[2] + disc_dist * 0.3;
-
         let horizon_t = (1.0 - sy * 2.0).clamp(0.0, 1.0);
         let sr = (255.0 / boost).min(255.0) as u32;
         let sg = (((1.0 - horizon_t * 0.4) * 230.0) / boost).min(255.0) as u32;
         let sb = (((1.0 - horizon_t * 0.7) * 180.0) / boost).min(255.0) as u32;
         let sun_color = (sr << 16) | (sg << 8) | sb;
-
+        // Warm glow halo behind disc
+        emit_glow(out, sun_x, sun_y, sun_z, 12.0, (255.0, (1.0-horizon_t*0.3)*220.0, (1.0-horizon_t*0.5)*160.0), 4);
         emit_disc(out, sun_x, sun_y, sun_z, 12.0, sun_color);
     } else {
-        // Moon disc — silvery white, opposite side of sky from sun
         let moon_elev = sun_angle.sin().abs().max(0.2);
         let moon_az = sun_angle.cos();
-        // Moon on the opposite side: flip x and z from sun
         let moon_x = eye[0] - moon_az * disc_dist * 0.6;
         let moon_y = eye[1] + moon_elev * disc_dist * 0.9;
         let moon_z = eye[2] + disc_dist * 0.4;
-
         let mr = (210.0 / boost).min(255.0) as u32;
         let mg = (210.0 / boost).min(255.0) as u32;
         let mb = (225.0 / boost).min(255.0) as u32;
         let moon_color = (mr << 16) | (mg << 8) | mb;
-
+        // Cool silver-blue moonlight glow
+        emit_glow(out, moon_x, moon_y, moon_z, 8.0, (180.0, 190.0, 210.0), 3);
         emit_disc(out, moon_x, moon_y, moon_z, 8.0, moon_color);
     }
 
@@ -4142,26 +4479,23 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             let sy = eye[1] + alt.sin() * star_dist;
             let sz = eye[2] + az.sin() * cos_alt * star_dist;
 
-            // Star brightness varies
             let brightness = (140.0 + (h % 116) as f32) * star_alpha;
-            let b = (brightness / boost).min(255.0) as u32;
-            // Slight color variation: most white, some blue-ish, some yellow-ish
+            let bv = (brightness / boost).min(255.0) as u32;
             let (sr, sg, sb) = match h2 % 10 {
-                0..=1 => (b, b, (b + 15).min(255)), // blue tint
-                2 => ((b + 10).min(255), (b + 5).min(255), b.saturating_sub(10)), // yellow tint
-                _ => (b, b, b), // white
+                0..=1 => (bv, bv, (bv + 15).min(255)),
+                2 => ((bv + 10).min(255), (bv + 5).min(255), bv.saturating_sub(10)),
+                _ => (bv, bv, bv),
             };
             let star_color = (sr << 16) | (sg << 8) | sb; // alpha=0 emissive
 
             let n = [-(az.cos() * cos_alt), -alt.sin(), -(az.sin() * cos_alt)];
-            // Star as tiny billboard quad
+            // Proper billboard axes avoid degenerate quads
             let star_r = 0.6 + (h % 5) as f32 * 0.2;
-            let rx = -az.sin();
-            let rz = az.cos();
-            let p0 = [sx - rx * star_r, sy - star_r, sz - rz * star_r];
-            let p1 = [sx + rx * star_r, sy - star_r, sz + rz * star_r];
-            let p2 = [sx + rx * star_r, sy + star_r, sz + rz * star_r];
-            let p3 = [sx - rx * star_r, sy + star_r, sz - rz * star_r];
+            let (_, stx, sty) = billboard_axes(sx, sy, sz);
+            let p0 = [sx-stx[0]*star_r-sty[0]*star_r, sy-stx[1]*star_r-sty[1]*star_r, sz-stx[2]*star_r-sty[2]*star_r];
+            let p1 = [sx+stx[0]*star_r-sty[0]*star_r, sy+stx[1]*star_r-sty[1]*star_r, sz+stx[2]*star_r-sty[2]*star_r];
+            let p2 = [sx+stx[0]*star_r+sty[0]*star_r, sy+stx[1]*star_r+sty[1]*star_r, sz+stx[2]*star_r+sty[2]*star_r];
+            let p3 = [sx-stx[0]*star_r+sty[0]*star_r, sy-stx[1]*star_r+sty[1]*star_r, sz-stx[2]*star_r+sty[2]*star_r];
             out.push(GpuVertex { pos: p0, color_packed: star_color, normal: n });
             out.push(GpuVertex { pos: p2, color_packed: star_color, normal: n });
             out.push(GpuVertex { pos: p1, color_packed: star_color, normal: n });
@@ -4179,10 +4513,15 @@ pub fn gpu_push_constants(hour: f32, eye: Vec3, target: Vec3, vp: &Mat4) -> crat
     let fdx = target[0] - eye[0];
     let fdz = target[2] - eye[2];
     let flen = (fdx * fdx + fdz * fdz).sqrt().max(0.001);
+    // At night, fold moonlight into the GPU sun_strength so the shader's
+    // dot(N,L)*sun term provides faint directional moonlight (light_dir already
+    // points to the moon). Also ensure ambient doesn't clamp away nighttime variation.
+    let gpu_sun = if tc.sun_strength < 0.01 { 0.04 } else { tc.sun_strength };
+    let gpu_amb = tc.ambient.max(0.08);
     crate::gpu::GpuPushConstants {
         vp: *vp,
-        light_dir_ambient: [tc.light_dir[0], tc.light_dir[1], tc.light_dir[2], tc.ambient],
-        sun_fog_params: [tc.sun_strength, 1.0 / fog_dist_sq, fdx / flen, fdz / flen],
+        light_dir_ambient: [tc.light_dir[0], tc.light_dir[1], tc.light_dir[2], gpu_amb],
+        sun_fog_params: [gpu_sun, 1.0 / fog_dist_sq, fdx / flen, fdz / flen],
         fog_color: [tc.fog_r / 255.0, tc.fog_g / 255.0, tc.fog_b / 255.0, 0.0],
         eye_pos: [eye[0], eye[1], eye[2], 0.0],
     }
