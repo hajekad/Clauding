@@ -267,7 +267,7 @@ fn main() {
         let (r, g, b) = match item.kind {
             state::ItemKind::Health => (255, 50, 50),
             state::ItemKind::Money => (255, 215, 0),
-            state::ItemKind::Stamina => (50, 255, 50),
+            state::ItemKind::Stamina => (255, 255, 50),
             state::ItemKind::Food => (255, 160, 50),
             state::ItemKind::Water => (50, 200, 255),
         };

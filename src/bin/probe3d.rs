@@ -1075,6 +1075,9 @@ fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
         violation_timer: 0.0,
         police_target: None,
         wander_cooldown: 0.0,
+        find_item_failures: 0,
+        find_bin_failures: 0,
+        stuck_recoveries: 0,
     });
 
     let dt = 1.0 / 60.0; // simulate at 60 FPS timestep

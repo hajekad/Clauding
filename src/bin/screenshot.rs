@@ -460,15 +460,51 @@ fn main() {
 
             match mt {
                 "npc" => {
-                    // Find first NPC that's not knocked out
-                    if let Some(npc) = game.world.npcs.first() {
-                        entity_center = [npc.x, npc.y + 1.0, npc.z];
-                    } else {
+                    orbit_radius = 4.0;
+                    orbit_height_offset = 1.0;
+                    if game.world.npcs.is_empty() {
                         eprintln!("No NPCs found");
                         return;
                     }
-                    orbit_radius = 4.0;
-                    orbit_height_offset = 1.0;
+                    // Find the road node with maximum clearance from buildings,
+                    // then move the first visible NPC there so the orbit camera
+                    // never ends up inside geometry.
+                    let min_clearance = orbit_radius + 2.0;
+                    let mut clear_pos: Option<(f32, f32)> = None;
+                    let mut clear_best = 0.0_f32;
+                    for node in &game.road_network.nodes {
+                        let nx = node[0];
+                        let nz = node[1];
+                        let mut min_dist = f32::MAX;
+                        for b in &game.world.buildings {
+                            let cx = b.x + b.w * 0.5;
+                            let cz = b.z + b.d * 0.5;
+                            let dx = (nx - cx).abs() - b.w * 0.5;
+                            let dz = (nz - cz).abs() - b.d * 0.5;
+                            let dist = dx.max(0.0).hypot(dz.max(0.0));
+                            if dist < min_dist { min_dist = dist; }
+                        }
+                        if min_dist > clear_best {
+                            clear_best = min_dist;
+                            clear_pos = Some((nx, nz));
+                        }
+                    }
+                    // Pick first visible NPC and move it to the clear spot
+                    let npc_idx = game.world.npcs.iter().position(|n| {
+                        n.state != state::NpcState::Sleeping && !n.in_vehicle
+                    }).unwrap_or(0);
+                    if let Some((cx, cz)) = clear_pos {
+                        if clear_best >= min_clearance {
+                            let cy = game.terrain.height_at(cx, cz);
+                            game.world.npcs[npc_idx].x = cx;
+                            game.world.npcs[npc_idx].y = cy;
+                            game.world.npcs[npc_idx].z = cz;
+                            eprintln!("  Moved NPC #{} to clear road node ({:.1}, {:.1}) clearance={:.1}m",
+                                npc_idx, cx, cz, clear_best);
+                        }
+                    }
+                    let npc = &game.world.npcs[npc_idx];
+                    entity_center = [npc.x, npc.y + 1.0, npc.z];
                 }
                 "vehicle" => {
                     if let Some(v) = game.world.vehicles.first() {
@@ -532,8 +568,11 @@ fn main() {
 
             let mut shot = 0;
             for (row, &(elev, label)) in elevations.iter().enumerate() {
+                // Offset each row's starting angle so all 16 shots have unique
+                // horizontal angles (avoids near-duplicate framing between rows)
+                let row_offset = (row as f32 / 16.0) * std::f32::consts::TAU;
                 for col in 0..4 {
-                    let angle = (col as f32 / 4.0) * std::f32::consts::TAU;
+                    let angle = (col as f32 / 4.0) * std::f32::consts::TAU + row_offset;
                     let cam_x = entity_center[0] + angle.cos() * orbit_radius;
                     let cam_z = entity_center[2] + angle.sin() * orbit_radius;
                     let cam_y = entity_center[1] + orbit_height_offset + elev * orbit_radius;

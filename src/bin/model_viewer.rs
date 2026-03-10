@@ -1,8 +1,9 @@
 // Model viewer: renders each entity type from 4 orthographic views
-// Usage: cargo run --bin model_viewer
+// Usage: cargo run --bin model_viewer [--gpu]
+//   --gpu   Use Vulkan GPU pipeline instead of CPU rasterizer
 // Output: debug/model_*.png
 
-use clauding::{state, render, raster, math, mesh};
+use clauding::{state, render, raster, math, mesh, gpu};
 use clauding::rng::Rng;
 
 const VIEW_W: usize = 512;
@@ -411,6 +412,107 @@ fn render_model_sheet_normals(
     composite
 }
 
+/// Render a set of WorldTris via the GPU pipeline into a framebuffer
+fn render_model_gpu(
+    ctx: &mut gpu::GpuContext,
+    fb: &mut raster::Framebuffer,
+    tris: &[state::WorldTri],
+    eye: [f32; 3],
+    target: [f32; 3],
+) {
+    // Convert tris to GpuVertex
+    let mut verts: Vec<gpu::GpuVertex> = Vec::with_capacity(tris.len() * 3);
+    for tri in tris {
+        for vi in 0..3 {
+            verts.push(gpu::GpuVertex {
+                pos: tri.v[vi],
+                color_packed: tri.color,
+                normal: tri.normal,
+            });
+        }
+    }
+    ctx.upload_static_vertices(&verts);
+
+    let aspect = fb.w as f32 / fb.h as f32;
+    let view = math::m4_look_at(eye, target, [0.0, 1.0, 0.0]);
+    let proj = math::m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.01, 100.0);
+    let vp = math::m4_mul(&proj, &view);
+    let push = render::gpu_push_constants(10.0, eye, target, &vp); // 10am lighting
+    let clear = [0.267, 0.333, 0.400, 1.0]; // match 0xFF445566 bg
+
+    ctx.resize_render_target(fb.w as u32, fb.h as u32);
+    // Double-buffer: render twice so second frame reads back the completed first
+    ctx.render_frame(&[], &push, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
+    ctx.render_frame(&[], &push, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
+}
+
+/// Render model from 4 views via GPU and composite into a 2x2 grid
+fn render_model_sheet_gpu(
+    ctx: &mut gpu::GpuContext,
+    tris: &[state::WorldTri],
+    center_y: f32,
+    cam_dist: f32,
+    label: &str,
+) -> Vec<u32> {
+    let mut view_fb = raster::Framebuffer::new(VIEW_W, VIEW_H);
+    let mut composite = vec![0xFF334455u32; IMG_W * IMG_H]; // dark bg
+
+    // 4 views: front (-Z), right (+X), back (+Z), left (-X)
+    let views: [([f32; 3], &str); 4] = [
+        ([0.0, center_y, -cam_dist], "Front (-Z)"),
+        ([cam_dist, center_y, 0.0], "Right (+X)"),
+        ([0.0, center_y, cam_dist], "Back (+Z)"),
+        ([-cam_dist, center_y, 0.0], "Left (-X)"),
+    ];
+
+    let target = [0.0, center_y, 0.0];
+
+    for (view_idx, (eye, view_name)) in views.iter().enumerate() {
+        view_fb.clear(0xFF445566);
+        render_model_gpu(ctx, &mut view_fb, tris, *eye, target);
+
+        draw_label(&mut view_fb, 4, 4, view_name);
+        draw_label(&mut view_fb, 4, 16, &format!("tris: {}", tris.len()));
+
+        // Copy into composite at the right quadrant
+        let qx = (view_idx % 2) * VIEW_W;
+        let qy = (view_idx / 2) * VIEW_H;
+        for y in 0..VIEW_H {
+            for x in 0..VIEW_W {
+                composite[(qy + y) * IMG_W + (qx + x)] = view_fb.pixels[y * VIEW_W + x];
+            }
+        }
+    }
+
+    // Draw separator lines
+    for y in 0..IMG_H {
+        composite[y * IMG_W + VIEW_W] = 0xFFFFFFFF;
+        if VIEW_W > 1 { composite[y * IMG_W + VIEW_W - 1] = 0xFFFFFFFF; }
+    }
+    for x in 0..IMG_W {
+        composite[VIEW_H * IMG_W + x] = 0xFFFFFFFF;
+        if VIEW_H > 1 { composite[(VIEW_H - 1) * IMG_W + x] = 0xFFFFFFFF; }
+    }
+
+    eprintln!("Rendered (GPU): {} ({} tris)", label, tris.len());
+    composite
+}
+
+/// Dispatch to GPU or CPU model sheet renderer
+fn render_sheet(
+    gpu_ctx: &mut Option<gpu::GpuContext>,
+    tris: &[state::WorldTri],
+    center_y: f32,
+    cam_dist: f32,
+    label: &str,
+) -> Vec<u32> {
+    if let Some(ctx) = gpu_ctx {
+        render_model_sheet_gpu(ctx, tris, center_y, cam_dist, label)
+    } else {
+        render_model_sheet(tris, center_y, cam_dist, label)
+    }
+}
+
 /// Draw text at integer scale factor (for high-res displays)
 fn draw_label_scaled(fb: &mut raster::Framebuffer, x: usize, y: usize, text: &str, scale: usize) {
     let mut cx = x;
@@ -663,6 +765,7 @@ fn make_vehicle(color: u32) -> state::Vehicle {
         parked: true,
         idle_timer: 0.0,
         terrain_normal: [0.0, 1.0, 0.0],
+        scale: 1.0,
     }
 }
 
@@ -712,6 +815,9 @@ fn make_npc(job: state::NpcJob) -> state::Npc {
         police_target: None,
         wander_cooldown: 0.0,
         terrain_normal: [0.0, 1.0, 0.0],
+        find_item_failures: 0,
+        find_bin_failures: 0,
+        stuck_recoveries: 0,
     }
 }
 
@@ -1077,6 +1183,25 @@ fn gen_warehouse(tris: &mut Vec<state::WorldTri>) {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let use_gpu = args.iter().any(|a| a == "--gpu");
+
+    let mut gpu_ctx = if use_gpu {
+        match gpu::GpuContext::try_new() {
+            Some(mut ctx) => {
+                eprintln!("GPU mode: {}", ctx.device_name);
+                ctx.init_graphics(VIEW_W as u32, VIEW_H as u32);
+                Some(ctx)
+            }
+            None => {
+                eprintln!("No Vulkan GPU — falling back to CPU rasterizer");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let _ = std::fs::create_dir_all("debug");
     let mut tris: Vec<state::WorldTri> = Vec::with_capacity(8192);
 
@@ -1395,25 +1520,25 @@ fn main() {
     let vehicle = make_vehicle(0xFFCC3333);
     tris.clear();
     render::gen_vehicle_mesh(&vehicle, &mut tris, false);
-    let img = render_model_sheet(&tris, 0.7, 5.5, "Vehicle");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.7, 5.5, "Vehicle");
     save_png(&img, IMG_W, IMG_H, "debug/model_vehicle.png");
 
     let vehicle_interior = make_vehicle(0xFF3333CC);
     tris.clear();
     render::gen_vehicle_mesh(&vehicle_interior, &mut tris, true);
-    let img = render_model_sheet(&tris, 0.7, 5.5, "Vehicle Interior");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.7, 5.5, "Vehicle Interior");
     save_png(&img, IMG_W, IMG_H, "debug/model_vehicle_int.png");
 
     // Vehicle mid LOD
     tris.clear();
     render::gen_vehicle_mesh_mid(&vehicle, &mut tris);
-    let img = render_model_sheet(&tris, 0.7, 7.0, "Vehicle Mid LOD");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.7, 7.0, "Vehicle Mid LOD");
     save_png(&img, IMG_W, IMG_H, "debug/model_vehicle_mid.png");
 
     let npc = make_npc(state::NpcJob::Collector);
     tris.clear();
     render::gen_npc_mesh(&npc, &mut tris);
-    let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Collector");
+    let img = render_sheet(&mut gpu_ctx, &tris, 1.2, 4.5, "NPC Collector");
     save_png(&img, IMG_W, IMG_H, "debug/model_npc.png");
 
     // ── NPC LOD comparison: full, mid, low side by side ──
@@ -1422,7 +1547,7 @@ fn main() {
         // Mid-detail LOD
         tris.clear();
         render::gen_npc_mesh_mid(&lod_npc, &mut tris);
-        let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Mid LOD");
+        let img = render_sheet(&mut gpu_ctx, &tris, 1.2, 4.5, "NPC Mid LOD");
         save_png(&img, IMG_W, IMG_H, "debug/model_npc_mid.png");
     }
 
@@ -1432,7 +1557,7 @@ fn main() {
         ko_npc.state = state::NpcState::KnockedOut;
         tris.clear();
         render::gen_npc_mesh(&ko_npc, &mut tris);
-        let img = render_model_sheet(&tris, 0.5, 4.5, "NPC Knocked Out");
+        let img = render_sheet(&mut gpu_ctx, &tris, 0.5, 4.5, "NPC Knocked Out");
         save_png(&img, IMG_W, IMG_H, "debug/model_npc_ko.png");
     }
 
@@ -1452,7 +1577,7 @@ fn main() {
         ];
         tris.clear();
         render::gen_npc_mesh(&rag_npc, &mut tris);
-        let img = render_model_sheet(&tris, 0.8, 4.5, "NPC Ragdoll");
+        let img = render_sheet(&mut gpu_ctx, &tris, 0.8, 4.5, "NPC Ragdoll");
         save_png(&img, IMG_W, IMG_H, "debug/model_npc_ragdoll.png");
     }
 
@@ -1462,7 +1587,7 @@ fn main() {
         walk_npc.walk_phase = 1.5;
         tris.clear();
         render::gen_npc_mesh(&walk_npc, &mut tris);
-        let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Walking");
+        let img = render_sheet(&mut gpu_ctx, &tris, 1.2, 4.5, "NPC Walking");
         save_png(&img, IMG_W, IMG_H, "debug/model_npc_walk.png");
     }
 
@@ -1472,7 +1597,7 @@ fn main() {
         atk_npc.attack_phase = 0.5;
         tris.clear();
         render::gen_npc_mesh(&atk_npc, &mut tris);
-        let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Attacking");
+        let img = render_sheet(&mut gpu_ctx, &tris, 1.2, 4.5, "NPC Attacking");
         save_png(&img, IMG_W, IMG_H, "debug/model_npc_attack.png");
     }
 
@@ -1482,127 +1607,127 @@ fn main() {
         carry_npc.carrying_item = true;
         tris.clear();
         render::gen_npc_mesh(&carry_npc, &mut tris);
-        let img = render_model_sheet(&tris, 1.2, 4.5, "NPC Carrying");
+        let img = render_sheet(&mut gpu_ctx, &tris, 1.2, 4.5, "NPC Carrying");
         save_png(&img, IMG_W, IMG_H, "debug/model_npc_carry.png");
     }
 
     let bin = make_trash_bin();
     tris.clear();
     render::gen_trash_bin_mesh(&bin, &mut tris);
-    let img = render_model_sheet(&tris, 0.4, 2.5, "Trash Bin");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.4, 2.5, "Trash Bin");
     save_png(&img, IMG_W, IMG_H, "debug/model_trashbin.png");
 
     // ── World objects ──
     tris.clear(); gen_building(&mut tris);
-    let img = render_model_sheet(&tris, 5.0, 20.0, "Building Pitched");
+    let img = render_sheet(&mut gpu_ctx, &tris, 5.0, 20.0, "Building Pitched");
     save_png(&img, IMG_W, IMG_H, "debug/model_building.png");
 
     tris.clear(); gen_building_flat_roof(&mut tris);
-    let img = render_model_sheet(&tris, 4.0, 18.0, "Building Flat");
+    let img = render_sheet(&mut gpu_ctx, &tris, 4.0, 18.0, "Building Flat");
     save_png(&img, IMG_W, IMG_H, "debug/model_building_flat.png");
 
     tris.clear(); gen_building_hip_roof(&mut tris);
-    let img = render_model_sheet(&tris, 6.0, 22.0, "Building Hip");
+    let img = render_sheet(&mut gpu_ctx, &tris, 6.0, 22.0, "Building Hip");
     save_png(&img, IMG_W, IMG_H, "debug/model_building_hip.png");
 
     tris.clear(); gen_bridge(&mut tris);
-    let img = render_model_sheet(&tris, 2.0, 28.0, "Bridge");
+    let img = render_sheet(&mut gpu_ctx, &tris, 2.0, 28.0, "Bridge");
     save_png(&img, IMG_W, IMG_H, "debug/model_bridge.png");
 
     tris.clear(); gen_suburb_house(&mut tris);
-    let img = render_model_sheet(&tris, 1.5, 12.0, "Suburb House");
+    let img = render_sheet(&mut gpu_ctx, &tris, 1.5, 12.0, "Suburb House");
     save_png(&img, IMG_W, IMG_H, "debug/model_suburb.png");
 
     tris.clear(); gen_market_stall(&mut tris);
-    let img = render_model_sheet(&tris, 1.5, 8.0, "Market Stall");
+    let img = render_sheet(&mut gpu_ctx, &tris, 1.5, 8.0, "Market Stall");
     save_png(&img, IMG_W, IMG_H, "debug/model_stall.png");
 
     tris.clear(); gen_bus_stop(&mut tris);
-    let img = render_model_sheet(&tris, 1.5, 8.0, "Bus Stop");
+    let img = render_sheet(&mut gpu_ctx, &tris, 1.5, 8.0, "Bus Stop");
     save_png(&img, IMG_W, IMG_H, "debug/model_busstop.png");
 
     tris.clear(); gen_vending_machine(&mut tris);
-    let img = render_model_sheet(&tris, 0.75, 3.5, "Vending Machine");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.75, 3.5, "Vending Machine");
     save_png(&img, IMG_W, IMG_H, "debug/model_vending.png");
 
     tris.clear(); gen_phone_booth(&mut tris);
-    let img = render_model_sheet(&tris, 1.1, 5.0, "Phone Booth");
+    let img = render_sheet(&mut gpu_ctx, &tris, 1.1, 5.0, "Phone Booth");
     save_png(&img, IMG_W, IMG_H, "debug/model_phonebooth.png");
 
     tris.clear(); gen_fire_hydrant(&mut tris);
-    let img = render_model_sheet(&tris, 0.3, 1.5, "Fire Hydrant");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.3, 1.5, "Fire Hydrant");
     save_png(&img, IMG_W, IMG_H, "debug/model_hydrant.png");
 
     tris.clear(); gen_picnic_table(&mut tris);
-    let img = render_model_sheet(&tris, 0.5, 4.0, "Picnic Table");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.5, 4.0, "Picnic Table");
     save_png(&img, IMG_W, IMG_H, "debug/model_picnic.png");
 
     tris.clear(); gen_water_tower(&mut tris);
-    let img = render_model_sheet(&tris, 3.0, 12.0, "Water Tower");
+    let img = render_sheet(&mut gpu_ctx, &tris, 3.0, 12.0, "Water Tower");
     save_png(&img, IMG_W, IMG_H, "debug/model_watertower.png");
 
     tris.clear(); gen_billboard(&mut tris);
-    let img = render_model_sheet(&tris, 3.0, 12.0, "Billboard");
+    let img = render_sheet(&mut gpu_ctx, &tris, 3.0, 12.0, "Billboard");
     save_png(&img, IMG_W, IMG_H, "debug/model_billboard.png");
 
     tris.clear(); gen_tree(&mut tris);
-    let img = render_model_sheet(&tris, 2.0, 8.0, "Tree");
+    let img = render_sheet(&mut gpu_ctx, &tris, 2.0, 8.0, "Tree");
     save_png(&img, IMG_W, IMG_H, "debug/model_tree.png");
 
     tris.clear(); gen_wave_surface(&mut tris);
-    let img = render_model_sheet(&tris, 0.5, 14.0, "Wave Surface");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.5, 14.0, "Wave Surface");
     save_png(&img, IMG_W, IMG_H, "debug/model_wave.png");
 
     tris.clear(); gen_dumpster(&mut tris);
-    let img = render_model_sheet(&tris, 0.5, 3.5, "Dumpster");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.5, 3.5, "Dumpster");
     save_png(&img, IMG_W, IMG_H, "debug/model_dumpster.png");
 
     tris.clear(); gen_street_light(&mut tris);
-    let img = render_model_sheet(&tris, 2.0, 8.0, "Street Light");
+    let img = render_sheet(&mut gpu_ctx, &tris, 2.0, 8.0, "Street Light");
     save_png(&img, IMG_W, IMG_H, "debug/model_streetlight.png");
 
     tris.clear(); gen_crane(&mut tris);
-    let img = render_model_sheet(&tris, 7.0, 25.0, "Crane");
+    let img = render_sheet(&mut gpu_ctx, &tris, 7.0, 25.0, "Crane");
     save_png(&img, IMG_W, IMG_H, "debug/model_crane.png");
 
     tris.clear(); gen_warehouse(&mut tris);
-    let img = render_model_sheet(&tris, 3.0, 18.0, "Warehouse");
+    let img = render_sheet(&mut gpu_ctx, &tris, 3.0, 18.0, "Warehouse");
     save_png(&img, IMG_W, IMG_H, "debug/model_warehouse.png");
 
     // ── Primitives ──
     tris.clear();
     mesh::cylinder_tris(&mut tris, 0.0, 0.5, 0.0, 0.3, 1.0, 8, 0xFF3388CC);
-    let img = render_model_sheet(&tris, 0.5, 3.0, "Cylinder");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.5, 3.0, "Cylinder");
     save_png(&img, IMG_W, IMG_H, "debug/model_cylinder.png");
 
     tris.clear();
     mesh::sphere_tris(&mut tris, 0.0, 0.5, 0.0, 0.5, 2, 0xFFCC4433);
-    let img = render_model_sheet(&tris, 0.5, 2.5, "Sphere");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.5, 2.5, "Sphere");
     save_png(&img, IMG_W, IMG_H, "debug/model_sphere.png");
 
     tris.clear();
     mesh::beveled_box_tris(&mut tris, 0.0, 0.5, 0.0, 1.0, 1.0, 1.0, 0.1, 0xFF44AA44);
-    let img = render_model_sheet(&tris, 0.5, 3.0, "Beveled Box");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.5, 3.0, "Beveled Box");
     save_png(&img, IMG_W, IMG_H, "debug/model_bevelbox.png");
 
     tris.clear();
     mesh::cone_tris(&mut tris, 0.0, 0.0, 0.0, 0.4, 1.0, 8, 0xFFCC8833);
-    let img = render_model_sheet(&tris, 0.5, 3.0, "Cone");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.5, 3.0, "Cone");
     save_png(&img, IMG_W, IMG_H, "debug/model_cone.png");
 
     tris.clear();
     mesh::box_tris(&mut tris, 0.0, 0.5, 0.0, 1.0, 1.0, 1.0, 0xFF5577AA);
-    let img = render_model_sheet(&tris, 0.5, 3.0, "Box");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.5, 3.0, "Box");
     save_png(&img, IMG_W, IMG_H, "debug/model_box.png");
 
     tris.clear();
     mesh::pitched_roof_tris(&mut tris, 0.0, 0.0, 0.0, 4.0, 3.0, 1.5, 0xFF885544);
-    let img = render_model_sheet(&tris, 1.0, 8.0, "Pitched Roof");
+    let img = render_sheet(&mut gpu_ctx, &tris, 1.0, 8.0, "Pitched Roof");
     save_png(&img, IMG_W, IMG_H, "debug/model_pitchedroof.png");
 
     tris.clear();
     mesh::hip_roof_tris(&mut tris, 0.0, 0.0, 0.0, 4.0, 3.0, 1.5, 0xFF885544);
-    let img = render_model_sheet(&tris, 1.0, 8.0, "Hip Roof");
+    let img = render_sheet(&mut gpu_ctx, &tris, 1.0, 8.0, "Hip Roof");
     save_png(&img, IMG_W, IMG_H, "debug/model_hiproof.png");
 
     tris.clear();
@@ -1611,7 +1736,7 @@ fn main() {
         [0.35, 0.7], [0.2, 1.0], [0.0, 1.1],
     ];
     mesh::lathe_tris(&mut tris, 0.0, 0.0, 0.0, &profile, 8, 0xFFCC6644);
-    let img = render_model_sheet(&tris, 0.5, 3.0, "Lathe");
+    let img = render_sheet(&mut gpu_ctx, &tris, 0.5, 3.0, "Lathe");
     save_png(&img, IMG_W, IMG_H, "debug/model_lathe.png");
 
     // Wall with holes standalone test
@@ -1624,13 +1749,13 @@ fn main() {
     ];
     mesh::wall_with_holes_tris(&mut tris, -2.5, 0.0, 0.0, 5.0, 6.0, &holes, 0.15,
         0xFF887766, &[0xFF222244], 1.0, 1.0, false);
-    let img = render_model_sheet(&tris, 3.0, 10.0, "Wall Holes Z+");
+    let img = render_sheet(&mut gpu_ctx, &tris, 3.0, 10.0, "Wall Holes Z+");
     save_png(&img, IMG_W, IMG_H, "debug/model_wallholes.png");
 
     tris.clear();
     mesh::wall_with_holes_tris(&mut tris, 2.5, 0.0, 0.0, 5.0, 6.0, &holes, 0.15,
         0xFF887766, &[0xFF222244], -1.0, -1.0, false);
-    let img = render_model_sheet(&tris, 3.0, 10.0, "Wall Holes Z-");
+    let img = render_sheet(&mut gpu_ctx, &tris, 3.0, 10.0, "Wall Holes Z-");
     save_png(&img, IMG_W, IMG_H, "debug/model_wallholes_back.png");
 
     eprintln!("All model sheets saved to debug/model_*.png");

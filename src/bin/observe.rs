@@ -63,6 +63,14 @@ fn main() {
     let mut npc_stuck_episodes: Vec<u32> = vec![0; n_npcs];
     let mut npc_was_stuck: Vec<bool> = vec![false; n_npcs];
 
+    // Job failure diagnostic counters
+    let mut total_find_item_failures: u32 = 0;
+    let mut total_find_bin_failures: u32 = 0;
+    let mut total_stuck_recoveries: u32 = 0;
+    let mut per_job_find_item_failures = [0u32; state::NPC_JOB_COUNT];
+    let mut per_job_find_bin_failures = [0u32; state::NPC_JOB_COUNT];
+    let mut per_job_stuck_recoveries = [0u32; state::NPC_JOB_COUNT];
+
     // Vehicle-on-river tracking
     let mut veh_river_ticks: Vec<u32> = vec![0; n_vehicles];
 
@@ -90,6 +98,12 @@ fn main() {
                 per_job_items_picked[ji] += npc.fitness_items_picked;
                 per_job_items_deposited[ji] += npc.items_deposited_today;
                 per_npc_items_picked[i] += npc.fitness_items_picked;
+                total_find_item_failures += npc.find_item_failures;
+                total_find_bin_failures += npc.find_bin_failures;
+                total_stuck_recoveries += npc.stuck_recoveries;
+                per_job_find_item_failures[ji] += npc.find_item_failures;
+                per_job_find_bin_failures[ji] += npc.find_bin_failures;
+                per_job_stuck_recoveries[ji] += npc.stuck_recoveries;
             }
         }
         // Midnight reset
@@ -392,6 +406,27 @@ fn main() {
         let npc = &game.world.npcs[i];
         let _ = writeln!(out, "    NPC[{:2}] picked={:3} deposited={:3} job={:12} dist={:.0}m",
             i, count, npc.items_deposited_today, npc_job_name(npc.job), npc_total_dist[i]);
+    }
+
+    // Also capture current (incomplete) day's failure data
+    for npc in &game.world.npcs {
+        let ji = job_index(npc.job);
+        total_find_item_failures += npc.find_item_failures;
+        total_find_bin_failures += npc.find_bin_failures;
+        total_stuck_recoveries += npc.stuck_recoveries;
+        per_job_find_item_failures[ji] += npc.find_item_failures;
+        per_job_find_bin_failures[ji] += npc.find_bin_failures;
+        per_job_stuck_recoveries[ji] += npc.stuck_recoveries;
+    }
+    let _ = writeln!(out, "\n--- JOB FAILURE DIAGNOSTICS (all days) ---");
+    let _ = writeln!(out, "  find_item failures: {}  find_bin failures: {}  stuck recoveries: {}",
+        total_find_item_failures, total_find_bin_failures, total_stuck_recoveries);
+    let _ = writeln!(out, "\n  Per-job breakdown:");
+    for ji in 0..state::NPC_JOB_COUNT {
+        if per_job_find_item_failures[ji] > 0 || per_job_find_bin_failures[ji] > 0 || per_job_stuck_recoveries[ji] > 0 {
+            let _ = writeln!(out, "    {:12} item_fail={:4} bin_fail={:4} stuck_recover={:4}",
+                JOB_NAMES[ji], per_job_find_item_failures[ji], per_job_find_bin_failures[ji], per_job_stuck_recoveries[ji]);
+        }
     }
 
     // Survival stats
