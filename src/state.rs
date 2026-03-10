@@ -36,6 +36,8 @@ pub const FOLLOW_DISTANCE: f32 = 20.0;
 pub const MIN_FOLLOW_DISTANCE: f32 = 6.0;
 pub const PARKING_SPOT_LENGTH: f32 = 5.0;
 pub const PARKING_SPOT_WIDTH: f32 = 2.5;
+pub const VEHICLE_GROUND_OFFSET: f32 = 0.08; // lift vehicles above terrain to prevent slope clipping
+pub const VEHICLE_COLLISION_RADIUS: f32 = 2.2; // half-length of vehicle for separation (~4.6m car)
 pub const FOG_DIST: f32 = 375.0;
 pub const PLAYER_SPEED: f32 = 5.0;
 pub const SPRINT_SPEED: f32 = 9.0;
@@ -268,6 +270,7 @@ pub struct Vehicle {
     pub speed: f32,
     pub terrain_normal: [f32; 3],
     pub color: u32,
+    pub scale: f32,            // 0.90–1.10 per-vehicle size variation
     pub occupied: bool,       // player is driving
     pub ai_active: bool,      // AI drives when not occupied and on road
     pub ai_target_x: f32,
@@ -288,8 +291,21 @@ pub struct Vehicle {
     pub idle_timer: f32,          // tracks how long vehicle has been at speed < 0.5
 }
 
-pub const VEHICLE_COLORS: [u32; 6] = [
-    0xFFCC3333, 0xFF3333CC, 0xFF33CC33, 0xFFCCCC33, 0xFFCC33CC, 0xFFFFFFFF,
+pub const VEHICLE_COLORS: [u32; 14] = [
+    0xFFCC3333, // red
+    0xFF3333CC, // blue
+    0xFF33CC33, // green
+    0xFFCCCC33, // yellow
+    0xFFCC33CC, // magenta
+    0xFFFFFFFF, // white
+    0xFF222222, // black
+    0xFF888888, // silver
+    0xFF664422, // dark brown
+    0xFF2266AA, // navy/teal
+    0xFFDD6600, // orange
+    0xFFAA2244, // burgundy
+    0xFF44AA88, // sea green
+    0xFF555577, // gunmetal gray
 ];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -430,6 +446,10 @@ pub struct Npc {
     pub fitness_distance: f32,
     pub fitness_stuck_time: f32,
     pub prev_x: f32, pub prev_z: f32,
+    // Job failure counters (diagnostic — tracked for observer reports)
+    pub find_item_failures: u32,
+    pub find_bin_failures: u32,
+    pub stuck_recoveries: u32,
     // Combat
     pub health: f32,
     pub attack_cooldown: f32,

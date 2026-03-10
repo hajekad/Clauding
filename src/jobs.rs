@@ -7,6 +7,7 @@ use crate::world::on_river_not_bridge;
 
 /// Handle stuck recovery with escalation — called when NPC gives up on a target
 fn stuck_recovery(world: &mut WorldData, i: usize, net: &RoadNetwork) {
+    world.npcs[i].stuck_recoveries += 1;
     world.npcs[i].stuck_timer = 0.0;
     world.npcs[i].detouring = false;
     world.npcs[i].job_timer = 0.0;
@@ -169,6 +170,8 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
                 world.npcs[i].stuck_timer = 0.0;
                 world.npcs[i].detouring = false;
                 world.npcs[i].job_timer = 0.0;
+            } else {
+                world.npcs[i].find_bin_failures += 1;
             }
         }
         if let Some(bi) = world.npcs[i].target_bin {
@@ -265,6 +268,7 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
                     }
                 }
             } else {
+                world.npcs[i].find_item_failures += 1;
                 pick_wander(world, i, net);
                 world.npcs[i].wander_cooldown = 5.0; // walk to wander target before re-searching
             }
@@ -382,6 +386,7 @@ fn npc_work_garbage(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terr
                 world.npcs[i].detouring = false;
                 world.npcs[i].job_timer = 0.0;
             } else {
+                world.npcs[i].find_item_failures += 1;
                 pick_wander(world, i, net);
                 world.npcs[i].wander_cooldown = 5.0; // walk to wander target before re-searching
             }

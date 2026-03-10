@@ -1000,7 +1000,8 @@ pub fn sys_night_spawning(
             break;
         }
         let y = 40.0 + rng.range(0.0, 20.0);
-        let kind = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina][rng.next() as usize % 3];
+        let kinds = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina, ItemKind::Food, ItemKind::Water];
+        let kind = kinds[rng.next() as usize % kinds.len()];
 
         // Find an inactive item slot to reuse, or push new
         let mut found = false;
@@ -1090,6 +1091,9 @@ pub fn sys_midnight_reset(
             npc.fitness_sounds_made = 0;
             npc.fitness_npcs_heard = 0;
             npc.fitness_proximity = 0.0;
+            npc.find_item_failures = 0;
+            npc.find_bin_failures = 0;
+            npc.stuck_recoveries = 0;
             npc.sound = [0.0; 3];
             npc.ragdoll_active = false;
             npc.ragdoll_timer = 0.0;
@@ -1218,7 +1222,7 @@ pub fn sys_player_interact(
             let color = match kind {
                 ItemKind::Health => 0xFFFF3333,
                 ItemKind::Money => 0xFFFFDD33,
-                ItemKind::Stamina => 0xFF33FF33,
+                ItemKind::Stamina => 0xFFFFFF33,
                 ItemKind::Food => 0xFFDD8833,
                 ItemKind::Water => 0xFF3388FF,
             };
