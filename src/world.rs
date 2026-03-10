@@ -641,9 +641,9 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
             let n1 = avg_normal3(vert_normals[i00], vert_normals[i10], vert_normals[i11]);
             let n2 = avg_normal3(vert_normals[i00], vert_normals[i11], vert_normals[i01]);
 
-            // CCW winding (outward normal = +Y for upward-facing terrain)
-            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: c1 });
-            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: c2 });
+            // CW winding for Vulkan front-face (VK_FRONT_FACE_CLOCKWISE + Y-flip)
+            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color: c1 });
+            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color: c2 });
         }
     }
 }
@@ -724,9 +724,9 @@ fn generate_road_strip(
         let noise = (h % 12) as i32 - 6;
         let c = jitter_color(color, noise);
 
-        // CCW winding (outward normal = +Y for upward-facing road)
-        tris.push(WorldTri { v: [v_l0, v_r1, v_r0], normal: [0.0, 1.0, 0.0], color: c });
-        tris.push(WorldTri { v: [v_l0, v_l1, v_r1], normal: [0.0, 1.0, 0.0], color: c });
+        // CW winding for Vulkan front-face (VK_FRONT_FACE_CLOCKWISE + Y-flip)
+        tris.push(WorldTri { v: [v_l0, v_r0, v_r1], normal: [0.0, 1.0, 0.0], color: c });
+        tris.push(WorldTri { v: [v_l0, v_r1, v_l1], normal: [0.0, 1.0, 0.0], color: c });
     }
 }
 
@@ -1202,11 +1202,11 @@ fn generate_river(
                     let noise = (h % 16) as i32 - 8;
                     let color = jitter_color(base, noise);
 
-                    // CCW winding (outward normal = +Y for upward-facing water)
-                    let n1 = normalize_tri_normal(v00, v11, v10);
-                    tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
-                    let n2 = normalize_tri_normal(v00, v01, v11);
-                    tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
+                    // CW winding for Vulkan front-face (VK_FRONT_FACE_CLOCKWISE + Y-flip)
+                    let n1 = normalize_tri_normal(v00, v10, v11);
+                    tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
+                    let n2 = normalize_tri_normal(v00, v11, v01);
+                    tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
                 }
             }
         }
@@ -1283,17 +1283,17 @@ fn generate_river(
                         let bnoise = (bh % 12) as i32 - 6;
                         let color = jitter_color(bank_color, bnoise);
 
-                        // CCW winding depends on side: mirrored grid flips winding
+                        // CW winding depends on side: mirrored grid flips winding
                         if side > 0.0 {
-                            let n1 = normalize_tri_normal(v00, v11, v10);
-                            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
-                            let n2 = normalize_tri_normal(v00, v01, v11);
-                            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
-                        } else {
                             let n1 = normalize_tri_normal(v00, v10, v11);
                             tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
                             let n2 = normalize_tri_normal(v00, v11, v01);
                             tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
+                        } else {
+                            let n1 = normalize_tri_normal(v00, v11, v10);
+                            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
+                            let n2 = normalize_tri_normal(v00, v01, v11);
+                            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
                         }
                     }
                 }
@@ -1646,8 +1646,7 @@ fn generate_parking_lots(
         // Main pole
         mesh::cylinder_tris(tris, lx, lgy + 2.7, lz, 0.06, 4.6, 6, LAMP_POLE_COLOR);
         mesh::sphere_tris(tris, lx, lgy + 5.2, lz, 0.2, 1, LAMP_GLOW_COLOR);
-        // Glow halo around globe
-        mesh::glow_halo(tris, lx, lgy + 5.2, lz, 0.25, 1.2, 8, LAMP_GLOW_COLOR);
+        // (glow halo removed — too large, creates dark umbrella shapes in daylight)
         // Ground light pool
         let pool_y = lgy + 0.03;
         let pool_color: u32 = 0x00553810;
@@ -3083,9 +3082,7 @@ pub fn generate_world(game: &mut GameState) {
         // Glass globe at arm tip
         mesh::sphere_tris(&mut tris, x + arm_dx, ground_y + 5.1, z + arm_dz,
             0.2, 1, LAMP_GLOW_COLOR);
-        // Glow halo around globe
-        mesh::glow_halo(&mut tris, x + arm_dx, ground_y + 5.1, z + arm_dz,
-            0.25, 1.2, 8, LAMP_GLOW_COLOR);
+        // (glow halo removed — too large, creates dark umbrella shapes in daylight)
 
         // Ground light pool — warm emissive disc beneath the lamp
         let pool_x = x + arm_dx;

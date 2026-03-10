@@ -3213,9 +3213,7 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
         push_box(tris, hx, 0.73, -2.34, 0.32, 0.020, 0.04, 0x00FFEE88);
         // Projector lens (main beam, proud of housing)
         mesh::sphere_tris(tris, hx - side * 0.04, 0.66, -2.34, 0.07, 0, 0x00FFEE88);
-        // Headlight glow (forward-facing)
-        mesh::glow_directional(tris, hx - side * 0.04, 0.66, -2.36,
-            [0.0, 0.0, -1.0], 0.10, 0.50, 8, 0x00FFEE88);
+        // (glow disc removed — too large, creates dark shapes in daylight)
         // Secondary lens (inner, forward of reflector)
         mesh::sphere_tris(tris, hx + side * 0.08, 0.66, -2.34, 0.05, 0, 0x00FFDD66);
         // Turn signal (lower outer corner, emissive amber — proud of bumper)
@@ -3439,9 +3437,7 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
         push_box(tris, side * 0.30, 0.74, 2.28, 0.18, 0.07, 0.04, 0xFF331111);
         // LED strip (proud of housing, visible from rear)
         push_box(tris, side * 0.64, 0.74, 2.33, 0.30, 0.035, 0.01, 0x00FF2222);
-        // Tail light glow (rear-facing)
-        mesh::glow_directional(tris, side * 0.64, 0.74, 2.34,
-            [0.0, 0.0, 1.0], 0.08, 0.40, 8, 0x00FF2222);
+        // (glow disc removed — too large, creates dark shapes in daylight)
         // Inner tail light LED (proud of housing)
         push_box(tris, side * 0.30, 0.74, 2.33, 0.14, 0.025, 0.01, 0x00FF2222);
     }
