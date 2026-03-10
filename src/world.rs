@@ -28,7 +28,9 @@ const ROAD_LINE_COLOR: u32 = 0xFFCCCC33;
 const ROAD_EDGE_COLOR: u32 = 0xFFBBBBBB;
 const SIDEWALK_COLOR: u32 = 0xFF888888;
 const FIELD_ROAD_COLOR: u32 = 0xFF665544;
+const CURB_COLOR: u32 = 0xFF999999; // lighter than road, darker than sidewalk
 const LAMP_POLE_COLOR: u32 = 0xFF666666;
+const LAMP_BASE_COLOR: u32 = 0xFF555555; // darker base/mounting plate for street lights
 const LAMP_GLOW_COLOR: u32 = 0x00FFEE88; // alpha=0 flags emissive (night glow)
 
 const ROAD_SEG_STEP: f32 = 2.0; // subdivision step for terrain-following road strips
@@ -60,6 +62,8 @@ const PAYPHONE_COLOR: u32 = 0xFF888888;
 const RIVER_DEEP: u32 = 0xFF1A3D7A;   // deep center
 const RIVER_MID: u32 = 0xFF2255AA;    // mid-channel
 const RIVER_EDGE: u32 = 0xFF3A7ABB;   // lighter near banks
+const BANK_MUD: u32 = 0xFF445533;     // muddy brown near waterline
+const BANK_GRASS: u32 = 0xFF3A7A3A;   // grassy bank top (blends to terrain)
 const BRIDGE_DECK_COLOR: u32 = 0xFF666666;
 const BRIDGE_RAIL_COLOR: u32 = 0xFF555555;
 
@@ -521,11 +525,13 @@ fn generate_heightmap(terrain: &mut Terrain, seed: u64, net: &RoadNetwork) {
     }
 }
 
-/// Generate terrain mesh triangles from heightmap
+/// Generate terrain mesh triangles from heightmap with smoothed vertex normals
+/// to reduce visible flat-shaded triangle faceting.
 fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
     let grid = terrain.grid;
     let stride = grid + 1;
     let cell = terrain.cell_size;
+    let num_verts = stride * stride;
 
     // Find height range for color interpolation
     let mut h_min = f32::MAX;
@@ -535,6 +541,52 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
         if h > h_max { h_max = h; }
     }
     let h_range = (h_max - h_min).max(0.1);
+
+    // Pre-compute smoothed vertex normals by averaging face normals of adjacent triangles.
+    // Each vertex is shared by up to 6 triangles. Accumulate then normalize.
+    let mut vert_normals = vec![[0.0f32; 3]; num_verts];
+    for iz in 0..grid {
+        for ix in 0..grid {
+            let vh00 = terrain.heights[iz * stride + ix];
+            let vh10 = terrain.heights[iz * stride + ix + 1];
+            let vh01 = terrain.heights[(iz + 1) * stride + ix];
+            let vh11 = terrain.heights[(iz + 1) * stride + ix + 1];
+
+            let vx0 = -WORLD_HALF + ix as f32 * cell;
+            let vz0 = -WORLD_HALF + iz as f32 * cell;
+            let vx1 = vx0 + cell;
+            let vz1 = vz0 + cell;
+
+            // Tri 1: v00, v10, v11 — face normal
+            let fn1 = normalize_tri_normal([vx0,vh00,vz0], [vx1,vh11,vz1], [vx1,vh10,vz0]);
+            // Tri 2: v00, v11, v01 — face normal
+            let fn2 = normalize_tri_normal([vx0,vh00,vz0], [vx0,vh01,vz1], [vx1,vh11,vz1]);
+
+            let i00 = iz * stride + ix;
+            let i10 = iz * stride + ix + 1;
+            let i01 = (iz + 1) * stride + ix;
+            let i11 = (iz + 1) * stride + ix + 1;
+
+            // Accumulate face normals to each vertex of tri 1
+            for &vi in &[i00, i10, i11] {
+                vert_normals[vi][0] += fn1[0];
+                vert_normals[vi][1] += fn1[1];
+                vert_normals[vi][2] += fn1[2];
+            }
+            // Accumulate face normals to each vertex of tri 2
+            for &vi in &[i00, i11, i01] {
+                vert_normals[vi][0] += fn2[0];
+                vert_normals[vi][1] += fn2[1];
+                vert_normals[vi][2] += fn2[2];
+            }
+        }
+    }
+    // Normalize accumulated vertex normals
+    for vn in &mut vert_normals {
+        let l = (vn[0]*vn[0] + vn[1]*vn[1] + vn[2]*vn[2]).sqrt();
+        if l > 1e-10 { vn[0] /= l; vn[1] /= l; vn[2] /= l; }
+        else { *vn = [0.0, 1.0, 0.0]; }
+    }
 
     for iz in 0..grid {
         for ix in 0..grid {
@@ -561,33 +613,57 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
             let slope = (dh_x * dh_x + dh_z * dh_z).sqrt();
             let slope_t = (slope * 3.0).clamp(0.0, 1.0); // steeper → more rock
 
-            // Per-triangle colors from average of their 3 vertex heights
-            // Tri 1: v00, v11, v10 | Tri 2: v00, v01, v11
-            let terrain_color = |avg_h: f32, ix: usize, iz: usize, tri_idx: u32| -> u32 {
-                let t = ((avg_h - h_min) / h_range).clamp(0.0, 1.0);
-                let hash = (ix as u32).wrapping_mul(73856093)
-                    ^ (iz as u32).wrapping_mul(19349663)
-                    ^ tri_idx.wrapping_mul(2654435761);
-                let noise = (hash % 20) as i32 - 10;
-                let base_green = lerp_color(GROUND_LOW, GROUND_HIGH, t);
-                let rocky = lerp_color(base_green, 0xFF6B6455, slope_t);
-                if mid_z > DOCK_Z_START {
-                    let dock_t = ((mid_z - DOCK_Z_START) / 20.0).clamp(0.0, 1.0);
-                    jitter_color(lerp_color(rocky, DOCK_GROUND, dock_t), noise)
-                } else {
-                    jitter_color(rocky, noise)
-                }
+            // Per-cell color from average height — both triangles in the cell share the
+            // same base color to eliminate visible triangle edges. Only a minimal per-cell
+            // noise (+-1) provides subtle variation without causing faceting.
+            let h_avg = (h00 + h10 + h01 + h11) * 0.25;
+            let t = ((h_avg - h_min) / h_range).clamp(0.0, 1.0);
+            let cell_hash = (ix as u32).wrapping_mul(73856093)
+                ^ (iz as u32).wrapping_mul(19349663);
+            let noise = (cell_hash % 3) as i32 - 1; // +-1 max
+            let base_green = lerp_color(GROUND_LOW, GROUND_HIGH, t);
+            let rocky = lerp_color(base_green, 0xFF6B6455, slope_t);
+            let cell_color = if mid_z > DOCK_Z_START {
+                let dock_t = ((mid_z - DOCK_Z_START) / 20.0).clamp(0.0, 1.0);
+                jitter_color(lerp_color(rocky, DOCK_GROUND, dock_t), noise)
+            } else {
+                jitter_color(rocky, noise)
             };
 
-            // CW winding (matches mesh.rs convention for GPU backface culling)
-            let n1 = normalize_tri_normal(v00, v11, v10);
-            let c1 = terrain_color((h00 + h11 + h10) / 3.0, ix, iz, 0);
-            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color: c1 });
-            let n2 = normalize_tri_normal(v00, v01, v11);
-            let c2 = terrain_color((h00 + h01 + h11) / 3.0, ix, iz, 1);
-            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color: c2 });
+            let c1 = cell_color;
+            let c2 = cell_color;
+
+            // Use smoothed vertex normals averaged across the triangle
+            let i00 = iz * stride + ix;
+            let i10 = iz * stride + ix + 1;
+            let i01 = (iz + 1) * stride + ix;
+            let i11 = (iz + 1) * stride + ix + 1;
+            let n1 = avg_normal3(vert_normals[i00], vert_normals[i10], vert_normals[i11]);
+            let n2 = avg_normal3(vert_normals[i00], vert_normals[i11], vert_normals[i01]);
+
+            // CCW winding (outward normal = +Y for upward-facing terrain)
+            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: c1 });
+            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: c2 });
         }
     }
+}
+
+/// Average 3 colors (per-channel mean)
+#[allow(dead_code)]
+fn avg_color3(a: u32, b: u32, c: u32) -> u32 {
+    let r = (((a >> 16) & 0xFF) + ((b >> 16) & 0xFF) + ((c >> 16) & 0xFF)) / 3;
+    let g = (((a >> 8) & 0xFF) + ((b >> 8) & 0xFF) + ((c >> 8) & 0xFF)) / 3;
+    let bl = ((a & 0xFF) + (b & 0xFF) + (c & 0xFF)) / 3;
+    0xFF000000 | (r << 16) | (g << 8) | bl
+}
+
+/// Average and normalize 3 normal vectors
+fn avg_normal3(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
+    let nx = a[0] + b[0] + c[0];
+    let ny = a[1] + b[1] + c[1];
+    let nz = a[2] + b[2] + c[2];
+    let l = (nx*nx + ny*ny + nz*nz).sqrt();
+    if l < 1e-10 { [0.0, 1.0, 0.0] } else { [nx/l, ny/l, nz/l] }
 }
 
 /// Generate a road strip along an arbitrary-direction segment, following terrain
@@ -648,9 +724,9 @@ fn generate_road_strip(
         let noise = (h % 12) as i32 - 6;
         let c = jitter_color(color, noise);
 
-        // CW winding (matches mesh.rs convention for GPU backface culling)
-        tris.push(WorldTri { v: [v_l0, v_r0, v_r1], normal: [0.0, 1.0, 0.0], color: c });
-        tris.push(WorldTri { v: [v_l0, v_r1, v_l1], normal: [0.0, 1.0, 0.0], color: c });
+        // CCW winding (outward normal = +Y for upward-facing road)
+        tris.push(WorldTri { v: [v_l0, v_r1, v_r0], normal: [0.0, 1.0, 0.0], color: c });
+        tris.push(WorldTri { v: [v_l0, v_l1, v_r1], normal: [0.0, 1.0, 0.0], color: c });
     }
 }
 
@@ -1126,15 +1202,146 @@ fn generate_river(
                     let noise = (h % 16) as i32 - 8;
                     let color = jitter_color(base, noise);
 
-                    // CW winding (matches mesh.rs convention for GPU backface culling)
+                    // CCW winding (outward normal = +Y for upward-facing water)
                     let n1 = normalize_tri_normal(v00, v11, v10);
-                    tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
+                    tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
                     let n2 = normalize_tri_normal(v00, v01, v11);
-                    tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
+                    tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
                 }
             }
         }
         let _ = (x_min, x_max, water_y); // used for bounding box reference
+
+        // ── River bank / shoreline geometry ──────────────────────────────
+        // Wider sloped bank strips on both sides of each segment. Transitions
+        // from wet sand/gravel at the waterline through muddy brown to grassy
+        // green at the outer edge. Bank is raised above water to avoid z-fighting.
+        const BANK_WET_SAND: u32 = 0xFF5A5A44;  // wet sand/gravel at waterline
+        const BANK_PEBBLE: u32 = 0xFF6B6B55;    // pebble/gravel strip
+        let bank_width = 6.0_f32;  // wider banks for more visible transition
+        let bank_steps = 6_usize;  // more steps for smoother gradient
+        for (bsi, seg) in river_segments.iter().enumerate() {
+            let sdx = seg.x2 - seg.x1;
+            let sdz = seg.z2 - seg.z1;
+            let slen = (sdx * sdx + sdz * sdz).sqrt();
+            if slen < 0.01 { continue; }
+            let perp_x = -sdz / slen;
+            let perp_z = sdx / slen;
+            let hw = RIVER_WIDTH * 0.5;
+            let wy = (bank_heights[bsi].0 + bank_heights[bsi].1) * 0.5 - 0.5;
+            let along_count = (slen / 2.0).ceil() as usize;
+
+            for &side in &[-1.0_f32, 1.0_f32] {
+                for ai in 0..along_count {
+                    let t0 = ai as f32 / along_count as f32;
+                    let t1 = (ai + 1) as f32 / along_count as f32;
+
+                    for bi in 0..bank_steps {
+                        let b0 = bi as f32 / bank_steps as f32;
+                        let b1 = (bi + 1) as f32 / bank_steps as f32;
+                        let outer_off0 = hw + bank_width * b0;
+                        let outer_off1 = hw + bank_width * b1;
+
+                        let cx00 = seg.x1 + sdx * t0 + perp_x * side * outer_off0;
+                        let cz00 = seg.z1 + sdz * t0 + perp_z * side * outer_off0;
+                        let cx10 = seg.x1 + sdx * t1 + perp_x * side * outer_off0;
+                        let cz10 = seg.z1 + sdz * t1 + perp_z * side * outer_off0;
+                        let cx01 = seg.x1 + sdx * t0 + perp_x * side * outer_off1;
+                        let cz01 = seg.z1 + sdz * t0 + perp_z * side * outer_off1;
+                        let cx11 = seg.x1 + sdx * t1 + perp_x * side * outer_off1;
+                        let cz11 = seg.z1 + sdz * t1 + perp_z * side * outer_off1;
+
+                        // Smoothstep height: water level at inner edge, terrain at outer
+                        let slope0 = b0 * b0 * (3.0 - 2.0 * b0);
+                        let slope1 = b1 * b1 * (3.0 - 2.0 * b1);
+                        let ty00 = terrain.height_at(cx00, cz00);
+                        let ty10 = terrain.height_at(cx10, cz10);
+                        let ty01 = terrain.height_at(cx01, cz01);
+                        let ty11 = terrain.height_at(cx11, cz11);
+
+                        // Higher offset near water (0.35) to stay above wave peaks,
+                        // decreasing toward terrain level at outer edge
+                        let inner_lift = 0.35 * (1.0 - slope0);
+                        let outer_lift = 0.35 * (1.0 - slope1);
+                        let v00 = [cx00, wy + (ty00 - wy) * slope0 + inner_lift, cz00];
+                        let v10 = [cx10, wy + (ty10 - wy) * slope0 + inner_lift, cz10];
+                        let v01 = [cx01, wy + (ty01 - wy) * slope1 + outer_lift, cz01];
+                        let v11 = [cx11, wy + (ty11 - wy) * slope1 + outer_lift, cz11];
+
+                        // Color gradient: wet sand -> pebble -> mud -> grass
+                        let color_t = (b0 + b1) * 0.5;
+                        let bank_color = if color_t < 0.2 {
+                            lerp_color(BANK_WET_SAND, BANK_PEBBLE, color_t * 5.0)
+                        } else if color_t < 0.5 {
+                            lerp_color(BANK_PEBBLE, BANK_MUD, (color_t - 0.2) * 3.333)
+                        } else {
+                            lerp_color(BANK_MUD, BANK_GRASS, (color_t - 0.5) * 2.0)
+                        };
+                        let bh = (ai as u32).wrapping_mul(73856093)
+                            ^ (bi as u32).wrapping_mul(19349663)
+                            ^ (bsi as u32).wrapping_mul(2654435761);
+                        let bnoise = (bh % 12) as i32 - 6;
+                        let color = jitter_color(bank_color, bnoise);
+
+                        // CCW winding depends on side: mirrored grid flips winding
+                        if side > 0.0 {
+                            let n1 = normalize_tri_normal(v00, v11, v10);
+                            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
+                            let n2 = normalize_tri_normal(v00, v01, v11);
+                            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
+                        } else {
+                            let n1 = normalize_tri_normal(v00, v10, v11);
+                            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
+                            let n2 = normalize_tri_normal(v00, v11, v01);
+                            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
+                        }
+                    }
+                }
+
+                // Scatter pebbles/small rocks along the waterline for each side
+                let pebble_seed_base = (bsi as u64).wrapping_mul(48611)
+                    ^ if side > 0.0 { 99991 } else { 0 };
+                let mut ph = pebble_seed_base;
+                let peb_next = |ph: &mut u64| -> f32 {
+                    *ph = ph.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    ((*ph >> 16) & 0xFFFF) as f32 / 65535.0
+                };
+                let pebble_count = (slen * 0.8) as usize;
+                for _pi in 0..pebble_count {
+                    let pt = peb_next(&mut ph);
+                    let px = seg.x1 + sdx * pt + perp_x * side * (hw + peb_next(&mut ph) * 1.5);
+                    let pz = seg.z1 + sdz * pt + perp_z * side * (hw + peb_next(&mut ph) * 1.5);
+                    let py = wy + 0.38;
+                    let pr = 0.05 + peb_next(&mut ph) * 0.12;
+                    let peb_shade = (ph % 30) as i32 - 15;
+                    let peb_color = jitter_color(BANK_PEBBLE, peb_shade);
+                    // Small flat pebble — 4 tris (flattened diamond, CCW winding for +Y normal)
+                    let pa = peb_next(&mut ph) * std::f32::consts::TAU;
+                    let (ps, pc) = (pa.sin(), pa.cos());
+                    let pn = [0.0_f32, 1.0, 0.0];
+                    tris.push(WorldTri { v: [
+                        [px, py, pz],
+                        [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
+                        [px + pc * pr, py, pz + ps * pr],
+                    ], normal: pn, color: peb_color });
+                    tris.push(WorldTri { v: [
+                        [px, py, pz],
+                        [px - pc * pr, py, pz - ps * pr],
+                        [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
+                    ], normal: pn, color: peb_color });
+                    tris.push(WorldTri { v: [
+                        [px, py, pz],
+                        [px + ps * pr * 0.6, py, pz - pc * pr * 0.6],
+                        [px - pc * pr, py, pz - ps * pr],
+                    ], normal: pn, color: peb_color });
+                    tris.push(WorldTri { v: [
+                        [px, py, pz],
+                        [px + pc * pr, py, pz + ps * pr],
+                        [px + ps * pr * 0.6, py, pz - pc * pr * 0.6],
+                    ], normal: pn, color: peb_color });
+                }
+            }
+        }
     }
 }
 
@@ -1418,12 +1625,29 @@ fn generate_parking_lots(
             trees.push(Tree { x: tx, z: tz, trunk_radius: 0.3 });
         }
 
-        // Corner lights — cylinder pole + sphere globe
+        // Corner lights — base plate + tapered base + cylinder pole + sphere globe
         let lx = lot_cx + lot_hw - 0.5;
         let lz = lot_cz + lot_hd - 0.5;
         let lgy = terrain.height_at(lx, lz);
-        mesh::cylinder_tris(tris, lx, lgy + 2.5, lz, 0.06, 5.0, 6, LAMP_POLE_COLOR);
+        // Base mounting plate
+        let lbase_y = lgy + 0.04;
+        for pi in 0..8u32 {
+            let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
+            let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
+            tris.push(WorldTri {
+                v: [[lx, lbase_y, lz],
+                    [lx + a1.cos() * 0.25, lbase_y, lz + a1.sin() * 0.25],
+                    [lx + a0.cos() * 0.25, lbase_y, lz + a0.sin() * 0.25]],
+                normal: [0.0, 1.0, 0.0], color: LAMP_BASE_COLOR,
+            });
+        }
+        // Wider base section
+        mesh::cylinder_tris(tris, lx, lgy + 0.2, lz, 0.12, 0.4, 6, LAMP_BASE_COLOR);
+        // Main pole
+        mesh::cylinder_tris(tris, lx, lgy + 2.7, lz, 0.06, 4.6, 6, LAMP_POLE_COLOR);
         mesh::sphere_tris(tris, lx, lgy + 5.2, lz, 0.2, 1, LAMP_GLOW_COLOR);
+        // Glow halo around globe
+        mesh::glow_halo(tris, lx, lgy + 5.2, lz, 0.25, 1.2, 8, LAMP_GLOW_COLOR);
         // Ground light pool
         let pool_y = lgy + 0.03;
         let pool_color: u32 = 0x00553810;
@@ -1482,10 +1706,10 @@ fn generate_market_stalls(
         let v1 = [sx + sw * 0.5, roof_y + 0.3, sz - sd * 0.5];
         let v2 = [sx + sw * 0.5, roof_y - 0.1, sz + sd * 0.5];
         let v3 = [sx - sw * 0.5, roof_y - 0.1, sz + sd * 0.5];
-        // CW winding (matches mesh.rs convention for GPU backface culling)
+        // CCW winding (outward normal points upward for canopy)
         let roof_n = normalize_tri_normal(v0, v2, v1);
-        tris.push(WorldTri { v: [v0, v1, v2], normal: roof_n, color: canvas_color });
-        tris.push(WorldTri { v: [v0, v2, v3], normal: roof_n, color: canvas_color });
+        tris.push(WorldTri { v: [v0, v2, v1], normal: roof_n, color: canvas_color });
+        tris.push(WorldTri { v: [v0, v3, v2], normal: roof_n, color: canvas_color });
 
         // Counter front — beveled
         mesh::beveled_box_tris(tris, sx, gy + 0.5, sz - sd * 0.5 + 0.1, sw * 0.9, 1.0, 0.2, 0.03, STALL_COUNTER_COLOR);
@@ -2183,6 +2407,42 @@ fn validate_building_accessibility(world: &WorldData, net: &RoadNetwork) -> Vec<
     reachable
 }
 
+/// Darken ground-facing triangles near building footprints to simulate
+/// ambient occlusion / contact shadows at building bases.
+fn apply_building_base_ao(tris: &mut Vec<WorldTri>, buildings: &[Building]) {
+    const AO_RADIUS: f32 = 3.5;  // how far the darkening extends from building edge
+    const AO_STRENGTH: f32 = 0.38; // darken factor at the building edge (0=black, 1=no change)
+
+    for tri in tris.iter_mut() {
+        // Only affect roughly horizontal surfaces (ground, sidewalk, road)
+        if tri.normal[1] < 0.5 { continue; }
+
+        let cx = (tri.v[0][0] + tri.v[1][0] + tri.v[2][0]) * 0.333;
+        let cz = (tri.v[0][2] + tri.v[1][2] + tri.v[2][2]) * 0.333;
+
+        let mut min_dist = f32::MAX;
+        for b in buildings {
+            // Signed distance from centroid to building footprint AABB
+            let dx = (cx - b.x).abs() - b.w * 0.5;
+            let dz = (cz - b.z).abs() - b.d * 0.5;
+            // Euclidean distance to AABB
+            let ex = dx.max(0.0);
+            let ez = dz.max(0.0);
+            let d = (ex * ex + ez * ez).sqrt();
+            // If inside footprint, distance is 0
+            let d = if dx < 0.0 && dz < 0.0 { 0.0 } else { d };
+            if d < min_dist { min_dist = d; }
+        }
+
+        if min_dist < AO_RADIUS {
+            // Smooth falloff: strongest at edge, fading to nothing at AO_RADIUS
+            let t = min_dist / AO_RADIUS; // 0 at edge, 1 at max radius
+            let factor = AO_STRENGTH + (1.0 - AO_STRENGTH) * t * t; // quadratic ease-out
+            tri.color = darken_color(tri.color, factor);
+        }
+    }
+}
+
 pub fn generate_world(game: &mut GameState) {
     let mut rng = Rng::new(game.world_seed);
     let mut tris = Vec::with_capacity(500_000);
@@ -2213,9 +2473,9 @@ pub fn generate_world(game: &mut GameState) {
                 // Road surface
                 generate_road_strip(&mut tris, &game.terrain,
                     seg.x0, seg.z0, seg.x1, seg.z1, hw, 0.05, ROAD_COLOR);
-                // Center line (yellow)
+                // Center line (yellow) — raised well above road to prevent Z-fighting
                 generate_road_strip(&mut tris, &game.terrain,
-                    seg.x0, seg.z0, seg.x1, seg.z1, 0.15, 0.08, ROAD_LINE_COLOR);
+                    seg.x0, seg.z0, seg.x1, seg.z1, 0.15, 0.12, ROAD_LINE_COLOR);
 
                 // Direction for edge lines + sidewalks
                 let dx = seg.x1 - seg.x0;
@@ -2232,32 +2492,50 @@ pub fn generate_world(game: &mut GameState) {
                     let el_x1 = seg.x1 + perp_x * edge_offset;
                     let el_z1 = seg.z1 + perp_z * edge_offset;
                     generate_road_strip(&mut tris, &game.terrain,
-                        el_x0, el_z0, el_x1, el_z1, 0.08, 0.07, ROAD_EDGE_COLOR);
+                        el_x0, el_z0, el_x1, el_z1, 0.08, 0.11, ROAD_EDGE_COLOR);
                     let er_x0 = seg.x0 - perp_x * edge_offset;
                     let er_z0 = seg.z0 - perp_z * edge_offset;
                     let er_x1 = seg.x1 - perp_x * edge_offset;
                     let er_z1 = seg.z1 - perp_z * edge_offset;
                     generate_road_strip(&mut tris, &game.terrain,
-                        er_x0, er_z0, er_x1, er_z1, 0.08, 0.07, ROAD_EDGE_COLOR);
+                        er_x0, er_z0, er_x1, er_z1, 0.08, 0.11, ROAD_EDGE_COLOR);
 
                     let sw_hw = SIDEWALK_WIDTH * 0.5;
                     let sw_offset = hw + sw_hw;
 
-                    // Left sidewalk
+                    // Curb strips — raised concrete edges between road and sidewalk
+                    let curb_hw = 0.12; // curb half-width
+                    let curb_offset = hw + curb_hw; // just outside road edge
+                    // Left curb
+                    let cl_x0 = seg.x0 + perp_x * curb_offset;
+                    let cl_z0 = seg.z0 + perp_z * curb_offset;
+                    let cl_x1 = seg.x1 + perp_x * curb_offset;
+                    let cl_z1 = seg.z1 + perp_z * curb_offset;
+                    generate_road_strip(&mut tris, &game.terrain,
+                        cl_x0, cl_z0, cl_x1, cl_z1, curb_hw, 0.18, CURB_COLOR);
+                    // Right curb
+                    let cr_x0 = seg.x0 - perp_x * curb_offset;
+                    let cr_z0 = seg.z0 - perp_z * curb_offset;
+                    let cr_x1 = seg.x1 - perp_x * curb_offset;
+                    let cr_z1 = seg.z1 - perp_z * curb_offset;
+                    generate_road_strip(&mut tris, &game.terrain,
+                        cr_x0, cr_z0, cr_x1, cr_z1, curb_hw, 0.18, CURB_COLOR);
+
+                    // Left sidewalk — raised above curb
                     let lx0 = seg.x0 + perp_x * sw_offset;
                     let lz0 = seg.z0 + perp_z * sw_offset;
                     let lx1 = seg.x1 + perp_x * sw_offset;
                     let lz1 = seg.z1 + perp_z * sw_offset;
                     generate_road_strip(&mut tris, &game.terrain,
-                        lx0, lz0, lx1, lz1, sw_hw, 0.06, SIDEWALK_COLOR);
+                        lx0, lz0, lx1, lz1, sw_hw, 0.15, SIDEWALK_COLOR);
 
-                    // Right sidewalk
+                    // Right sidewalk — raised above curb
                     let rx0 = seg.x0 - perp_x * sw_offset;
                     let rz0 = seg.z0 - perp_z * sw_offset;
                     let rx1 = seg.x1 - perp_x * sw_offset;
                     let rz1 = seg.z1 - perp_z * sw_offset;
                     generate_road_strip(&mut tris, &game.terrain,
-                        rx0, rz0, rx1, rz1, sw_hw, 0.06, SIDEWALK_COLOR);
+                        rx0, rz0, rx1, rz1, sw_hw, 0.15, SIDEWALK_COLOR);
                 }
             }
             RoadTier::FieldRoad => {
@@ -2606,10 +2884,10 @@ pub fn generate_world(game: &mut GameState) {
         game.world.buildings.push(Building { x, z, w, d, h, ground_y });
     }
 
-    // Trees — bark trunk + branch splits + individual leaf canopies
+    // Trees — visible bark trunk + branch splits + raised leaf canopies
     const LEAF_COLORS: [u32; 8] = [
-        0xFF2D7A2D, 0xFF338833, 0xFF228822, 0xFF448844,
-        0xFF2A6B2A, 0xFF3A8A3A, 0xFF1F6F1F, 0xFF359935,
+        0xFF38883A, 0xFF44AA44, 0xFF2D8830, 0xFF55BB55,
+        0xFF3A9A3A, 0xFF48B048, 0xFF2A7A2C, 0xFF40A840,
     ];
     const BARK_COLOR: u32 = 0xFF443322;
     const BARK_RIDGE_COLOR: u32 = 0xFF332211;
@@ -2623,12 +2901,12 @@ pub fn generate_world(game: &mut GameState) {
                 && !on_river(x, z, &game.world.river_segments) { break; }
         }
         let ground_y = game.terrain.height_at(x, z);
-        let trunk_h = rng.range(2.0, 4.5);
-        let trunk_r = rng.range(0.12, 0.28);
-        let canopy_r = rng.range(1.2, 2.8);
+        let trunk_h = rng.range(3.5, 6.0);   // taller trunks so they're visible
+        let trunk_r = rng.range(0.18, 0.35);
+        let canopy_r = rng.range(1.3, 2.5);  // slightly smaller canopy radius
         let tree_seed = ti as u64 * 7919 + game.world_seed as u64;
 
-        // Bark trunk with ridges
+        // Bark trunk with ridges — full visible trunk
         mesh::bark_cylinder_tris(&mut tris, x, ground_y + trunk_h * 0.5, z,
             trunk_r, trunk_h, 10, trunk_r * 0.15, tree_seed, BARK_COLOR, BARK_RIDGE_COLOR);
 
@@ -2641,15 +2919,15 @@ pub fn generate_world(game: &mut GameState) {
             mesh::sphere_tris(&mut tris, rx, ground_y + 0.05, rz, trunk_r * 0.5, 0, BARK_COLOR);
         }
 
-        // 2-4 branch forks near top
+        // 2-4 branch forks starting at 70% trunk height, extending outward+up
         let num_branches = 2 + (ti % 3);
-        let branch_base_y = ground_y + trunk_h * 0.65;
+        let branch_base_y = ground_y + trunk_h * 0.7;
         for bi in 0..num_branches {
             let angle = (bi as f32 / num_branches as f32) * std::f32::consts::TAU + (ti as f32 * 1.23);
-            let blen = canopy_r * 0.65;
-            let bx = x + angle.cos() * blen * 0.5;
-            let bz = z + angle.sin() * blen * 0.5;
-            let by = branch_base_y + blen * 0.45;
+            let blen = canopy_r * 0.7;
+            let bx = x + angle.cos() * blen * 0.6;
+            let bz = z + angle.sin() * blen * 0.6;
+            let by = branch_base_y + blen * 0.5;
             mesh::cylinder_between(&mut tris,
                 [x, branch_base_y, z], [bx, by, bz],
                 trunk_r * 0.45, 5, BARK_COLOR);
@@ -2657,27 +2935,36 @@ pub fn generate_world(game: &mut GameState) {
             // Sub-branches (smaller twigs from each main branch)
             if bi < 2 {
                 let sub_angle = angle + 0.6;
-                let sbx = bx + sub_angle.cos() * blen * 0.25;
-                let sbz = bz + sub_angle.sin() * blen * 0.25;
-                let sby = by + blen * 0.2;
+                let sbx = bx + sub_angle.cos() * blen * 0.3;
+                let sbz = bz + sub_angle.sin() * blen * 0.3;
+                let sby = by + blen * 0.25;
                 mesh::cylinder_between(&mut tris,
                     [bx, by, bz], [sbx, sby, sbz],
                     trunk_r * 0.2, 3, BARK_COLOR);
             }
         }
 
-        // 3-5 leaf canopy clusters (individual leaves instead of solid spheres)
+        // Canopy raised well above trunk top so lower trunk is visible.
+        // Canopy center sits at trunk_top + canopy_r * 0.6 (instead of 0.15).
         let num_canopies = 3 + (ti % 3);
-        let canopy_base_y = ground_y + trunk_h + canopy_r * 0.2;
+        let canopy_base_y = ground_y + trunk_h + canopy_r * 0.6;
+
+        // Central cluster — fills the core of the crown
+        let central_cr = canopy_r * 0.5;
+        mesh::leaf_canopy_tris(&mut tris, x, canopy_base_y + canopy_r * 0.1, z,
+            central_cr, 60 + (ti * 5) % 20, central_cr * 0.2,
+            tree_seed.wrapping_add(9999), &LEAF_COLORS);
+
+        // Surrounding clusters — overlap to form a natural-looking crown
         for ci in 0..num_canopies {
             let angle = (ci as f32 / num_canopies as f32) * std::f32::consts::TAU + (ti as f32 * 0.77);
-            let spread = canopy_r * 0.35;
+            let spread = canopy_r * 0.5;
             let clx = x + angle.cos() * spread;
             let clz = z + angle.sin() * spread;
-            let cly = canopy_base_y + (ci as f32 * 0.25);
+            let cly = canopy_base_y + (ci as f32 * 0.15);
             let cr = canopy_r * rng.range(0.35, 0.55);
             let leaves_per_cluster = 50 + (ti * 7 + ci) % 25;
-            let leaf_sz = cr * 0.08;
+            let leaf_sz = cr * 0.2;
             mesh::leaf_canopy_tris(&mut tris, clx, cly, clz, cr,
                 leaves_per_cluster, leaf_sz,
                 tree_seed.wrapping_add(ci as u64 * 3571), &LEAF_COLORS);
@@ -2708,9 +2995,10 @@ pub fn generate_world(game: &mut GameState) {
     }
 
     // Grass patches — scattered across terrain, denser near roads/buildings
-    const GRASS_COLORS: [u32; 6] = [
-        0xFF2A7A2A, 0xFF338833, 0xFF1F6F1F, 0xFF2D6B2D,
-        0xFF44AA44, 0xFF3A8A3A,
+    // Brighter, more varied greens with yellow-green highlights
+    const GRASS_COLORS: [u32; 8] = [
+        0xFF55BB55, 0xFF66CC55, 0xFF44AA44, 0xFF5DBB4D,
+        0xFF77CC66, 0xFF55AA55, 0xFF6BC060, 0xFF88DD77,
     ];
     let num_grass_patches = 400;
     for gi in 0..num_grass_patches {
@@ -2719,10 +3007,10 @@ pub fn generate_world(game: &mut GameState) {
         if on_any_road(gx, gz, &game.road_network)
             || on_river(gx, gz, &game.world.river_segments) { continue; }
         let gy = game.terrain.height_at(gx, gz);
-        let patch_r = rng.range(1.0, 3.0);
-        let blade_count = 30 + (gi % 30);
-        let blade_h = rng.range(0.08, 0.25);
-        let blade_w = rng.range(0.015, 0.04);
+        let patch_r = rng.range(1.5, 3.5);
+        let blade_count = 20 + (gi % 20);  // fewer blades but each wider/taller
+        let blade_h = rng.range(0.2, 0.45);   // taller blades (was 0.08-0.25)
+        let blade_w = rng.range(0.06, 0.12);  // much wider blades (was 0.015-0.04)
         let terrain_ref = &game.terrain;
         mesh::grass_patch_tris(&mut tris, gx, gy, gz, patch_r, blade_count,
             blade_h, blade_w, gi as u64 * 4877 + game.world_seed as u64,
@@ -2767,8 +3055,22 @@ pub fn generate_world(game: &mut GameState) {
         let z = sz + perp_z * offset * side;
         let ground_y = game.terrain.height_at(x, z);
 
-        // Cylinder pole
-        mesh::cylinder_tris(&mut tris, x, ground_y + 2.5, z, 0.06, 5.0, 6, LAMP_POLE_COLOR);
+        // Base mounting plate — flat disc at ground level
+        let base_y = ground_y + 0.04;
+        for pi in 0..8u32 {
+            let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
+            let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
+            tris.push(WorldTri {
+                v: [[x, base_y, z],
+                    [x + a1.cos() * 0.25, base_y, z + a1.sin() * 0.25],
+                    [x + a0.cos() * 0.25, base_y, z + a0.sin() * 0.25]],
+                normal: [0.0, 1.0, 0.0], color: LAMP_BASE_COLOR,
+            });
+        }
+        // Wider base section — tapered cylinder at bottom of pole
+        mesh::cylinder_tris(&mut tris, x, ground_y + 0.2, z, 0.12, 0.4, 6, LAMP_BASE_COLOR);
+        // Main cylinder pole
+        mesh::cylinder_tris(&mut tris, x, ground_y + 2.7, z, 0.06, 4.6, 6, LAMP_POLE_COLOR);
 
         // Curved arm — short cylinder from pole top toward road
         let arm_dx = -perp_x * side * 0.8;
@@ -2781,6 +3083,9 @@ pub fn generate_world(game: &mut GameState) {
         // Glass globe at arm tip
         mesh::sphere_tris(&mut tris, x + arm_dx, ground_y + 5.1, z + arm_dz,
             0.2, 1, LAMP_GLOW_COLOR);
+        // Glow halo around globe
+        mesh::glow_halo(&mut tris, x + arm_dx, ground_y + 5.1, z + arm_dz,
+            0.25, 1.2, 8, LAMP_GLOW_COLOR);
 
         // Ground light pool — warm emissive disc beneath the lamp
         let pool_x = x + arm_dx;
@@ -2898,16 +3203,17 @@ pub fn generate_world(game: &mut GameState) {
     // Building ground shadows — dark disc at base for contact grounding
     for b in &game.world.buildings {
         let shadow_y = b.ground_y + 0.02;
-        let shadow_hw = b.w * 0.5 + 0.5;
-        let shadow_hd = b.d * 0.5 + 0.5;
-        let shadow_color: u32 = 0xFF1A2A1A; // dark green-tinted shadow
+        let shadow_hw = b.w * 0.5 + 1.0;
+        let shadow_hd = b.d * 0.5 + 1.0;
+        let shadow_color: u32 = 0xFF101A10; // darker green-tinted shadow for contact grounding
         // Simple quad shadow footprint
         let v0 = [b.x - shadow_hw, shadow_y, b.z - shadow_hd];
         let v1 = [b.x + shadow_hw, shadow_y, b.z - shadow_hd];
         let v2 = [b.x + shadow_hw, shadow_y, b.z + shadow_hd];
         let v3 = [b.x - shadow_hw, shadow_y, b.z + shadow_hd];
-        tris.push(WorldTri { v: [v0, v1, v2], normal: [0.0, 1.0, 0.0], color: shadow_color });
-        tris.push(WorldTri { v: [v0, v2, v3], normal: [0.0, 1.0, 0.0], color: shadow_color });
+        // CCW winding for +Y normal (upward-facing ground shadow)
+        tris.push(WorldTri { v: [v0, v2, v1], normal: [0.0, 1.0, 0.0], color: shadow_color });
+        tris.push(WorldTri { v: [v0, v3, v2], normal: [0.0, 1.0, 0.0], color: shadow_color });
     }
 
     // NPC-owned vehicles — one per NPC, all start parked
@@ -2916,13 +3222,13 @@ pub fn generate_world(game: &mut GameState) {
         let spot_offset = i;
         let (park_x, park_y, park_z, park_rot, spot_idx) = if spot_offset < total_spots {
             let spot = &game.road_network.parking_spots[spot_offset];
-            (spot.x, game.terrain.height_at(spot.x, spot.z), spot.z, spot.rot_y, Some(spot_offset))
+            (spot.x, game.terrain.height_at(spot.x, spot.z) + VEHICLE_GROUND_OFFSET, spot.z, spot.rot_y, Some(spot_offset))
         } else {
             let home_idx = i % game.world.buildings.len();
             let b = &game.world.buildings[home_idx];
             let px = b.x + b.w * 0.5 + 2.0;
             let pz = b.z;
-            (px, game.terrain.height_at(px, pz), pz, 0.0, None)
+            (px, game.terrain.height_at(px, pz) + VEHICLE_GROUND_OFFSET, pz, 0.0, None)
         };
 
         let vi = game.world.vehicles.len();
@@ -2933,6 +3239,7 @@ pub fn generate_world(game: &mut GameState) {
         let color = rng.pick(&VEHICLE_COLORS);
         let mut vehicle_rng = rng.fork(1000 + i as u64);
         let cruise_speed = vehicle_rng.range(7.0, 12.0);
+        let scale = vehicle_rng.range(0.82, 1.18);
         game.world.vehicles.push(Vehicle {
             x: park_x, y: park_y, z: park_z,
             rot_y: park_rot, speed: 0.0, color, occupied: false,
@@ -2946,6 +3253,7 @@ pub fn generate_world(game: &mut GameState) {
             parking_target: spot_idx, parked: true,
             idle_timer: 0.0,
             terrain_normal: [0.0, 1.0, 0.0],
+            scale,
         });
     }
 
@@ -3063,6 +3371,9 @@ pub fn generate_world(game: &mut GameState) {
             thirst: 100.0,
             starving_dead: false,
             fitness_starve_time: 0.0,
+            find_item_failures: 0,
+            find_bin_failures: 0,
+            stuck_recoveries: 0,
             sound: [0.0; 3],
             fitness_sounds_made: 0,
             fitness_npcs_heard: 0,
@@ -3080,9 +3391,9 @@ pub fn generate_world(game: &mut GameState) {
         });
     }
 
-    // Items: Health, Money, Stamina only (Food/Water from vending machines)
+    // Items: all 5 kinds spawn in the wild
     // Spawn on walkable terrain — not on roads, not in collision zones, not on river
-    let item_kinds = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina];
+    let item_kinds = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina, ItemKind::Food, ItemKind::Water];
     for _ in 0..NUM_ITEMS {
         let mut x;
         let mut z;
@@ -3109,7 +3420,7 @@ pub fn generate_world(game: &mut GameState) {
             break;
         }
         let y = game.terrain.height_at(x, z);
-        let kind = item_kinds[rng.next() as usize % 3];
+        let kind = item_kinds[rng.next() as usize % item_kinds.len()];
         game.world.items.push(Item {
             x, y, z, kind, active: true,
             spin_phase: rng.range(0.0, 6.0),
@@ -3119,6 +3430,10 @@ pub fn generate_world(game: &mut GameState) {
 
     // Set player spawn height
     game.player.y = game.terrain.height_at(game.player.x, game.player.z);
+
+    // Ambient occlusion: darken ground triangles near building bases
+    // Creates contact shadow at building-ground interface
+    apply_building_base_ao(&mut tris, &game.world.buildings);
 
     eprintln!("World: {} tris, {} road segs ({} nodes), {} vehicles ({} NPC-owned), {} npcs, {} items, {} bins, {} interactibles, {} walls, {} river segs, {} parking spots",
         tris.len(), game.road_network.segments.len(), game.road_network.nodes.len(),
