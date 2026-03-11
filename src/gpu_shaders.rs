@@ -4,96 +4,33 @@
 
 #![allow(unused)]
 
-fn encode_spirv_string(s: &str) -> Vec<u32> {
-    let mut bytes: Vec<u8> = s.bytes().collect();
-    bytes.push(0);
-    while bytes.len() % 4 != 0 { bytes.push(0); }
-    bytes.chunks(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
-}
+use crate::gpu_spirv::*;
+use crate::{emit, emit_str};
 
-macro_rules! emit {
-    ($s:expr, $opcode:expr $(, $op:expr)*) => {{
-        let ops: &[u32] = &[$($op),*];
-        $s.push((((ops.len() as u32 + 1) << 16) | ($opcode as u32)));
-        $s.extend_from_slice(ops);
-    }};
-}
-
-macro_rules! emit_str {
-    ($s:expr, $opcode:expr, [$($pre:expr),*], $str:expr, [$($post:expr),*]) => {{
-        let pre: &[u32] = &[$($pre),*];
-        let post: &[u32] = &[$($post),*];
-        let sw = encode_spirv_string($str);
-        let wc = (1 + pre.len() + sw.len() + post.len()) as u32;
-        $s.push((wc << 16) | ($opcode as u32));
-        $s.extend_from_slice(pre);
-        $s.extend_from_slice(&sw);
-        $s.extend_from_slice(post);
-    }};
-}
-
-// SPIR-V opcodes
-const OP_CAP: u16 = 17;
+// SPIR-V opcodes (graphics-specific)
 const OP_EXT_INST_IMPORT: u16 = 11;
 const OP_EXT_INST: u16 = 12;
-const OP_MEM_MODEL: u16 = 14;
-const OP_ENTRY: u16 = 15;
-const OP_EXEC_MODE: u16 = 16;
-const OP_DECORATE: u16 = 71;
-const OP_MEMBER_DEC: u16 = 72;
-const OP_TYPE_VOID: u16 = 19;
-const OP_TYPE_FN: u16 = 33;
-const OP_TYPE_INT: u16 = 21;
-const OP_TYPE_FLOAT: u16 = 22;
-const OP_TYPE_VEC: u16 = 23;
 const OP_TYPE_MAT: u16 = 24;
-const OP_TYPE_PTR: u16 = 32;
-const OP_TYPE_STRUCT: u16 = 30;
-const OP_CONST: u16 = 43;
-const OP_VAR: u16 = 59;
-const OP_FN: u16 = 54;
-const OP_FN_END: u16 = 56;
-const OP_LABEL: u16 = 248;
-const OP_ACCESS: u16 = 65;
-const OP_LOAD: u16 = 61;
-const OP_STORE: u16 = 62;
-const OP_RETURN: u16 = 253;
 const OP_COMPOSITE_CONSTRUCT: u16 = 80;
 const OP_COMPOSITE_EXTRACT: u16 = 81;
 const OP_VECTOR_SHUFFLE: u16 = 79;
 const OP_MAT_TIMES_VEC: u16 = 145;
 const OP_VEC_TIMES_SCALAR: u16 = 142;
 const OP_DOT: u16 = 148;
-const OP_FMUL: u16 = 133;
-const OP_FADD: u16 = 129;
-const OP_FSUB: u16 = 131;
 
-// Decoration values
-const DEC_BUILTIN: u32 = 11;
-const DEC_BLOCK: u32 = 2;
-const DEC_OFFSET: u32 = 35;
+// Decoration values (graphics-specific)
 const DEC_LOCATION: u32 = 30;
 const DEC_COL_MAJOR: u32 = 5;
 const DEC_MAT_STRIDE: u32 = 7;
 
-// Storage classes
-const SC_INPUT: u32 = 1;
+// Storage classes (graphics-specific)
 const SC_OUTPUT: u32 = 3;
-const SC_PUSH_CONST: u32 = 9;
 
 // Built-in values
 const BI_POSITION: u32 = 0;
 
 // Execution mode values
 const EM_ORIGIN_UPPER_LEFT: u32 = 7;
-
-fn header(s: &mut Vec<u32>, bound: u32) {
-    s[0] = 0x07230203;
-    s[1] = 0x00010300; // SPIR-V 1.3
-    s[2] = 0;
-    s[3] = bound;
-    s[4] = 0;
-}
 
 /// Vertex shader: VP transform + GPU-side lighting/fog + emissive glow
 ///

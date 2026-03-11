@@ -3,93 +3,30 @@
 
 #![allow(unused)]
 
-fn encode_spirv_string(s: &str) -> Vec<u32> {
-    let mut bytes: Vec<u8> = s.bytes().collect();
-    bytes.push(0);
-    while bytes.len() % 4 != 0 { bytes.push(0); }
-    bytes.chunks(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
-}
+use crate::gpu_spirv::*;
+use crate::{emit, emit_str};
 
-macro_rules! emit {
-    ($s:expr, $opcode:expr $(, $op:expr)*) => {{
-        let ops: &[u32] = &[$($op),*];
-        $s.push((((ops.len() as u32 + 1) << 16) | ($opcode as u32)));
-        $s.extend_from_slice(ops);
-    }};
-}
-
-macro_rules! emit_str {
-    ($s:expr, $opcode:expr, [$($pre:expr),*], $str:expr, [$($post:expr),*]) => {{
-        let pre: &[u32] = &[$($pre),*];
-        let post: &[u32] = &[$($post),*];
-        let sw = encode_spirv_string($str);
-        let wc = (1 + pre.len() + sw.len() + post.len()) as u32;
-        $s.push((wc << 16) | ($opcode as u32));
-        $s.extend_from_slice(pre);
-        $s.extend_from_slice(&sw);
-        $s.extend_from_slice(post);
-    }};
-}
-
-// SPIR-V opcodes
-const OP_CAP: u16 = 17;
-const OP_MEM_MODEL: u16 = 14;
-const OP_ENTRY: u16 = 15;
-const OP_EXEC_MODE: u16 = 16;
-const OP_DECORATE: u16 = 71;
-const OP_MEMBER_DEC: u16 = 72;
-const OP_TYPE_VOID: u16 = 19;
-const OP_TYPE_FN: u16 = 33;
-const OP_TYPE_INT: u16 = 21;
-const OP_TYPE_FLOAT: u16 = 22;
-const OP_TYPE_VEC: u16 = 23;
-const OP_TYPE_PTR: u16 = 32;
+// SPIR-V opcodes (compute-specific)
 const OP_TYPE_RT_ARR: u16 = 29;
-const OP_TYPE_STRUCT: u16 = 30;
 const OP_TYPE_BOOL: u16 = 20;
-const OP_CONST: u16 = 43;
-const OP_VAR: u16 = 59;
-const OP_FN: u16 = 54;
-const OP_FN_END: u16 = 56;
-const OP_LABEL: u16 = 248;
-const OP_ACCESS: u16 = 65;
-const OP_LOAD: u16 = 61;
-const OP_STORE: u16 = 62;
-const OP_RETURN: u16 = 253;
-const OP_FMUL: u16 = 133;
-const OP_FADD: u16 = 129;
-const OP_FSUB: u16 = 131;
 const OP_UGTEQ: u16 = 174;
 const OP_SEL_MERGE: u16 = 247;
 const OP_BR_COND: u16 = 250;
 const OP_BR: u16 = 249;
 
-// Decoration values
-const DEC_BUILTIN: u32 = 11;
-const DEC_BLOCK: u32 = 2;
-const DEC_OFFSET: u32 = 35;
+// Decoration values (compute-specific)
 const DEC_DESC_SET: u32 = 34;
 const DEC_BINDING: u32 = 33;
 const DEC_STRIDE: u32 = 6;
 
-// Storage classes
-const SC_INPUT: u32 = 1;
+// Storage classes (compute-specific)
 const SC_STORAGE_BUF: u32 = 12;
-const SC_PUSH_CONST: u32 = 9;
 
 // Built-in values
 const BI_GID: u32 = 28;
 
 // Execution mode values
 const EM_LOCAL_SIZE: u32 = 17;
-
-fn header(s: &mut Vec<u32>, bound: u32) {
-    s[0] = 0x07230203;
-    s[1] = 0x00010300; // SPIR-V 1.3 (for StorageBuffer class)
-    s[2] = 0;
-    s[3] = bound;
-    s[4] = 0;
-}
 
 // Test shader: buf[gid] *= 2.0
 // 1 storage buffer (set=0, binding=0), push constant = { count: u32 }
