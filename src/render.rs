@@ -7,6 +7,7 @@ use crate::math::*;
 use crate::mesh;
 use crate::raster::*;
 use crate::state::*;
+use crate::color::{lerp_color, darken};
 
 const SKIN_COLOR: u32 = 0xFFDEB887;
 
@@ -18,6 +19,37 @@ const NEAR_W: f32 = 0.1;
 
 // Body proportion scaling: ~6.5 heads tall heroic proportions
 const BODY_STRETCH: f32 = 1.25;  // moderate vertical stretch (less distortion)
+
+const FOG_DIST_SQ: f32 = FOG_DIST * FOG_DIST;
+
+fn job_hat_color(job: NpcJob) -> Option<u32> {
+    match job {
+        NpcJob::PolicePatrol => Some(0xFF2233AA),
+        NpcJob::Firefighter => Some(0xFFCC3322),
+        NpcJob::Paramedic => Some(0xFFDDDDDD),
+        NpcJob::ConstructionWorker => Some(0xFFDDAA22),
+        NpcJob::MailCarrier => Some(0xFF3344CC),
+        _ => None,
+    }
+}
+
+/// Terrain-aligned rotation + world-space translation for mesh triangles.
+fn place_mesh(
+    tris: &mut Vec<WorldTri>, base: usize,
+    terrain_normal: Vec3, tilt_max: f32, rot_y: f32,
+    x: f32, y: f32, z: f32,
+) {
+    let rot = terrain_rot3x3(clamp_normal_tilt(terrain_normal, tilt_max), rot_y);
+    for tri in &mut tris[base..] {
+        for v in &mut tri.v {
+            let rv = rot3x3_apply(&rot, *v);
+            v[0] = rv[0] + x;
+            v[1] = rv[1] + y;
+            v[2] = rv[2] + z;
+        }
+        tri.normal = rot3x3_apply(&rot, tri.normal);
+    }
+}
 
 // ── Parameterized body proportions (from GLTF reference scans) ──
 #[allow(dead_code)]
@@ -566,14 +598,6 @@ fn time_colors(hour: f32) -> TimeColors {
     TimeColors { sky, fog_r: fr, fog_g: fg, fog_b: fb, light_dir, ambient: amb, sun_strength: sun }
 }
 
-fn lerp_color(a: u32, b: u32, t: f32) -> u32 {
-    let t = t.clamp(0.0, 1.0);
-    let r = (((a >> 16) & 0xFF) as f32 * (1.0 - t) + ((b >> 16) & 0xFF) as f32 * t) as u32;
-    let g = (((a >> 8) & 0xFF) as f32 * (1.0 - t) + ((b >> 8) & 0xFF) as f32 * t) as u32;
-    let b_c = ((a & 0xFF) as f32 * (1.0 - t) + (b & 0xFF) as f32 * t) as u32;
-    0xFF000000 | (r << 16) | (g << 8) | b_c
-}
-
 pub fn sky_color(hour: f32) -> u32 {
     time_colors(hour).sky
 }
@@ -622,7 +646,7 @@ pub fn sys_render(
 }
 
 fn render_tris(fb: &mut Framebuffer, vp: &Mat4, tris: &[WorldTri], cam_pos: Vec3, tc: &TimeColors, fw: f32, fh: f32) {
-    let fog_dist_sq = FOG_DIST * FOG_DIST;
+    let fog_dist_sq = FOG_DIST_SQ;
 
     for tri in tris {
         let center = [
@@ -721,7 +745,7 @@ fn clip_near(verts: &[[f32; 4]; 3]) -> ([[f32; 4]; 4], usize) {
 }
 
 #[inline(always)]
-fn clip_to_screen(c: [f32; 4], w: f32, h: f32) -> [f32; 3] {
+pub fn clip_to_screen(c: [f32; 4], w: f32, h: f32) -> [f32; 3] {
     let inv_w = 1.0 / c[3];
     [
         (c[0] * inv_w + 1.0) * 0.5 * w,
@@ -2932,16 +2956,7 @@ pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
         None,
     );
 
-    let rot = terrain_rot3x3(clamp_normal_tilt(player.terrain_normal, 25.0), player.rot_y);
-    for tri in &mut tris[base..] {
-        for v in &mut tri.v {
-            let rv = rot3x3_apply(&rot, *v);
-            v[0] = rv[0] + player.x;
-            v[1] = rv[1] + player.y;
-            v[2] = rv[2] + player.z;
-        }
-        tri.normal = rot3x3_apply(&rot, tri.normal);
-    }
+    place_mesh(tris, base, player.terrain_normal, 25.0, player.rot_y, player.x, player.y, player.z);
 }
 
 /// Generate a clothed player body (for model_viewer debug renders).
@@ -3531,167 +3546,6 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
     }
 }
 
-fn _gen_vehicle_mesh_old(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bool) {
-    let base = tris.len();
-    let color = v.color;
-    let cabin_color = darken(color, VEHICLE_BODY_COLOR_DARKEN);
-    let trim_color = darken(color, 0.5);
-    let undercarriage = 0xFF333333_u32;
-
-    // Main body — beveled box chassis
-    mesh::beveled_box_tris(tris, 0.0, 0.45, 0.0, 1.8, 0.6, 3.6, 0.08, color);
-
-    // Undercarriage pan (visible from below)
-    push_box(tris, 0.0, 0.12, 0.0, 1.6, 0.04, 3.4, undercarriage);
-
-    // Wheel wells — dark recesses (4 arches)
-    for &(wx, wz) in &[(-0.88f32, -1.1f32), (0.88, -1.1), (-0.88, 1.1), (0.88, 1.1)] {
-        push_box(tris, wx, 0.3, wz, 0.12, 0.35, 0.5, undercarriage);
-    }
-
-    // Cabin — beveled with slightly tapered sides
-    mesh::beveled_box_tris(tris, 0.0, 0.95, 0.2, 1.5, 0.5, 1.8, 0.06, cabin_color);
-
-    // A-pillars (front windshield frame)
-    push_box(tris, -0.68, 0.95, -0.65, 0.06, 0.45, 0.06, trim_color);
-    push_box(tris, 0.68, 0.95, -0.65, 0.06, 0.45, 0.06, trim_color);
-    // B-pillars (between front/rear doors)
-    push_box(tris, -0.72, 0.95, 0.2, 0.06, 0.45, 0.06, trim_color);
-    push_box(tris, 0.72, 0.95, 0.2, 0.06, 0.45, 0.06, trim_color);
-    // C-pillars (rear)
-    push_box(tris, -0.68, 0.95, 1.05, 0.06, 0.45, 0.06, trim_color);
-    push_box(tris, 0.68, 0.95, 1.05, 0.06, 0.45, 0.06, trim_color);
-
-    // Roof rack rails (thin bars on top)
-    push_box(tris, -0.55, 1.22, 0.2, 0.03, 0.02, 1.4, trim_color);
-    push_box(tris, 0.55, 1.22, 0.2, 0.03, 0.02, 1.4, trim_color);
-
-    // Sloped hood (front slopes down with crease)
-    push_box(tris, 0.0, 0.58, -1.5, 1.6, 0.18, 0.5, darken(color, 0.88));
-    // Hood crease line
-    push_box(tris, 0.0, 0.68, -1.4, 0.03, 0.01, 0.7, darken(color, 0.7));
-
-    // Sloped trunk
-    push_box(tris, 0.0, 0.6, 1.55, 1.6, 0.12, 0.4, darken(color, 0.88));
-
-    // Front grille — dark slotted area
-    push_box(tris, 0.0, 0.38, -1.82, 0.8, 0.18, 0.04, 0xFF222222);
-    // Grille slats (3 horizontal bars)
-    for i in 0..3 {
-        let gy = 0.32 + i as f32 * 0.07;
-        push_box(tris, 0.0, gy, -1.83, 0.7, 0.015, 0.02, 0xFF888888);
-    }
-
-    // Windshields
-    push_box(tris, 0.0, 0.95, -0.7, 1.3, 0.35, 0.06, WINDSHIELD_COLOR);
-    push_box(tris, 0.0, 0.95, 1.15, 1.3, 0.35, 0.06, WINDSHIELD_COLOR);
-
-    // Side windows (front pair + rear pair)
-    push_box(tris, -0.76, 0.95, -0.2, 0.04, 0.3, 0.6, WINDSHIELD_COLOR);
-    push_box(tris, 0.76, 0.95, -0.2, 0.04, 0.3, 0.6, WINDSHIELD_COLOR);
-    push_box(tris, -0.76, 0.95, 0.6, 0.04, 0.3, 0.5, WINDSHIELD_COLOR);
-    push_box(tris, 0.76, 0.95, 0.6, 0.04, 0.3, 0.5, WINDSHIELD_COLOR);
-
-    // Door handles (4 small cylinders on sides)
-    for &(dx, dz) in &[(-0.91f32, -0.1f32), (0.91, -0.1), (-0.91, 0.65), (0.91, 0.65)] {
-        mesh::cylinder_tris(tris, dx, 0.65, dz, 0.015, 0.08, 3, 0xFF888888);
-    }
-
-    // Side mirrors
-    push_box(tris, -0.95, 0.85, -0.55, 0.08, 0.08, 0.12, trim_color);
-    push_box(tris, 0.95, 0.85, -0.55, 0.08, 0.08, 0.12, trim_color);
-    // Mirror glass face
-    push_box(tris, -1.0, 0.85, -0.55, 0.02, 0.06, 0.1, 0xFF667788);
-    push_box(tris, 1.0, 0.85, -0.55, 0.02, 0.06, 0.1, 0xFF667788);
-
-    // Wheels — cylinder tire + hub + spokes
-    let wheel_r = 0.22;
-    let wheel_w = 0.18;
-    for &(wx, wz) in &[(-0.85f32, -1.1f32), (0.85, -1.1), (-0.85, 1.1), (0.85, 1.1)] {
-        // Tire — outer ring
-        mesh::cylinder_tris(tris, wx, 0.22, wz, wheel_r, wheel_w, 8, TIRE_COLOR);
-        // Hub cap (metallic center)
-        mesh::cylinder_tris(tris, wx, 0.22, wz, wheel_r * 0.45, wheel_w + 0.02, 6, 0xFF999999);
-        // Hub center bolt
-        mesh::cylinder_tris(tris, wx, 0.22, wz, wheel_r * 0.12, wheel_w + 0.04, 4, 0xFFAAAAAA);
-        // Brake disc visible behind spokes
-        mesh::cylinder_tris(tris, wx, 0.22, wz, wheel_r * 0.7, 0.04, 6, 0xFF666666);
-    }
-
-    // Headlights (recessed with bezel)
-    for &hx in &[-0.6f32, 0.6] {
-        push_box(tris, hx, 0.45, -1.81, 0.3, 0.14, 0.04, 0xFF333333); // housing
-        mesh::sphere_tris(tris, hx, 0.45, -1.83, 0.1, 0, 0x00FFEE88); // emissive
-    }
-    // Turn signal indicators (small amber lights)
-    push_box(tris, -0.85, 0.45, -1.79, 0.08, 0.05, 0.03, 0x00FFAA22); // emissive
-    push_box(tris, 0.85, 0.45, -1.79, 0.08, 0.05, 0.03, 0x00FFAA22); // emissive
-
-    // Tail lights (larger, with reflector housing)
-    for &tx in &[-0.6f32, 0.6] {
-        push_box(tris, tx, 0.45, 1.81, 0.28, 0.12, 0.04, 0xFF441111); // housing
-        mesh::sphere_tris(tris, tx, 0.45, 1.83, 0.08, 0, 0x00FF2222); // emissive
-    }
-    // Reverse lights (small white)
-    push_box(tris, -0.25, 0.38, 1.82, 0.08, 0.06, 0.03, 0xFFDDDDDD);
-    push_box(tris, 0.25, 0.38, 1.82, 0.08, 0.06, 0.03, 0xFFDDDDDD);
-
-    // Bumpers (front + rear, with curve suggestion)
-    mesh::beveled_box_tris(tris, 0.0, 0.22, -1.85, 1.7, 0.14, 0.1, 0.03, 0xFF444444);
-    mesh::beveled_box_tris(tris, 0.0, 0.22, 1.85, 1.7, 0.14, 0.1, 0.03, 0xFF444444);
-
-    // License plate area (rear)
-    push_box(tris, 0.0, 0.35, 1.84, 0.35, 0.08, 0.02, 0xFFDDDDDD);
-    // License plate frame
-    push_box(tris, 0.0, 0.35, 1.85, 0.38, 0.01, 0.01, 0xFF333333);
-
-    // Exhaust pipe (rear undercarriage)
-    mesh::cylinder_tris(tris, -0.4, 0.14, 1.8, 0.03, 0.15, 4, 0xFF555555);
-
-    // Antenna (thin cylinder on rear roof)
-    mesh::cylinder_tris(tris, 0.3, 1.35, 0.8, 0.008, 0.3, 3, 0xFF222222);
-
-    // Interior details (only for player's vehicle)
-    if show_interior {
-        // Dashboard
-        mesh::beveled_box_tris(tris, 0.0, 0.78, -0.6, 1.3, 0.12, 0.35, 0.02, DASHBOARD_COLOR);
-        // Instrument cluster (lighter area)
-        push_box(tris, -0.3, 0.82, -0.72, 0.35, 0.08, 0.02, 0xFF222233);
-        // Steering wheel (ring + column)
-        mesh::cylinder_tris(tris, -0.3, 0.88, -0.45, 0.12, 0.02, 8, STEERING_COLOR);
-        mesh::cylinder_tris(tris, -0.3, 0.82, -0.52, 0.025, 0.12, 4, STEERING_COLOR);
-        // Center console
-        push_box(tris, 0.0, 0.6, 0.0, 0.25, 0.2, 0.8, darken(DASHBOARD_COLOR, 0.8));
-        // Gear shift knob
-        mesh::sphere_tris(tris, 0.0, 0.72, -0.1, 0.03, 0, 0xFF222222);
-        // Front seats (driver + passenger)
-        for &sx in &[-0.35f32, 0.35] {
-            // Seat base
-            mesh::beveled_box_tris(tris, sx, 0.58, 0.0, 0.45, 0.12, 0.45, 0.02, SEAT_COLOR);
-            // Seat back
-            mesh::beveled_box_tris(tris, sx, 0.88, 0.22, 0.45, 0.45, 0.08, 0.02, SEAT_COLOR);
-            // Headrest
-            push_box(tris, sx, 1.12, 0.22, 0.2, 0.12, 0.06, SEAT_COLOR);
-        }
-        // Rear seat
-        mesh::beveled_box_tris(tris, 0.0, 0.55, 0.6, 1.1, 0.1, 0.4, 0.02, SEAT_COLOR);
-        mesh::beveled_box_tris(tris, 0.0, 0.82, 0.78, 1.1, 0.35, 0.06, 0.02, SEAT_COLOR);
-        // Rearview mirror
-        push_box(tris, 0.0, 1.1, -0.45, 0.2, 0.06, 0.02, 0xFF667788);
-    }
-
-    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 30.0), v.rot_y);
-    for tri in &mut tris[base..] {
-        for vert in &mut tri.v {
-            let rv = rot3x3_apply(&rot, *vert);
-            vert[0] = rv[0] + v.x;
-            vert[1] = rv[1] + v.y;
-            vert[2] = rv[2] + v.z;
-        }
-        tri.normal = rot3x3_apply(&rot, tri.normal);
-    }
-}
-
 fn job_shirt_color(npc: &Npc) -> u32 {
     match npc.job {
         NpcJob::PolicePatrol => 0xFF2233AA,
@@ -3739,14 +3593,7 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
             right[0] * up[1] - right[1] * up[0],
         ];
 
-        let job_hat = match npc.job {
-            NpcJob::PolicePatrol => Some(0xFF2233AA),
-            NpcJob::Firefighter => Some(0xFFCC3322),
-            NpcJob::Paramedic => Some(0xFFDDDDDD),
-            NpcJob::ConstructionWorker => Some(0xFFDDAA22),
-            NpcJob::MailCarrier => Some(0xFF3344CC),
-            _ => None,
-        };
+        let job_hat = job_hat_color(npc.job);
 
         gen_nude_player_body(
             tris, 0.0, app.skin, app.hair, 0.0, false, false, false,
@@ -3785,14 +3632,7 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
 
     // KO pose — actual character model lying face-down on the ground
     if npc.state == NpcState::KnockedOut {
-        let job_hat = match npc.job {
-            NpcJob::PolicePatrol => Some(0xFF2233AA),
-            NpcJob::Firefighter => Some(0xFFCC3322),
-            NpcJob::Paramedic => Some(0xFFDDDDDD),
-            NpcJob::ConstructionWorker => Some(0xFFDDAA22),
-            NpcJob::MailCarrier => Some(0xFF3344CC),
-            _ => None,
-        };
+        let job_hat = job_hat_color(npc.job);
 
         gen_nude_player_body(
             tris, 0.0, app.skin, app.hair, 0.0, false, false, false,
@@ -4550,4 +4390,18 @@ pub fn sky_color_f32(hour: f32) -> [f32; 4] {
         (c & 0xFF) as f32 / 255.0,
         1.0,
     ]
+}
+
+/// Build VP matrix, push constants, and clear color for a frame.
+pub fn frame_setup(
+    width: usize, height: usize,
+    eye: Vec3, target: Vec3, hour: f32,
+) -> (Mat4, crate::gpu::GpuPushConstants, [f32; 4]) {
+    let aspect = width as f32 / height as f32;
+    let view = m4_look_at(eye, target, [0.0, 1.0, 0.0]);
+    let proj = m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.1, 500.0);
+    let vp = m4_mul(&proj, &view);
+    let push = gpu_push_constants(hour, eye, target, &vp);
+    let clear = sky_color_f32(hour);
+    (vp, push, clear)
 }
