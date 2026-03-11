@@ -637,9 +637,9 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
             let vx1 = vx0 + cell;
             let vz1 = vz0 + cell;
 
-            // Tri 1: v00, v10, v11 — face normal
+            // Tri 1: v00, v11, v10 — face normal (CCW viewed from above → +Y normal)
             let fn1 = mesh::tri_normal([vx0,vh00,vz0], [vx1,vh11,vz1], [vx1,vh10,vz0]);
-            // Tri 2: v00, v11, v01 — face normal
+            // Tri 2: v00, v01, v11 — face normal (CCW viewed from above → +Y normal)
             let fn2 = mesh::tri_normal([vx0,vh00,vz0], [vx0,vh01,vz1], [vx1,vh11,vz1]);
 
             let i00 = iz * stride + ix;
@@ -721,16 +721,15 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
             let n1 = avg_normal3(vert_normals[i00], vert_normals[i10], vert_normals[i11]);
             let n2 = avg_normal3(vert_normals[i00], vert_normals[i11], vert_normals[i01]);
 
-            // CW winding for Vulkan front-face (VK_FRONT_FACE_CLOCKWISE + Y-flip)
-            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color: c1 });
-            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color: c2 });
+            // CCW winding for Vulkan front-face (VK_FRONT_FACE_COUNTER_CLOCKWISE)
+            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: c1 });
+            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: c2 });
         }
     }
 
     // Ground skirt: vertical walls dropping from terrain edges + extended floor plane.
     // Prevents sky bleed-through when camera looks toward or beyond map edges.
-    // Winding matches terrain mesh: e1×e2 cross product points AWAY from visible face
-    // (Vulkan Y-flip + FRONT_FACE_CLOCKWISE makes this the front face).
+    // CCW winding for VK_FRONT_FACE_COUNTER_CLOCKWISE.
     let skirt_y = -15.0; // floor level well below any terrain height
     let skirt_color = GROUND_LOW; // dark green matches terrain base
     let skirt_n_up: [f32; 3] = [0.0, 1.0, 0.0];
@@ -743,9 +742,7 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
         let h0 = terrain.heights[0 * stride + ix];
         let h1 = terrain.heights[0 * stride + ix + 1];
         let z = -WORLD_HALF;
-        // cross(e1,e2) points -Z (away from +Z viewer) → front face from inside
-        tris.push(WorldTri { v: [[x0, h0, z], [x1, h1, z], [x1, skirt_y, z]], normal: south_n, color: skirt_color });
-        tris.push(WorldTri { v: [[x0, h0, z], [x1, skirt_y, z], [x0, skirt_y, z]], normal: south_n, color: skirt_color });
+        mesh::push_quad_n(tris, [x0,h0,z], [x0,skirt_y,z], [x1,skirt_y,z], [x1,h1,z], south_n, skirt_color);
     }
 
     // North edge (iz = grid, z = +WORLD_HALF): visible from inside (-Z)
@@ -756,9 +753,7 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
         let h0 = terrain.heights[grid * stride + ix];
         let h1 = terrain.heights[grid * stride + ix + 1];
         let z = WORLD_HALF;
-        // cross(e1,e2) points +Z (away from -Z viewer) → front face from inside
-        tris.push(WorldTri { v: [[x1, h1, z], [x0, h0, z], [x0, skirt_y, z]], normal: north_n, color: skirt_color });
-        tris.push(WorldTri { v: [[x1, h1, z], [x0, skirt_y, z], [x1, skirt_y, z]], normal: north_n, color: skirt_color });
+        mesh::push_quad_n(tris, [x1,h1,z], [x1,skirt_y,z], [x0,skirt_y,z], [x0,h0,z], north_n, skirt_color);
     }
 
     // West edge (ix = 0, x = -WORLD_HALF): visible from inside (+X)
@@ -769,9 +764,7 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
         let h0 = terrain.heights[iz * stride + 0];
         let h1 = terrain.heights[(iz + 1) * stride + 0];
         let x = -WORLD_HALF;
-        // cross(e1,e2) points -X (away from +X viewer) → front face from inside
-        tris.push(WorldTri { v: [[x, h1, z1], [x, h0, z0], [x, skirt_y, z0]], normal: west_n, color: skirt_color });
-        tris.push(WorldTri { v: [[x, h1, z1], [x, skirt_y, z0], [x, skirt_y, z1]], normal: west_n, color: skirt_color });
+        mesh::push_quad_n(tris, [x,h1,z1], [x,skirt_y,z1], [x,skirt_y,z0], [x,h0,z0], west_n, skirt_color);
     }
 
     // East edge (ix = grid, x = +WORLD_HALF): visible from inside (-X)
@@ -782,9 +775,7 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
         let h0 = terrain.heights[iz * stride + grid];
         let h1 = terrain.heights[(iz + 1) * stride + grid];
         let x = WORLD_HALF;
-        // cross(e1,e2) points +X (away from -X viewer) → front face from inside
-        tris.push(WorldTri { v: [[x, h0, z0], [x, h1, z1], [x, skirt_y, z1]], normal: east_n, color: skirt_color });
-        tris.push(WorldTri { v: [[x, h0, z0], [x, skirt_y, z1], [x, skirt_y, z0]], normal: east_n, color: skirt_color });
+        mesh::push_quad_n(tris, [x,h0,z0], [x,skirt_y,z0], [x,skirt_y,z1], [x,h1,z1], east_n, skirt_color);
     }
 
     // Extended ground floor plane beyond terrain bounds.
@@ -803,14 +794,11 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
             let fz0 = -ext + tz as f32 * tile_size;
             let fx1 = fx0 + tile_size;
             let fz1 = fz0 + tile_size;
-            // Match terrain winding: cross product points -Y but Vulkan Y-flip
-            // makes it visible from above. Same pattern as terrain mesh triangles.
             let a = [fx0, skirt_y, fz0]; // bottom-left
             let b = [fx1, skirt_y, fz0]; // bottom-right
             let c = [fx1, skirt_y, fz1]; // top-right
             let d = [fx0, skirt_y, fz1]; // top-left
-            tris.push(WorldTri { v: [a, b, c], normal: skirt_n_up, color: floor_color });
-            tris.push(WorldTri { v: [a, c, d], normal: skirt_n_up, color: floor_color });
+            mesh::push_quad_n(tris, a, d, c, b, skirt_n_up, floor_color);
         }
     }
 }
@@ -891,9 +879,7 @@ fn generate_road_strip(
         let noise = (h % 12) as i32 - 6;
         let c = jitter_color(color, noise);
 
-        // CW winding for Vulkan front-face (VK_FRONT_FACE_CLOCKWISE + Y-flip)
-        tris.push(WorldTri { v: [v_l0, v_r0, v_r1], normal: [0.0, 1.0, 0.0], color: c });
-        tris.push(WorldTri { v: [v_l0, v_r1, v_l1], normal: [0.0, 1.0, 0.0], color: c });
+        mesh::push_quad_n(tris, v_l0, v_l1, v_r1, v_r0, [0.0, 1.0, 0.0], c);
     }
 }
 
@@ -1372,11 +1358,11 @@ fn generate_river(
                     let noise = (h % 16) as i32 - 8;
                     let color = jitter_color(base, noise);
 
-                    // CW winding for Vulkan front-face (VK_FRONT_FACE_CLOCKWISE + Y-flip)
-                    let n1 = mesh::tri_normal(v00, v10, v11);
-                    tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
-                    let n2 = mesh::tri_normal(v00, v11, v01);
-                    tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
+                    // CCW winding for VK_FRONT_FACE_COUNTER_CLOCKWISE
+                    let n1 = mesh::tri_normal(v00, v11, v10);
+                    tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
+                    let n2 = mesh::tri_normal(v00, v01, v11);
+                    tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
                 }
             }
         }
@@ -1453,17 +1439,17 @@ fn generate_river(
                         let bnoise = (bh % 12) as i32 - 6;
                         let color = jitter_color(bank_color, bnoise);
 
-                        // CW winding depends on side: mirrored grid flips winding
+                        // CCW winding depends on side: mirrored grid flips winding
                         if side > 0.0 {
-                            let n1 = mesh::tri_normal(v00, v10, v11);
-                            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
-                            let n2 = mesh::tri_normal(v00, v11, v01);
-                            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
-                        } else {
                             let n1 = mesh::tri_normal(v00, v11, v10);
                             tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
                             let n2 = mesh::tri_normal(v00, v01, v11);
                             tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
+                        } else {
+                            let n1 = mesh::tri_normal(v00, v10, v11);
+                            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
+                            let n2 = mesh::tri_normal(v00, v11, v01);
+                            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
                         }
                     }
                 }
@@ -1485,29 +1471,29 @@ fn generate_river(
                     let pr = 0.05 + peb_next(&mut ph) * 0.12;
                     let peb_shade = (ph % 30) as i32 - 15;
                     let peb_color = jitter_color(BANK_PEBBLE, peb_shade);
-                    // Small flat pebble — 4 tris (flattened diamond, CW winding for Vulkan)
+                    // Small flat pebble — 4 tris (flattened diamond, CCW winding)
                     let pa = peb_next(&mut ph) * std::f32::consts::TAU;
                     let (ps, pc) = (pa.sin(), pa.cos());
                     let pn = [0.0_f32, 1.0, 0.0];
                     tris.push(WorldTri { v: [
                         [px, py, pz],
+                        [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
                         [px + pc * pr, py, pz + ps * pr],
-                        [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
-                    ], normal: pn, color: peb_color });
-                    tris.push(WorldTri { v: [
-                        [px, py, pz],
-                        [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
-                        [px - pc * pr, py, pz - ps * pr],
                     ], normal: pn, color: peb_color });
                     tris.push(WorldTri { v: [
                         [px, py, pz],
                         [px - pc * pr, py, pz - ps * pr],
-                        [px + ps * pr * 0.6, py, pz - pc * pr * 0.6],
+                        [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
                     ], normal: pn, color: peb_color });
                     tris.push(WorldTri { v: [
                         [px, py, pz],
                         [px + ps * pr * 0.6, py, pz - pc * pr * 0.6],
+                        [px - pc * pr, py, pz - ps * pr],
+                    ], normal: pn, color: peb_color });
+                    tris.push(WorldTri { v: [
+                        [px, py, pz],
                         [px + pc * pr, py, pz + ps * pr],
+                        [px + ps * pr * 0.6, py, pz - pc * pr * 0.6],
                     ], normal: pn, color: peb_color });
                 }
             }
@@ -1871,10 +1857,7 @@ fn generate_market_stalls(
         let v1 = [sx + sw * 0.5, roof_y + 0.3, sz - sd * 0.5];
         let v2 = [sx + sw * 0.5, roof_y - 0.1, sz + sd * 0.5];
         let v3 = [sx - sw * 0.5, roof_y - 0.1, sz + sd * 0.5];
-        // CW winding for Vulkan front-face
-        let roof_n = mesh::tri_normal(v0, v1, v2);
-        tris.push(WorldTri { v: [v0, v1, v2], normal: roof_n, color: canvas_color });
-        tris.push(WorldTri { v: [v0, v2, v3], normal: roof_n, color: canvas_color });
+        mesh::push_quad(tris, v0, v3, v2, v1, canvas_color);
 
         // Counter front — beveled
         mesh::beveled_box_tris(tris, sx, gy + 0.5, sz - sd * 0.5 + 0.1, sw * 0.9, 1.0, 0.2, 0.03, STALL_COUNTER_COLOR);
@@ -3314,9 +3297,7 @@ pub fn generate_world(game: &mut GameState) {
         let v1 = [b.x + shadow_hw, shadow_y, b.z - shadow_hd];
         let v2 = [b.x + shadow_hw, shadow_y, b.z + shadow_hd];
         let v3 = [b.x - shadow_hw, shadow_y, b.z + shadow_hd];
-        // CW winding for Vulkan front-face (upward-facing ground shadow)
-        tris.push(WorldTri { v: [v0, v1, v2], normal: [0.0, 1.0, 0.0], color: shadow_color });
-        tris.push(WorldTri { v: [v0, v2, v3], normal: [0.0, 1.0, 0.0], color: shadow_color });
+        mesh::push_quad_n(&mut tris, v0, v3, v2, v1, [0.0, 1.0, 0.0], shadow_color);
     }
 
     // NPC-owned vehicles — one per NPC, all start parked

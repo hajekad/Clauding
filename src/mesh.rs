@@ -33,9 +33,15 @@ pub fn tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
     if l < 1e-10 { [0.0, 1.0, 0.0] } else { [n[0]/l, n[1]/l, n[2]/l] }
 }
 
-/// Push a quad as 2 tris (CCW winding: a-b-c, a-c-d)
+/// Push a quad as 2 tris (a→b→c, a→c→d with outward normal from cross(b-a, c-a))
 pub fn push_quad(tris: &mut Vec<WorldTri>, a: [f32;3], b: [f32;3], c: [f32;3], d: [f32;3], color: u32) {
     let normal = tri_normal(a, b, c);
+    tris.push(WorldTri { v: [a, b, c], normal, color });
+    tris.push(WorldTri { v: [a, c, d], normal, color });
+}
+
+/// Push a quad with an explicit normal (winding: a→b→c, a→c→d)
+pub fn push_quad_n(tris: &mut Vec<WorldTri>, a: [f32;3], b: [f32;3], c: [f32;3], d: [f32;3], normal: [f32;3], color: u32) {
     tris.push(WorldTri { v: [a, b, c], normal, color });
     tris.push(WorldTri { v: [a, c, d], normal, color });
 }
