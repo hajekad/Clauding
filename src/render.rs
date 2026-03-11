@@ -827,7 +827,7 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     // Orbital socket depth — negative displacement at eye positions
     // Creates concavity that eyeballs sit inside
     // Deep sockets ensure eyes visibly sit in sculpted recesses
-    let orb_depth = sl(-0.045, -0.080, f.eye_depth);
+    let orb_depth = sl(-0.015, -0.035, f.eye_depth);
 
     // ══════════════════════════════════════════════════════════════
     // SKULL LOFT — anatomically structured head surface
@@ -846,101 +846,101 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
             (0.0, 0.3, chin_proj * 0.4),
         ], n), sk),
         // Labiomental fold
-        (1.55, body_ring(0.0, 0.0, 0.15 * skw, 0.15 * skd, &[
+        (1.55, body_ring(0.0, 0.0, 0.15 * skw, 0.22 * skd, &[
             (0.0, 0.20, -0.022),
             (hp, 0.25, jaw_w), (le, 0.25, jaw_w),
         ], n), sk),
 
         // ── JAW — mandible with defined gonial angle ──
-        (1.58, body_ring(0.0, 0.01 * skd, 0.19 * skw, 0.18 * skd, &[
+        (1.58, body_ring(0.0, 0.01 * skd, 0.19 * skw, 0.25 * skd, &[
             (hp, 0.25, jawline), (le, 0.25, jawline),
             (0.0, 0.3, 0.012),
         ], n), sk),
-        (1.61, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.19 * skd, &[
+        (1.61, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.26 * skd, &[
             (hp, 0.15, gonial), (le, 0.15, gonial),
             (hp - 0.3, 0.2, masseter), (le + 0.3, 0.2, masseter),
         ], n), sk),
-        (1.63, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.19 * skd, &[
+        (1.63, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.26 * skd, &[
             (hp, 0.15, gonial * 0.7), (le, 0.15, gonial * 0.7),
             (hp - 0.3, 0.2, masseter * 0.9), (le + 0.3, 0.2, masseter * 0.9),
         ], n), sk),
 
         // ── MOUTH LEVEL — face center shifted forward for muzzle projection ──
-        (1.65, body_ring(0.0, 0.01 * skd, 0.195 * skw, 0.21 * skd, &[
+        (1.65, body_ring(0.0, 0.01 * skd, 0.195 * skw, 0.28 * skd, &[
             (0.0, 0.25, 0.028),
             (0.20, 0.08, -0.004), (TAU - 0.20, 0.08, -0.004),
         ], n), sk),
-        (1.67, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.23 * skd, &[
+        (1.67, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.30 * skd, &[
             (0.0, 0.28, 0.035),
             (hp - 0.3, 0.2, masseter * 0.7), (le + 0.3, 0.2, masseter * 0.7),
             (0.22, 0.08, -0.008), (TAU - 0.22, 0.08, -0.008),
         ], n), sk),
 
         // ── NOSE BASE — piriform aperture, forward projection ──
-        (1.69, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.24 * skd, &[
+        (1.69, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.31 * skd, &[
             (0.0, 0.12, 0.038),
             (0.22, 0.08, -0.008), (TAU - 0.22, 0.08, -0.008),
         ], n), sk),
         // Nose mid — tip + alar projection
-        (1.72, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.25 * skd, &[
+        (1.72, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.32 * skd, &[
             (0.0, 0.08, nose_size * 1.5),
             (0.12, 0.06, nose_br * 1.0), (TAU - 0.12, 0.06, nose_br * 1.0),
             (0.25, 0.08, -0.008), (TAU - 0.25, 0.08, -0.008),
         ], n), sk),
 
         // ── INFRAORBITAL / CHEEKBONE — zygomatic arch, orbital socket begins ──
-        (1.74, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.26 * skd, &[
+        (1.74, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.33 * skd, &[
             (0.0, 0.06, nose_size * 0.8),
             (0.55, 0.18, cheek * 1.1), (TAU - 0.55, 0.18, cheek * 1.1),
             (re, 0.12, orb_depth * 0.5), (le, 0.12, orb_depth * 0.5),
         ], n), sk),
 
         // ── ORBITAL SOCKET — deepest recess at eye level ──
-        (1.77, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.27 * skd, &[
+        (1.77, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.34 * skd, &[
             (0.0, 0.06, nose_br * 1.1),
             (re, 0.12, orb_depth), (le, 0.12, orb_depth),
             (0.55, 0.15, cheek * 0.6), (TAU - 0.55, 0.15, cheek * 0.6),
         ], n), sk),
         // Upper orbital — socket recovering toward brow
-        (1.80, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.27 * skd, &[
+        (1.80, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.34 * skd, &[
             (0.0, 0.06, nose_br * 0.8),
             (re, 0.12, orb_depth * 0.4), (le, 0.12, orb_depth * 0.4),
         ], n), sk),
 
         // ── BROW RIDGE — supraorbital torus, projects forward over eye sockets ──
-        (1.82, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.28 * skd, &[
+        (1.82, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.35 * skd, &[
             (0.0, 0.50, brow_shelf),
             (0.0, 0.10, glabella),
             (re, 0.10, supraorb), (le, 0.10, supraorb),
         ], n), sk),
-        (1.84, body_ring(0.0, 0.02 * skd, 0.20 * skw, 0.28 * skd, &[
+        (1.84, body_ring(0.0, 0.02 * skd, 0.20 * skw, 0.35 * skd, &[
             (0.0, 0.50, brow_boss * 0.8),
         ], n), sk),
 
         // ── FOREHEAD — frontal eminences ──
-        (1.87 + fh_off, body_ring(0.0, 0.04 * skd, 0.21 * skw, 0.27 * skd, &[
+        (1.87 + fh_off, body_ring(0.0, 0.04 * skd, 0.21 * skw, 0.34 * skd, &[
             (0.25, 0.15, 0.008), (TAU - 0.25, 0.15, 0.008),
             (PI, 0.4, 0.010),
         ], n), sk),
 
         // ── CRANIAL VAULT ──
-        (1.91 + fh_off, body_ring(0.0, 0.07 * skd, 0.21 * skw, 0.27 * skd, &[
+        (1.91 + fh_off, body_ring(0.0, 0.07 * skd, 0.21 * skw, 0.32 * skd, &[
             (PI, 0.35, 0.025),
             (hp, 0.3, 0.008), (le, 0.3, 0.008),
         ], n), sk),
-        (1.95 + fh_off, body_ring(0.0, 0.08 * skd, 0.21 * skw, 0.28 * skd, &[
+        (1.95 + fh_off, body_ring(0.0, 0.08 * skd, 0.21 * skw, 0.32 * skd, &[
             (PI, 0.35, 0.030),
         ], n), sk),
-        (1.99 + fh_off, body_ring(0.0, 0.08 * skd, 0.21 * skw, 0.27 * skd, &[
+        (1.99 + fh_off, body_ring(0.0, 0.08 * skd, 0.21 * skw, 0.30 * skd, &[
             (PI, 0.35, 0.025),
         ], n), sk),
 
-        // ── CROWN ──
-        (2.03 + fh_off, body_ring(0.0, 0.06 * skd, 0.19 * skw, 0.24 * skd, &[], n), sk),
-        (2.06 + fh_off, body_ring(0.0, 0.05 * skd, 0.16 * skw, 0.20 * skd, &[], n), sk),
-        (2.08 + fh_off, body_ring(0.0, 0.04 * skd, 0.12 * skw, 0.16 * skd, &[], n), sk),
-        (2.10 + fh_off, body_ring(0.0, 0.03 * skd, 0.08 * skw, 0.11 * skd, &[], n), sk),
-        (2.12 + fh_off, body_ring(0.0, 0.02 * skd, 0.04 * skw, 0.05 * skd, &[], n), sk),
+        // ── CROWN — smooth dome, gradual convergence ──
+        (2.03 + fh_off, body_ring(0.0, 0.06 * skd, 0.20 * skw, 0.26 * skd, &[], n), sk),
+        (2.07 + fh_off, body_ring(0.0, 0.05 * skd, 0.19 * skw, 0.23 * skd, &[], n), sk),
+        (2.10 + fh_off, body_ring(0.0, 0.04 * skd, 0.16 * skw, 0.18 * skd, &[], n), sk),
+        (2.13 + fh_off, body_ring(0.0, 0.03 * skd, 0.11 * skw, 0.13 * skd, &[], n), sk),
+        (2.16 + fh_off, body_ring(0.0, 0.02 * skd, 0.06 * skw, 0.07 * skd, &[], n), sk),
     ];
     mesh::loft_y_tris(tris, &rings);
 
@@ -2160,7 +2160,7 @@ fn gen_player_clothing(
     use std::f32::consts::PI;
     let coat = app.coat_col;
     let vest = app.vest_col;
-    let n = 16;
+    let n = 24;
 
     // Scale factors matching gen_nude_torso
     let sh = props.hip_rx / 0.18;
@@ -2342,8 +2342,8 @@ fn gen_player_clothing(
             mesh::loft_y_tris(tris, &cape_rings);
         }
     } else {
-        // No coat — vest/shirt shell (thinner offset)
-        let vco = 0.025;
+        // No coat — vest/shirt shell
+        let vco = 0.04;
         let vest_ring = |y: f32, rx: f32, rz: f32| -> (f32, Vec<[f32; 2]>, u32) {
             let sf = s(y);
             let bb = breast_bump(y);
@@ -3028,7 +3028,7 @@ pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bo
     gen_vehicle_shadow(v, s, tris);
 }
 fn gen_vehicle_shadow(v: &Vehicle, s: f32, tris: &mut Vec<WorldTri>) {
-    let sy = v.y + 0.02; let sc: u32 = 0xFF0A0A0A;
+    let sy = v.y + 0.05; let sc: u32 = 0xFF1A3A1A;
     let (snr, csr) = v.rot_y.sin_cos();
     let p = |lx: f32, lz: f32| -> [f32; 3] {
         [v.x + lx*s*csr + lz*s*snr, sy, v.z - lx*s*snr + lz*s*csr]
@@ -3425,13 +3425,15 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
     let hub = 0xFF888888_u32;
     for &(wwx, wwz) in &[(-wtrk, fwz), (wtrk, fwz), (-wtrk, rwz), (wtrk, rwz)] {
         let wy = wr;
-        // Tire (wide, low-profile)
-        mesh::cylinder_tris(tris, wwx, wy, wwz, wr, ww, 16, TIRE_COLOR);
+        let hw = ww * 0.5; // half tire width
+        // Tire (wide, low-profile) — X-axis aligned for vertical wheel
+        mesh::cylinder_between(tris, [wwx - hw, wy, wwz], [wwx + hw, wy, wwz], wr, 16, TIRE_COLOR);
         // Sidewall detail
-        mesh::cylinder_tris(tris, wwx, wy, wwz, wr - 0.015, ww + 0.008, 14, darken(TIRE_COLOR, 0.88));
+        let sw_hw = (ww + 0.008) * 0.5;
+        mesh::cylinder_between(tris, [wwx - sw_hw, wy, wwz], [wwx + sw_hw, wy, wwz], wr - 0.015, 14, darken(TIRE_COLOR, 0.88));
         // Rim face (alloy)
-        mesh::cylinder_tris(tris, wwx, wy, wwz, wr * 0.84, 0.018, 14, spk);
-        // 5 split spokes
+        mesh::cylinder_between(tris, [wwx - 0.009, wy, wwz], [wwx + 0.009, wy, wwz], wr * 0.84, 14, spk);
+        // 5 split spokes (rotate in Y-Z plane, perpendicular to axle)
         for s in 0..5 {
             let a = s as f32 * PI * 2.0 / 5.0;
             let (sa, ca) = a.sin_cos();
@@ -3444,10 +3446,12 @@ fn gen_rs5_body(tris: &mut Vec<WorldTri>, color: u32, show_interior: bool) {
                 ww * 0.26, 0.018, 0.024, spk);
         }
         // Center hub
-        mesh::cylinder_tris(tris, wwx, wy, wwz, wr * 0.18, ww + 0.016, 8, hub);
-        mesh::cylinder_tris(tris, wwx, wy, wwz, wr * 0.06, ww + 0.036, 5, 0xFFBBBBBB);
+        let hub_hw = (ww + 0.016) * 0.5;
+        mesh::cylinder_between(tris, [wwx - hub_hw, wy, wwz], [wwx + hub_hw, wy, wwz], wr * 0.18, 8, hub);
+        let lug_hw = (ww + 0.036) * 0.5;
+        mesh::cylinder_between(tris, [wwx - lug_hw, wy, wwz], [wwx + lug_hw, wy, wwz], wr * 0.06, 5, 0xFFBBBBBB);
         // Brake disc
-        mesh::cylinder_tris(tris, wwx, wy, wwz, wr * 0.66, 0.025, 12, 0xFF666666);
+        mesh::cylinder_between(tris, [wwx - 0.0125, wy, wwz], [wwx + 0.0125, wy, wwz], wr * 0.66, 12, 0xFF666666);
         // RS red brake caliper
         push_box(tris, wwx, wy - 0.08, wwz - 0.12, ww * 0.28, 0.06, 0.06, 0xFFCC2222);
     }
@@ -3903,9 +3907,9 @@ pub fn gen_vehicle_mesh_mid(v: &Vehicle, tris: &mut Vec<WorldTri>) {
     mesh::beveled_box_tris(tris, 0.0, 0.95, 0.2, 1.5, 0.5, 1.8, 0.06, cabin_color);
     // Windshield
     push_box(tris, 0.0, 0.95, -0.70, 1.3, 0.4, 0.05, WINDSHIELD_COLOR);
-    // 4 wheels
+    // 4 wheels — X-axis aligned for vertical wheel
     for &(wx, wz) in &[(-0.88f32, -1.1f32), (0.88, -1.1), (-0.88, 1.1), (0.88, 1.1)] {
-        mesh::cylinder_tris(tris, wx, 0.28, wz, 0.28, 0.22, 5, TIRE_COLOR);
+        mesh::cylinder_between(tris, [wx - 0.11, 0.28, wz], [wx + 0.11, 0.28, wz], 0.28, 5, TIRE_COLOR);
     }
     place_mesh(tris, base, v.terrain_normal, 30.0, v.rot_y, v.x, v.y, v.z);
 }
