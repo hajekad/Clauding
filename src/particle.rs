@@ -6,6 +6,8 @@ use crate::gpu::*;
 use crate::raster::*;
 use crate::math::*;
 use crate::rng::Rng;
+use crate::color::darken;
+use crate::render::clip_to_screen;
 
 const MAX_PARTICLES: usize = 4096;
 const GRAVITY: f32 = -9.8;
@@ -30,13 +32,6 @@ struct GpuParticleBufs {
     buf_px: GpuBuf, buf_py: GpuBuf, buf_pz: GpuBuf,
     buf_vx: GpuBuf, buf_vy: GpuBuf, buf_vz: GpuBuf,
     buf_lt: GpuBuf,
-}
-
-fn bytemuck_f32_to_u8(data: &[f32]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) }
-}
-fn bytemuck_f32_to_u8_mut(data: &mut [f32]) -> &mut [u8] {
-    unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, data.len() * 4) }
 }
 
 impl ParticleSystem {
@@ -100,13 +95,13 @@ impl ParticleSystem {
 
         if let (Some(ctx), Some(bufs)) = (gpu.as_mut(), self.gpu_bufs.as_ref()) {
             // GPU path: upload → dispatch → download
-            ctx.upload(&bufs.buf_px, bytemuck_f32_to_u8(&self.pos_x[..n]));
-            ctx.upload(&bufs.buf_py, bytemuck_f32_to_u8(&self.pos_y[..n]));
-            ctx.upload(&bufs.buf_pz, bytemuck_f32_to_u8(&self.pos_z[..n]));
-            ctx.upload(&bufs.buf_vx, bytemuck_f32_to_u8(&self.vel_x[..n]));
-            ctx.upload(&bufs.buf_vy, bytemuck_f32_to_u8(&self.vel_y[..n]));
-            ctx.upload(&bufs.buf_vz, bytemuck_f32_to_u8(&self.vel_z[..n]));
-            ctx.upload(&bufs.buf_lt, bytemuck_f32_to_u8(&self.lifetime[..n]));
+            ctx.upload(&bufs.buf_px, bytemuck_cast(&self.pos_x[..n]));
+            ctx.upload(&bufs.buf_py, bytemuck_cast(&self.pos_y[..n]));
+            ctx.upload(&bufs.buf_pz, bytemuck_cast(&self.pos_z[..n]));
+            ctx.upload(&bufs.buf_vx, bytemuck_cast(&self.vel_x[..n]));
+            ctx.upload(&bufs.buf_vy, bytemuck_cast(&self.vel_y[..n]));
+            ctx.upload(&bufs.buf_vz, bytemuck_cast(&self.vel_z[..n]));
+            ctx.upload(&bufs.buf_lt, bytemuck_cast(&self.lifetime[..n]));
 
             // Push constants: count(u32), dt(f32), gravity(f32)
             let count = n as u32;
@@ -125,11 +120,11 @@ impl ParticleSystem {
             );
 
             // Download results
-            ctx.download(&bufs.buf_px, bytemuck_f32_to_u8_mut(&mut self.pos_x[..n]));
-            ctx.download(&bufs.buf_py, bytemuck_f32_to_u8_mut(&mut self.pos_y[..n]));
-            ctx.download(&bufs.buf_pz, bytemuck_f32_to_u8_mut(&mut self.pos_z[..n]));
-            ctx.download(&bufs.buf_vy, bytemuck_f32_to_u8_mut(&mut self.vel_y[..n]));
-            ctx.download(&bufs.buf_lt, bytemuck_f32_to_u8_mut(&mut self.lifetime[..n]));
+            ctx.download(&bufs.buf_px, bytemuck_cast_mut(&mut self.pos_x[..n]));
+            ctx.download(&bufs.buf_py, bytemuck_cast_mut(&mut self.pos_y[..n]));
+            ctx.download(&bufs.buf_pz, bytemuck_cast_mut(&mut self.pos_z[..n]));
+            ctx.download(&bufs.buf_vy, bytemuck_cast_mut(&mut self.vel_y[..n]));
+            ctx.download(&bufs.buf_lt, bytemuck_cast_mut(&mut self.lifetime[..n]));
         } else {
             // CPU fallback
             for i in 0..n {
@@ -227,21 +222,17 @@ pub fn sys_render_particles(fb: &mut Framebuffer, ps: &ParticleSystem, cam: &Cam
         let clip = m4_transform_no_div(&vp, pos);
         if clip[3] <= 0.01 { continue; }
 
-        let inv_w = 1.0 / clip[3];
-        let sx = (clip[0] * inv_w + 1.0) * 0.5 * w;
-        let sy = (1.0 - clip[1] * inv_w) * 0.5 * h;
-        let sz = clip[2] * inv_w;
-
-        if sx < 0.0 || sx >= w || sy < 0.0 || sy >= h || sz < 0.0 || sz > 1.0 { continue; }
+        let scr = clip_to_screen(clip, w, h);
+        if scr[0] < 0.0 || scr[0] >= w || scr[1] < 0.0 || scr[1] >= h || scr[2] < 0.0 || scr[2] > 1.0 { continue; }
 
         // Particle size based on distance (2-4 pixels)
         let size = ((3.0 / clip[3]).clamp(1.0, 4.0)) as usize;
-        let px = sx as usize;
-        let py = sy as usize;
+        let px = scr[0] as usize;
+        let py = scr[1] as usize;
 
         // Fade alpha based on remaining lifetime
         let alpha = (ps.lifetime[i] * 2.0).clamp(0.0, 1.0);
-        let color = fade_color(ps.color[i], alpha);
+        let color = darken(ps.color[i], alpha);
 
         for dy in 0..size {
             for dx in 0..size {
@@ -255,9 +246,3 @@ pub fn sys_render_particles(fb: &mut Framebuffer, ps: &ParticleSystem, cam: &Cam
     }
 }
 
-fn fade_color(color: u32, alpha: f32) -> u32 {
-    let r = (((color >> 16) & 0xFF) as f32 * alpha) as u32;
-    let g = (((color >> 8) & 0xFF) as f32 * alpha) as u32;
-    let b = ((color & 0xFF) as f32 * alpha) as u32;
-    0xFF000000 | (r << 16) | (g << 8) | b
-}

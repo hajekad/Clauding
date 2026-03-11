@@ -4,6 +4,8 @@
 use crate::state::*;
 use crate::raster::Framebuffer;
 use crate::math::*;
+use crate::color::alpha_blend;
+use crate::render::clip_to_screen;
 
 const DAY_COLOR: u32 = 0xFFCCCCCC;
 
@@ -217,9 +219,7 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
             // Near bin? Show "E DEPOSIT"
             let near_bin = game.world.trash_bins.iter().any(|b| {
                 if b.carried_by.is_some() { return false; }
-                let dx = p.x - b.x;
-                let dz = p.z - b.z;
-                dx * dx + dz * dz < bin_dist_sq
+                dist_sq_2d(p.x, p.z, b.x, b.z) < bin_dist_sq
             });
             if near_bin {
                 draw_rect(fb, cx - 50, cy - 4, 100, 14, 0x88000000);
@@ -233,28 +233,20 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
             // Not carrying anything — check what's nearby
             let near_item = game.world.items.iter().any(|it| {
                 if !it.active || it.falling { return false; }
-                let dx = p.x - it.x;
-                let dz = p.z - it.z;
-                dx * dx + dz * dz < pickup_dist_sq
+                dist_sq_2d(p.x, p.z, it.x, it.z) < pickup_dist_sq
             });
             let near_bin = game.world.trash_bins.iter().any(|b| {
                 if b.carried_by.is_some() { return false; }
-                let dx = p.x - b.x;
-                let dz = p.z - b.z;
-                dx * dx + dz * dz < bin_dist_sq
+                dist_sq_2d(p.x, p.z, b.x, b.z) < bin_dist_sq
             });
             let near_vehicle = game.world.vehicles.iter().any(|v| {
-                let dx = p.x - v.x;
-                let dz = p.z - v.z;
-                dx * dx + dz * dz < VEHICLE_ENTER_DIST * VEHICLE_ENTER_DIST
+                dist_sq_2d(p.x, p.z, v.x, v.z) < VEHICLE_ENTER_DIST * VEHICLE_ENTER_DIST
             });
             // Check interactibles
             let interact_dist_sq = INTERACT_DIST * INTERACT_DIST;
             let near_interactible = game.world.interactibles.iter().find(|i| {
                 if i.cooldown > 0.0 { return false; }
-                let dx = p.x - i.x;
-                let dz = p.z - i.z;
-                dx * dx + dz * dz < interact_dist_sq
+                dist_sq_2d(p.x, p.z, i.x, i.z) < interact_dist_sq
             });
 
             if near_item {
@@ -286,9 +278,7 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
                 let attack_dist_sq = ATTACK_RANGE * ATTACK_RANGE * 4.0;
                 let near_npc = game.world.npcs.iter().any(|n| {
                     if n.state == NpcState::KnockedOut || n.state == NpcState::Sleeping { return false; }
-                    let ndx = p.x - n.x;
-                    let ndz = p.z - n.z;
-                    ndx * ndx + ndz * ndz < attack_dist_sq
+                    dist_sq_2d(p.x, p.z, n.x, n.z) < attack_dist_sq
                 });
                 if near_npc {
                     draw_rect(fb, cx - 50, cy - 4, 100, 14, 0x88000000);
@@ -355,15 +345,6 @@ pub fn draw_rect(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize, c
             }
         }
     }
-}
-
-fn alpha_blend(dst: u32, src: u32, alpha: u32) -> u32 {
-    let a = alpha as f32 / 255.0;
-    let inv = 1.0 - a;
-    let r = (((src >> 16) & 0xFF) as f32 * a + ((dst >> 16) & 0xFF) as f32 * inv) as u32;
-    let g = (((src >> 8) & 0xFF) as f32 * a + ((dst >> 8) & 0xFF) as f32 * inv) as u32;
-    let b = ((src & 0xFF) as f32 * a + (dst & 0xFF) as f32 * inv) as u32;
-    0xFF000000 | (r << 16) | (g << 8) | b
 }
 
 fn draw_char_idx(fb: &mut Framebuffer, x: usize, y: usize, idx: usize, scale: usize, color: u32) {
@@ -638,14 +619,12 @@ fn draw_npc_health_bars(fb: &mut Framebuffer, game: &GameState) {
         let clip = m4_transform_no_div(&vp, world_pos);
         if clip[3] < 0.1 { continue; } // behind camera
 
-        let inv_w = 1.0 / clip[3];
-        let sx = ((clip[0] * inv_w + 1.0) * 0.5 * fw) as i32;
-        let sy = ((1.0 - clip[1] * inv_w) * 0.5 * fh) as i32;
+        let scr = clip_to_screen(clip, fw, fh);
+        let sx = scr[0] as i32;
+        let sy = scr[1] as i32;
 
         // Distance-based size (12-40px)
-        let dx = npc.x - game.camera.x;
-        let dz = npc.z - game.camera.z;
-        let dist = (dx * dx + dz * dz).sqrt().max(1.0);
+        let dist = dist_sq_2d(npc.x, npc.z, game.camera.x, game.camera.z).sqrt().max(1.0);
         let bar_w = (40.0 / (dist * 0.1 + 1.0)).clamp(12.0, 40.0) as usize;
         let bar_h = 3usize;
 

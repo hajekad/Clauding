@@ -4,6 +4,17 @@ use crate::state::*;
 use crate::input::{Action, KeyBinds};
 use crate::particle::ParticleSystem;
 
+/// Apply knockout to an NPC: zero health, set KO state, drop items, track fitness.
+pub fn knockout_npc(npc: &mut Npc) {
+    npc.health = 0.0;
+    npc.state = NpcState::KnockedOut;
+    npc.knockout_timer = KNOCKOUT_TIME;
+    npc.carrying_item = false;
+    npc.carrying_bin = None;
+    npc.fitness_knockouts += 1;
+    npc.sound = [0.0; 3];
+}
+
 pub fn sys_combat(
     world: &mut WorldData, player: &mut Player, particles: &mut ParticleSystem,
     terrain: &Terrain, keys: &[bool; 256], prev_keys: &[bool; 256],
@@ -91,13 +102,7 @@ pub fn sys_combat(
 
                     // KO check
                     if world.npcs[j].health <= 0.0 {
-                        world.npcs[j].health = 0.0;
-                        world.npcs[j].state = NpcState::KnockedOut;
-                        world.npcs[j].knockout_timer = KNOCKOUT_TIME;
-                        world.npcs[j].carrying_item = false;
-                        world.npcs[j].carrying_bin = None;
-                        world.npcs[j].fitness_knockouts += 1;
-                        world.npcs[j].sound = [0.0; 3];
+                        knockout_npc(&mut world.npcs[j]);
                     }
                 }
             }
@@ -209,13 +214,7 @@ pub fn sys_combat_headless(world: &mut WorldData, terrain: &Terrain, dt: f32) {
                 world.npcs[j].vel_y = KNOCKBACK_UP * 0.7;
 
                 if world.npcs[j].health <= 0.0 {
-                    world.npcs[j].health = 0.0;
-                    world.npcs[j].state = NpcState::KnockedOut;
-                    world.npcs[j].knockout_timer = KNOCKOUT_TIME;
-                    world.npcs[j].carrying_item = false;
-                    world.npcs[j].carrying_bin = None;
-                    world.npcs[j].fitness_knockouts += 1;
-                    world.npcs[j].sound = [0.0; 3];
+                    knockout_npc(&mut world.npcs[j]);
                 }
             }
         }
@@ -295,13 +294,7 @@ fn player_attack_npcs(world: &mut WorldData, player: &mut Player, particles: &mu
 
         // KO check
         if npc.health <= 0.0 {
-            npc.health = 0.0;
-            npc.state = NpcState::KnockedOut;
-            npc.knockout_timer = KNOCKOUT_TIME;
-            npc.carrying_item = false;
-            npc.carrying_bin = None;
-            npc.fitness_knockouts += 1;
-            npc.sound = [0.0; 3];
+            knockout_npc(npc);
         }
     }
 }

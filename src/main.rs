@@ -1,13 +1,7 @@
-use clauding::{state, world, neat, npc, vehicle, player, camera, hud, particle, raster, render, menu, input, combat, collision, player_jobs, telemetry, gpu, platform, math};
+use clauding::{state, npc, vehicle, player, camera, hud, particle, raster, render, menu, input, combat, collision, player_jobs, telemetry, gpu, platform, math};
+use clauding::gpu::{bytemuck_cast, bytemuck_cast_mut};
 
 use std::time::Instant;
-
-fn bytemuck_cast(data: &[f32]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) }
-}
-fn bytemuck_cast_mut(data: &mut [f32]) -> &mut [u8] {
-    unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, data.len() * 4) }
-}
 
 const FIXED_DT: f32 = 1.0 / 60.0;
 const MAX_ACCUMULATOR: f32 = 0.25; // cap to prevent death spiral
@@ -68,25 +62,7 @@ fn main() {
     eprintln!("Window: {}x{}", w, h);
 
     let world_seed: u64 = 42;
-    let mut game = state::GameState::new(w, h, world_seed);
-    world::generate_world(&mut game);
-
-    // Try to load saved NEAT population, otherwise use fresh one
-    if let Some(loaded) = neat::load_population("/tmp/clauding_neat.bin", state::NUM_NPCS) {
-        eprintln!("Loaded NEAT population: gen {}, {} genomes", loaded.generation, loaded.genomes.len());
-        game.neat_population = loaded;
-    } else {
-        // Also try the trained binary output
-        if let Some(loaded) = neat::load_population("neat_trained.bin", state::NUM_NPCS) {
-            eprintln!("Loaded trained NEAT population: gen {}, {} genomes", loaded.generation, loaded.genomes.len());
-            game.neat_population = loaded;
-        }
-    }
-
-    // Compile NEAT brains from population
-    game.neat_brains = game.neat_population.genomes.iter()
-        .map(|g| neat::NeatBrain::compile(g))
-        .collect();
+    let mut game = state::GameState::init(w, h, world_seed);
 
     // Init GPU graphics pipeline
     if let Some(ref mut ctx) = gpu {

@@ -3,7 +3,7 @@
 // Character always faces camera forward direction, smooth rotation
 
 use crate::state::*;
-use crate::world::{check_building_collision, on_river_not_bridge};
+use crate::world::{check_walk_collision, on_river_not_bridge};
 use crate::input::Action;
 
 const TURN_RATE: f32 = 10.0; // radians/sec for character rotation toward movement dir
@@ -118,10 +118,10 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         let new_x = p.x + dx * speed * dt;
         let new_z = p.z + dz * speed * dt;
 
-        if !check_building_collision(&state.world, new_x, p.z, PLAYER_RADIUS) {
+        if !check_walk_collision(&state.world, new_x, p.z, PLAYER_RADIUS, None) {
             p.x = new_x;
         }
-        if !check_building_collision(&state.world, p.x, new_z, PLAYER_RADIUS) {
+        if !check_walk_collision(&state.world, p.x, new_z, PLAYER_RADIUS, None) {
             p.z = new_z;
         }
     } else {

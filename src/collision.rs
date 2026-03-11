@@ -126,6 +126,33 @@ fn init_ragdoll(npc: &mut Npc, impulse_x: f32, impulse_y: f32, impulse_z: f32) {
     npc.ragdoll_timer = RAGDOLL_DURATION;
 }
 
+fn push_apart_npcs_safe(world: &mut WorldData, i: usize, j: usize, d: f32, dx: f32, dz: f32, min_dist: f32) {
+    let overlap = min_dist - d;
+    let nx = dx / d;
+    let nz = dz / d;
+    let push = overlap * 0.5;
+    let new_ix = world.npcs[i].x - nx * push;
+    let new_iz = world.npcs[i].z - nz * push;
+    let new_jx = world.npcs[j].x + nx * push;
+    let new_jz = world.npcs[j].z + nz * push;
+    if !crate::world::on_river_not_bridge(new_ix, new_iz, &world.river_segments, &world.bridges) {
+        world.npcs[i].x = new_ix;
+        world.npcs[i].z = new_iz;
+    }
+    if !crate::world::on_river_not_bridge(new_jx, new_jz, &world.river_segments, &world.bridges) {
+        world.npcs[j].x = new_jx;
+        world.npcs[j].z = new_jz;
+    }
+}
+
+fn decay_violation_timers(world: &mut WorldData, dt: f32) {
+    for npc in &mut world.npcs {
+        if npc.violation_timer > 0.0 {
+            npc.violation_timer -= dt;
+        }
+    }
+}
+
 /// Full collision pass each frame
 pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Terrain, dt: f32) {
     let nv = world.vehicles.len();
@@ -181,13 +208,7 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
 
                 // KO check
                 if world.npcs[ni].health <= 0.0 {
-                    world.npcs[ni].health = 0.0;
-                    world.npcs[ni].state = NpcState::KnockedOut;
-                    world.npcs[ni].knockout_timer = KNOCKOUT_TIME;
-                    world.npcs[ni].carrying_item = false;
-                    world.npcs[ni].carrying_bin = None;
-                    world.npcs[ni].fitness_knockouts += 1;
-                    world.npcs[ni].sound = [0.0; 3];
+                    crate::combat::knockout_npc(&mut world.npcs[ni]);
                 }
             }
         }
@@ -334,22 +355,7 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
             let min_dist = 0.6; // NPC body width
             if d2 < min_dist * min_dist && d2 > 0.001 {
                 let d = d2.sqrt();
-                let overlap = min_dist - d;
-                let nx = dx / d;
-                let nz = dz / d;
-                let push = overlap * 0.5;
-                let new_ix = world.npcs[i].x - nx * push;
-                let new_iz = world.npcs[i].z - nz * push;
-                let new_jx = world.npcs[j].x + nx * push;
-                let new_jz = world.npcs[j].z + nz * push;
-                if !crate::world::on_river_not_bridge(new_ix, new_iz, &world.river_segments, &world.bridges) {
-                    world.npcs[i].x = new_ix;
-                    world.npcs[i].z = new_iz;
-                }
-                if !crate::world::on_river_not_bridge(new_jx, new_jz, &world.river_segments, &world.bridges) {
-                    world.npcs[j].x = new_jx;
-                    world.npcs[j].z = new_jz;
-                }
+                push_apart_npcs_safe(world, i, j, d, dx, dz, min_dist);
             }
         }
     }
@@ -379,11 +385,7 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
     }
 
     // Tick violation timers
-    for npc in &mut world.npcs {
-        if npc.violation_timer > 0.0 {
-            npc.violation_timer -= dt;
-        }
-    }
+    decay_violation_timers(world, dt);
 }
 
 /// Headless collision pass for training (no player, no rendering)
@@ -427,13 +429,7 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
                 }
 
                 if world.npcs[ni].health <= 0.0 {
-                    world.npcs[ni].health = 0.0;
-                    world.npcs[ni].state = NpcState::KnockedOut;
-                    world.npcs[ni].knockout_timer = KNOCKOUT_TIME;
-                    world.npcs[ni].carrying_item = false;
-                    world.npcs[ni].carrying_bin = None;
-                    world.npcs[ni].fitness_knockouts += 1;
-                    world.npcs[ni].sound = [0.0; 3];
+                    crate::combat::knockout_npc(&mut world.npcs[ni]);
                 }
             }
         }
@@ -525,29 +521,10 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
             let d2 = dx * dx + dz * dz;
             if d2 < 0.36 && d2 > 0.001 {
                 let d = d2.sqrt();
-                let overlap = 0.6 - d;
-                let nx = dx / d;
-                let nz = dz / d;
-                let push = overlap * 0.5;
-                let new_ix = world.npcs[i].x - nx * push;
-                let new_iz = world.npcs[i].z - nz * push;
-                let new_jx = world.npcs[j].x + nx * push;
-                let new_jz = world.npcs[j].z + nz * push;
-                if !crate::world::on_river_not_bridge(new_ix, new_iz, &world.river_segments, &world.bridges) {
-                    world.npcs[i].x = new_ix;
-                    world.npcs[i].z = new_iz;
-                }
-                if !crate::world::on_river_not_bridge(new_jx, new_jz, &world.river_segments, &world.bridges) {
-                    world.npcs[j].x = new_jx;
-                    world.npcs[j].z = new_jz;
-                }
+                push_apart_npcs_safe(world, i, j, d, dx, dz, 0.6);
             }
         }
     }
 
-    for npc in &mut world.npcs {
-        if npc.violation_timer > 0.0 {
-            npc.violation_timer -= dt;
-        }
-    }
+    decay_violation_timers(world, dt);
 }

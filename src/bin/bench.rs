@@ -2,7 +2,7 @@
 // Usage: cargo run --release --bin bench [seed] [frames] [width] [height]
 // Reports: avg FPS, 1% low, 0.1% low, frame time distribution
 
-use clauding::{state, world, render, raster, neat};
+use clauding::{state, render, raster};
 use std::time::Instant;
 
 fn main() {
@@ -15,16 +15,7 @@ fn main() {
     eprintln!("=== RENDER BENCHMARK ===");
     eprintln!("Seed: {}, Frames: {}, Resolution: {}x{}", seed, frames, width, height);
 
-    let mut game = state::GameState::new(width, height, seed);
-    world::generate_world(&mut game);
-
-    // Load NEAT if available
-    if let Some(loaded) = neat::load_population("neat_trained.bin", state::NUM_NPCS) {
-        game.neat_population = loaded;
-    }
-    game.neat_brains = game.neat_population.genomes.iter()
-        .map(|g| neat::NeatBrain::compile(g))
-        .collect();
+    let mut game = state::GameState::init(width, height, seed);
 
     let mut fb = raster::Framebuffer::new(width, height);
     let mut scratch: Vec<state::WorldTri> = Vec::with_capacity(4096);

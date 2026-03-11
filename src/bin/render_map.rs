@@ -1,9 +1,9 @@
 // Top-down world map renderer — generates PPM image for visual inspection
 // Usage: cargo run --bin render_map -- [seed] [time_hours]
-// Outputs: /tmp/clauding_map.ppm (terrain + structures + entities)
-//          /tmp/clauding_map_collision.ppm (collision geometry overlay)
+// Outputs: debug/map.ppm (terrain + structures + entities)
+//          debug/map_collision.ppm (collision geometry overlay)
 
-use clauding::{state, world, npc, neat};
+use clauding::{state, world};
 
 const IMG_SIZE: usize = 2048;
 const WORLD: f32 = state::WORLD_SIZE;
@@ -102,33 +102,14 @@ fn main() {
     let sim_hours: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(14.0);
 
     eprintln!("Generating world (seed={})...", seed);
-    let mut game = state::GameState::new(1, 1, seed);
-    world::generate_world(&mut game);
-
-    // Load brains and simulate to specified time
-    if let Some(loaded) = neat::load_population("neat_trained.bin", state::NUM_NPCS) {
-        game.neat_population = loaded;
-    }
-    game.neat_brains = game.neat_population.genomes.iter()
-        .map(|g| neat::NeatBrain::compile(g)).collect();
+    let mut game = state::GameState::init(1, 1, seed);
 
     // Simulate to get NPCs into working positions
     let target_time = sim_hours;
     let dt: f32 = 1.0 / 30.0;
     let mut ticks = 0u64;
     while game.time_of_day < target_time || ticks < 100 {
-        let prev = game.time_of_day;
-        game.time_of_day += dt * 24.0 / state::DAY_LENGTH;
-        if game.time_of_day >= 24.0 { game.time_of_day -= 24.0; }
-        npc::sys_midnight_reset(&mut game.world, game.time_of_day, prev,
-            &mut game.neat_population, &mut game.neat_brains);
-        clauding::vehicle::sys_vehicle(&mut game, dt);
-        npc::sys_npc(&mut game.world, &mut game.road_network, &game.terrain,
-            dt, game.time_of_day, &mut game.neat_brains, 0.0, 0.0);
-        npc::sys_night_spawning(&mut game.world, &game.terrain, game.time_of_day, dt, &mut game.spawn_rng, &game.road_network);
-        npc::sys_items_update(&mut game.world, dt);
-        npc::sys_npc_interactions(&mut game.world, dt);
-        npc::sys_hunger_thirst(&mut game.world, &mut game.player, dt);
+        game.tick_headless(dt);
         ticks += 1;
         if game.time_of_day >= target_time && ticks > 100 { break; }
     }

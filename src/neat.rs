@@ -861,7 +861,7 @@ pub fn gather_inputs(world: &WorldData, i: usize, net: &RoadNetwork, time_of_day
         Surface::FieldRoad => 0.66,
         Surface::Terrain => 1.0,
     };
-    inp[26] = npc_job_index(npc.job) as f32 / 14.0;
+    inp[26] = npc.job.index() as f32 / 14.0;
     inp[27] = 1.0; // bias
 
     // Combat inputs (28-32)
@@ -937,26 +937,6 @@ fn job_relevant_interactible(job: NpcJob) -> Option<InteractibleKind> {
         NpcJob::StreetVendor => Some(InteractibleKind::NewspaperStand),
         NpcJob::Mechanic => None, // uses vehicle inputs
         _ => None,
-    }
-}
-
-fn npc_job_index(job: NpcJob) -> usize {
-    match job {
-        NpcJob::Collector => 0,
-        NpcJob::GarbageCollector => 1,
-        NpcJob::TaxiDriver => 2,
-        NpcJob::DeliveryCourier => 3,
-        NpcJob::MailCarrier => 4,
-        NpcJob::Paramedic => 5,
-        NpcJob::Firefighter => 6,
-        NpcJob::PolicePatrol => 7,
-        NpcJob::StreetVendor => 8,
-        NpcJob::Mechanic => 9,
-        NpcJob::ConstructionWorker => 10,
-        NpcJob::Fisherman => 11,
-        NpcJob::Farmer => 12,
-        NpcJob::Lumberjack => 13,
-        NpcJob::Scavenger => 14,
     }
 }
 
@@ -1128,9 +1108,6 @@ pub fn evaluate_fitness(npc: &Npc) -> f32 {
     + interact_bonus + distance_bonus + hits_bonus + comm_bonus
     - starve_penalty - stuck_penalty - ko_penalty
 }
-
-// Work duration constant (same as in npc.rs)
-const WORK_DURATION: f32 = 720.0;
 
 // ---- Save/Load population (raw binary, no crates) ----
 

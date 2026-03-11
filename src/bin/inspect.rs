@@ -1,6 +1,6 @@
 // World inspector: generates the world and dumps diagnostic views
 // Usage: cargo run --bin inspect -- [seed]
-// Outputs: /tmp/clauding_inspect.txt
+// Outputs: debug/inspect.txt
 
 use clauding::{state, world};
 use std::fmt::Write;
@@ -13,8 +13,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let seed: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(42);
 
-    let mut game = state::GameState::new(1, 1, seed);
-    world::generate_world(&mut game);
+    let game = state::GameState::init(1, 1, seed);
 
     let mut out = String::with_capacity(64000);
 

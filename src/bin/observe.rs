@@ -2,7 +2,7 @@
 // Usage: cargo run --bin observe -- [seed] [days] [output_path]
 // Outputs: debug/observe_s{seed}.txt (or custom path) with detailed game dynamics
 
-use clauding::{state, world, npc, neat, vehicle, collision, combat};
+use clauding::{state, world, npc, vehicle, collision, combat};
 use std::fmt::Write;
 
 // Use shared headless timestep from state module
@@ -16,17 +16,7 @@ fn main() {
 
     eprintln!("Observer: seed={} days={}", seed, max_days);
 
-    let mut game = state::GameState::new(1, 1, seed);
-    world::generate_world(&mut game);
-
-    // Load trained brains if available
-    if let Some(loaded) = neat::load_population("neat_trained.bin", state::NUM_NPCS) {
-        eprintln!("Loaded trained population gen {}", loaded.generation);
-        game.neat_population = loaded;
-    }
-    game.neat_brains = game.neat_population.genomes.iter()
-        .map(|g| neat::NeatBrain::compile(g))
-        .collect();
+    let mut game = state::GameState::init(1, 1, seed);
 
     let mut out = String::with_capacity(128000);
     let _ = writeln!(out, "=== SIMULATION OBSERVER (seed={}, days={}) ===\n", seed, max_days);
@@ -94,7 +84,7 @@ fn main() {
             for (i, npc) in game.world.npcs.iter().enumerate() {
                 total_items_picked += npc.fitness_items_picked;
                 total_items_deposited += npc.items_deposited_today;
-                let ji = job_index(npc.job);
+                let ji = npc.job.index();
                 per_job_items_picked[ji] += npc.fitness_items_picked;
                 per_job_items_deposited[ji] += npc.items_deposited_today;
                 per_npc_items_picked[i] += npc.fitness_items_picked;
@@ -158,13 +148,7 @@ fn main() {
                 let dist = (dx * dx + dz * dz).sqrt();
                 npc_total_dist[i] += dist;
 
-                let is_mobile_job = matches!(npc.job,
-                    state::NpcJob::Collector | state::NpcJob::GarbageCollector |
-                    state::NpcJob::DeliveryCourier | state::NpcJob::MailCarrier |
-                    state::NpcJob::Paramedic | state::NpcJob::PolicePatrol |
-                    state::NpcJob::TaxiDriver
-                );
-                if dist < 0.05 && npc.state == state::NpcState::Working && is_mobile_job {
+                if dist < 0.05 && npc.state == state::NpcState::Working && npc.job.is_mobile() {
                     npc_stuck_ticks[i] += 1;
                     if !npc_was_stuck[i] {
                         npc_stuck_episodes[i] += 1;
@@ -182,18 +166,9 @@ fn main() {
                 prev_npc_pos[i] = (npc.x, npc.z);
 
                 // State accumulator
-                let idx = match npc.state {
-                    state::NpcState::Sleeping => 0,
-                    state::NpcState::HomeTask => 1,
-                    state::NpcState::GoingToWork => 2,
-                    state::NpcState::Working => 3,
-                    state::NpcState::GoingHome => 4,
-                    state::NpcState::Driving => 5,
-                    state::NpcState::Interacting => 6,
-                    state::NpcState::KnockedOut => 7,
-                };
+                let idx = npc.state.index();
                 state_time_accum[idx] += 1;
-                per_job_state_time[job_index(npc.job)][idx] += 1;
+                per_job_state_time[npc.job.index()][idx] += 1;
             }
 
             for i in 0..n_vehicles {
@@ -241,15 +216,9 @@ fn main() {
     for i in 0..n_npcs {
         if peak_stuck_ticks[i] > 50 {
             let npc = &game.world.npcs[i];
-            let is_mobile_job = matches!(npc.job,
-                state::NpcJob::Collector | state::NpcJob::GarbageCollector |
-                state::NpcJob::DeliveryCourier | state::NpcJob::MailCarrier |
-                state::NpcJob::Paramedic | state::NpcJob::PolicePatrol |
-                state::NpcJob::TaxiDriver
-            );
-            if !is_mobile_job { continue; }
+            if !npc.job.is_mobile() { continue; }
             let _ = writeln!(out, "  NPC[{:2}] stuck_score={:4} episodes={:2} pos=({:6.1},{:6.1}) total_dist={:6.1}m job={:12}",
-                i, peak_stuck_ticks[i], npc_stuck_episodes[i], npc.x, npc.z, npc_total_dist[i], npc_job_name(npc.job));
+                i, peak_stuck_ticks[i], npc_stuck_episodes[i], npc.x, npc.z, npc_total_dist[i], npc.job.name());
             stuck_npcs += 1;
         }
     }
@@ -264,7 +233,7 @@ fn main() {
         if peak_river_ticks[i] > 0 {
             let npc = &game.world.npcs[i];
             let _ = writeln!(out, "  NPC[{:2}] river_ticks={:4} pos=({:6.1},{:6.1}) job={:12}",
-                i, peak_river_ticks[i], npc.x, npc.z, npc_job_name(npc.job));
+                i, peak_river_ticks[i], npc.x, npc.z, npc.job.name());
             river_npcs += 1;
         }
     }
@@ -304,13 +273,13 @@ fn main() {
     for &(i, d) in dists.iter().take(5) {
         let npc = &game.world.npcs[i];
         let _ = writeln!(out, "    NPC[{:2}] dist={:6.1}m pos=({:6.1},{:6.1}) job={:12} state={:12}",
-            i, d, npc.x, npc.z, npc_job_name(npc.job), npc_state_name(npc.state));
+            i, d, npc.x, npc.z, npc.job.name(), npc.state.name());
     }
     let _ = writeln!(out, "  Most mobile NPCs:");
     for &(i, d) in dists.iter().rev().take(5) {
         let npc = &game.world.npcs[i];
         let _ = writeln!(out, "    NPC[{:2}] dist={:6.1}m pos=({:6.1},{:6.1}) job={:12} state={:12}",
-            i, d, npc.x, npc.z, npc_job_name(npc.job), npc_state_name(npc.state));
+            i, d, npc.x, npc.z, npc.job.name(), npc.state.name());
     }
 
     // State time distribution
@@ -334,7 +303,7 @@ fn main() {
                 let _ = write!(parts, " {}={:.0}%", name, pct);
             }
         }
-        let _ = writeln!(out, "  {:12}{}", JOB_NAMES[ji], parts);
+        let _ = writeln!(out, "  {:12}{}", state::JOB_NAMES[ji], parts);
     }
 
     // Building (home) distribution
@@ -364,7 +333,7 @@ fn main() {
     let mut final_per_job_deposited = per_job_items_deposited;
     let mut final_per_npc_picked = per_npc_items_picked.clone();
     for (i, npc) in game.world.npcs.iter().enumerate() {
-        let ji = job_index(npc.job);
+        let ji = npc.job.index();
         final_per_job_picked[ji] += npc.fitness_items_picked;
         final_per_job_deposited[ji] += npc.items_deposited_today;
         final_per_npc_picked[i] += npc.fitness_items_picked;
@@ -382,7 +351,7 @@ fn main() {
     for ji in 0..state::NPC_JOB_COUNT {
         if final_per_job_picked[ji] > 0 || final_per_job_deposited[ji] > 0 {
             let _ = writeln!(out, "    {:12} picked={:4} deposited={:4}",
-                JOB_NAMES[ji], final_per_job_picked[ji], final_per_job_deposited[ji]);
+                state::JOB_NAMES[ji], final_per_job_picked[ji], final_per_job_deposited[ji]);
         }
     }
 
@@ -393,24 +362,21 @@ fn main() {
     for &(i, count) in prod.iter().take(5) {
         let npc = &game.world.npcs[i];
         let _ = writeln!(out, "    NPC[{:2}] picked={:3} deposited={:3} job={:12} dist={:.0}m",
-            i, count, npc.items_deposited_today, npc_job_name(npc.job), npc_total_dist[i]);
+            i, count, npc.items_deposited_today, npc.job.name(), npc_total_dist[i]);
     }
     let _ = writeln!(out, "  Bottom 5 productive NPCs (mobile jobs):");
     let mobile_prod: Vec<(usize, u32)> = prod.iter()
-        .filter(|&&(i, _)| matches!(game.world.npcs[i].job,
-            state::NpcJob::Collector | state::NpcJob::GarbageCollector |
-            state::NpcJob::DeliveryCourier | state::NpcJob::MailCarrier |
-            state::NpcJob::Scavenger))
+        .filter(|&&(i, _)| game.world.npcs[i].job.is_mobile())
         .copied().collect();
     for &(i, count) in mobile_prod.iter().rev().take(5) {
         let npc = &game.world.npcs[i];
         let _ = writeln!(out, "    NPC[{:2}] picked={:3} deposited={:3} job={:12} dist={:.0}m",
-            i, count, npc.items_deposited_today, npc_job_name(npc.job), npc_total_dist[i]);
+            i, count, npc.items_deposited_today, npc.job.name(), npc_total_dist[i]);
     }
 
     // Also capture current (incomplete) day's failure data
     for npc in &game.world.npcs {
-        let ji = job_index(npc.job);
+        let ji = npc.job.index();
         total_find_item_failures += npc.find_item_failures;
         total_find_bin_failures += npc.find_bin_failures;
         total_stuck_recoveries += npc.stuck_recoveries;
@@ -425,7 +391,7 @@ fn main() {
     for ji in 0..state::NPC_JOB_COUNT {
         if per_job_find_item_failures[ji] > 0 || per_job_find_bin_failures[ji] > 0 || per_job_stuck_recoveries[ji] > 0 {
             let _ = writeln!(out, "    {:12} item_fail={:4} bin_fail={:4} stuck_recover={:4}",
-                JOB_NAMES[ji], per_job_find_item_failures[ji], per_job_find_bin_failures[ji], per_job_stuck_recoveries[ji]);
+                state::JOB_NAMES[ji], per_job_find_item_failures[ji], per_job_find_bin_failures[ji], per_job_stuck_recoveries[ji]);
         }
     }
 
@@ -508,27 +474,13 @@ fn dump_snapshot(game: &state::GameState, out: &mut String, tick: u64,
 
     let mut states = [0u32; 8];
     for npc in &w.npcs {
-        let idx = match npc.state {
-            state::NpcState::Sleeping => 0,
-            state::NpcState::HomeTask => 1,
-            state::NpcState::GoingToWork => 2,
-            state::NpcState::Working => 3,
-            state::NpcState::GoingHome => 4,
-            state::NpcState::Driving => 5,
-            state::NpcState::Interacting => 6,
-            state::NpcState::KnockedOut => 7,
-        };
-        states[idx] += 1;
+        states[npc.state.index()] += 1;
     }
 
     let active_items = w.items.iter().filter(|it| it.active).count();
     // Only count mobile jobs (Collector, Garbage, Delivery, Mail, Paramedic, Police, Taxi) as stuck
     let stuck_npcs = (0..w.npcs.len()).filter(|&idx| {
-        npc_stuck[idx] > 30 && matches!(w.npcs[idx].job,
-            state::NpcJob::Collector | state::NpcJob::GarbageCollector |
-            state::NpcJob::DeliveryCourier | state::NpcJob::MailCarrier |
-            state::NpcJob::Paramedic | state::NpcJob::PolicePatrol |
-            state::NpcJob::TaxiDriver)
+        npc_stuck[idx] > 30 && w.npcs[idx].job.is_mobile()
     }).count();
     let river_npcs = npc_river.iter().filter(|&&r| r > 0).count();
     let stuck_vehs = veh_stuck.iter().filter(|&&s| s > 10).count();
@@ -544,62 +496,4 @@ fn dump_snapshot(game: &state::GameState, out: &mut String, tick: u64,
         avg_hunger, avg_thirst, dead);
 }
 
-fn npc_job_name(j: state::NpcJob) -> &'static str {
-    match j {
-        state::NpcJob::Collector => "Collector",
-        state::NpcJob::GarbageCollector => "Garbage",
-        state::NpcJob::TaxiDriver => "Taxi",
-        state::NpcJob::DeliveryCourier => "Delivery",
-        state::NpcJob::MailCarrier => "Mail",
-        state::NpcJob::Paramedic => "Paramedic",
-        state::NpcJob::Firefighter => "Firefighter",
-        state::NpcJob::PolicePatrol => "Police",
-        state::NpcJob::StreetVendor => "Vendor",
-        state::NpcJob::Mechanic => "Mechanic",
-        state::NpcJob::ConstructionWorker => "Construction",
-        state::NpcJob::Fisherman => "Fisherman",
-        state::NpcJob::Farmer => "Farmer",
-        state::NpcJob::Lumberjack => "Lumberjack",
-        state::NpcJob::Scavenger => "Scavenger",
-    }
-}
-
-fn npc_state_name(s: state::NpcState) -> &'static str {
-    match s {
-        state::NpcState::Sleeping => "Sleeping",
-        state::NpcState::HomeTask => "HomeTask",
-        state::NpcState::GoingToWork => "GoToWork",
-        state::NpcState::Working => "Working",
-        state::NpcState::GoingHome => "GoHome",
-        state::NpcState::Driving => "Driving",
-        state::NpcState::Interacting => "Interacting",
-        state::NpcState::KnockedOut => "KnockedOut",
-    }
-}
-
-fn job_index(j: state::NpcJob) -> usize {
-    match j {
-        state::NpcJob::Collector => 0,
-        state::NpcJob::GarbageCollector => 1,
-        state::NpcJob::TaxiDriver => 2,
-        state::NpcJob::DeliveryCourier => 3,
-        state::NpcJob::MailCarrier => 4,
-        state::NpcJob::Paramedic => 5,
-        state::NpcJob::Firefighter => 6,
-        state::NpcJob::PolicePatrol => 7,
-        state::NpcJob::StreetVendor => 8,
-        state::NpcJob::Mechanic => 9,
-        state::NpcJob::ConstructionWorker => 10,
-        state::NpcJob::Fisherman => 11,
-        state::NpcJob::Farmer => 12,
-        state::NpcJob::Lumberjack => 13,
-        state::NpcJob::Scavenger => 14,
-    }
-}
-
-const JOB_NAMES: [&str; 15] = [
-    "Collector", "Garbage", "Taxi", "Delivery", "Mail",
-    "Paramedic", "Firefighter", "Police", "Vendor", "Mechanic",
-    "Construction", "Fisherman", "Farmer", "Lumberjack", "Scavenger",
-];
 

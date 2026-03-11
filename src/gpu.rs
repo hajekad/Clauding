@@ -17,6 +17,14 @@ unsafe extern "C" {
 }
 const RTLD_LAZY: c_int = 1;
 
+// --- Byte casting for GPU buffer upload/download ---
+pub fn bytemuck_cast(data: &[f32]) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) }
+}
+pub fn bytemuck_cast_mut(data: &mut [f32]) -> &mut [u8] {
+    unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, data.len() * 4) }
+}
+
 // --- Vulkan handle types ---
 type VkInstance = *mut c_void;
 type VkPhysicalDevice = *mut c_void;
@@ -1046,6 +1054,27 @@ impl GpuContext {
         unsafe { Self::init().ok() }
     }
 
+    /// Initialize GPU with graphics pipeline, exiting if unavailable.
+    pub fn init_or_exit(width: u32, height: u32) -> Self {
+        let mut ctx = match Self::try_new() {
+            Some(c) => {
+                eprintln!("GPU: {}", c.device_name);
+                c
+            }
+            None => {
+                eprintln!("Error: No Vulkan GPU available.");
+                std::process::exit(1);
+            }
+        };
+        ctx.init_graphics(width, height);
+        if !ctx.has_graphics() {
+            eprintln!("Error: GPU graphics pipeline failed to initialize.");
+            std::process::exit(1);
+        }
+        eprintln!("GPU graphics pipeline ready ({}x{})", width, height);
+        ctx
+    }
+
     unsafe fn init() -> Result<Self, &'static str> {
         let lib = dlopen(c"libvulkan.so.1".as_ptr(), RTLD_LAZY);
         if lib.is_null() { return Err("no libvulkan.so.1"); }
@@ -1330,16 +1359,7 @@ impl GpuContext {
 
     unsafe fn add_pipeline(&mut self, name: &'static str, spirv: &[u32], binding_count: u32, push_size: u32) -> Result<(), &'static str> {
         // Create shader module
-        let module_info = VkShaderModuleCreateInfo {
-            s_type: VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-            p_next: ptr::null(),
-            flags: 0,
-            code_size: spirv.len() * 4,
-            p_code: spirv.as_ptr(),
-        };
-        let mut module: VkShaderModule = 0;
-        let res = (self.fns.create_shader_module)(self.device, &module_info, ptr::null(), &mut module);
-        if res != VK_SUCCESS { return Err("vkCreateShaderModule failed"); }
+        let module = self.create_shader_module(spirv);
 
         // Descriptor set layout
         let bindings: Vec<VkDescriptorSetLayoutBinding> = (0..binding_count).map(|i| VkDescriptorSetLayoutBinding {
@@ -1413,43 +1433,8 @@ impl GpuContext {
     }
 
     pub fn create_buffer(&self, size_bytes: usize) -> GpuBuf {
-        unsafe {
-            let buf_info = VkBufferCreateInfo {
-                s_type: VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: 0,
-                size: size_bytes as u64,
-                usage: VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                sharing_mode: VK_SHARING_MODE_EXCLUSIVE,
-                queue_family_index_count: 0,
-                p_queue_family_indices: ptr::null(),
-            };
-            let mut buffer: VkBuffer = 0;
-            (self.fns.create_buffer)(self.device, &buf_info, ptr::null(), &mut buffer);
-
-            let mut reqs = std::mem::zeroed::<VkMemoryRequirements>();
-            (self.fns.get_buf_mem_reqs)(self.device, buffer, &mut reqs);
-
-            let mem_type = find_memory_type(
-                &self.mem_props, reqs.memory_type_bits,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-            ).expect("No suitable memory type");
-
-            let alloc_info = VkMemoryAllocateInfo {
-                s_type: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                p_next: ptr::null(),
-                allocation_size: reqs.size,
-                memory_type_index: mem_type,
-            };
-            let mut memory: VkDeviceMemory = 0;
-            (self.fns.alloc_mem)(self.device, &alloc_info, ptr::null(), &mut memory);
-            (self.fns.bind_buf_mem)(self.device, buffer, memory, 0);
-
-            let mut mapped: *mut c_void = ptr::null_mut();
-            (self.fns.map_mem)(self.device, memory, 0, VK_WHOLE_SIZE, 0, &mut mapped);
-
-            GpuBuf { buffer, memory, mapped, size: size_bytes }
-        }
+        let flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        self.create_buffer_usage_prefer(size_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, flags, flags)
     }
 
     pub fn upload(&self, buf: &GpuBuf, data: &[u8]) {
@@ -1571,6 +1556,19 @@ impl GpuContext {
         }
     }
 
+    /// Allocate device memory of the given size and type
+    unsafe fn alloc_device_memory(&self, size: u64, mem_type_index: u32) -> VkDeviceMemory {
+        let alloc_info = VkMemoryAllocateInfo {
+            s_type: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            p_next: ptr::null(),
+            allocation_size: size,
+            memory_type_index: mem_type_index,
+        };
+        let mut memory: VkDeviceMemory = 0;
+        (self.fns.alloc_mem)(self.device, &alloc_info, ptr::null(), &mut memory);
+        memory
+    }
+
     /// Create buffer, trying preferred memory flags first, then falling back
     fn create_buffer_usage_prefer(&self, size_bytes: usize, usage: u32, preferred: u32, fallback: u32) -> GpuBuf {
         unsafe {
@@ -1594,14 +1592,7 @@ impl GpuContext {
                 .or_else(|| find_memory_type(&self.mem_props, reqs.memory_type_bits, fallback))
                 .expect("No suitable memory type");
 
-            let alloc_info = VkMemoryAllocateInfo {
-                s_type: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                p_next: ptr::null(),
-                allocation_size: reqs.size,
-                memory_type_index: mem_type,
-            };
-            let mut memory: VkDeviceMemory = 0;
-            (self.fns.alloc_mem)(self.device, &alloc_info, ptr::null(), &mut memory);
+            let memory = self.alloc_device_memory(reqs.size, mem_type);
             (self.fns.bind_buf_mem)(self.device, buffer, memory, 0);
 
             let mut mapped: *mut c_void = ptr::null_mut();
@@ -1641,14 +1632,7 @@ impl GpuContext {
         let mem_type = find_memory_type(&self.mem_props, reqs.memory_type_bits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
             .expect("No device-local memory for image");
 
-        let alloc_info = VkMemoryAllocateInfo {
-            s_type: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            p_next: ptr::null(),
-            allocation_size: reqs.size,
-            memory_type_index: mem_type,
-        };
-        let mut memory: VkDeviceMemory = 0;
-        (self.fns.alloc_mem)(self.device, &alloc_info, ptr::null(), &mut memory);
+        let memory = self.alloc_device_memory(reqs.size, mem_type);
         (self.fns.bind_image_mem)(self.device, image, memory, 0);
 
         (image, memory)

@@ -2,6 +2,7 @@
 // Each job function is called during the Working state based on npc.job
 
 use crate::state::*;
+use crate::math::dist_sq_2d;
 use crate::npc::{npc_walk_toward, npc_enter_car};
 use crate::world::on_river_not_bridge;
 
@@ -37,9 +38,7 @@ fn stuck_recovery(world: &mut WorldData, i: usize, net: &RoadNetwork) {
             for _ in 0..10 {
                 let ni = world.npcs[i].rng.next() as usize % net.nodes.len();
                 let node = &net.nodes[ni];
-                let dx = node[0] - nx;
-                let dz = node[1] - nz;
-                let d = dx * dx + dz * dz;
+                let d = dist_sq_2d(node[0], node[1], nx, nz);
                 if d > 2500.0 && d < 40000.0
                     && !on_river_not_bridge(node[0], node[1], &world.river_segments, &world.bridges)
                 {
@@ -86,9 +85,7 @@ fn stuck_recovery(world: &mut WorldData, i: usize, net: &RoadNetwork) {
         let mut best_d = f32::MAX;
         let mut best_node = None;
         for (ni, node) in net.nodes.iter().enumerate() {
-            let dx = node[0] - nx;
-            let dz = node[1] - nz;
-            let d = dx * dx + dz * dz;
+            let d = dist_sq_2d(node[0], node[1], nx, nz);
             // Closest road node within 80m, not on river
             if d < 6400.0 && d < best_d
                 && !on_river_not_bridge(node[0], node[1], &world.river_segments, &world.bridges)
@@ -586,9 +583,7 @@ fn npc_work_paramedic(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
             if j == i { continue; }
             if world.npcs[j].stuck_timer < 5.0 { continue; }
             if world.npcs[j].state == NpcState::Sleeping { continue; }
-            let dx = world.npcs[j].x - world.npcs[i].x;
-            let dz = world.npcs[j].z - world.npcs[i].z;
-            let d = dx * dx + dz * dz;
+            let d = dist_sq_2d(world.npcs[j].x, world.npcs[j].z, world.npcs[i].x, world.npcs[i].z);
             if d < best_dist {
                 best_dist = d;
                 target_x = world.npcs[j].x;
@@ -616,9 +611,7 @@ fn npc_work_paramedic(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
         let n = world.npcs.len();
         for j in 0..n {
             if j == i { continue; }
-            let dx = world.npcs[j].x - world.npcs[i].x;
-            let dz = world.npcs[j].z - world.npcs[i].z;
-            if dx * dx + dz * dz < 9.0 && world.npcs[j].stuck_timer > 3.0 {
+            if dist_sq_2d(world.npcs[j].x, world.npcs[j].z, world.npcs[i].x, world.npcs[i].z) < 9.0 && world.npcs[j].stuck_timer > 3.0 {
                 world.npcs[j].stuck_timer = 0.0;
                 world.npcs[j].detouring = false;
                 world.npcs[i].money += 2.0;
@@ -679,9 +672,7 @@ fn npc_work_police(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terra
             if j == i { continue; }
             if !world.npcs[j].wanted { continue; }
             if world.npcs[j].state == NpcState::Sleeping { continue; }
-            let dx = world.npcs[j].x - world.npcs[i].x;
-            let dz = world.npcs[j].z - world.npcs[i].z;
-            let d2 = dx * dx + dz * dz;
+            let d2 = dist_sq_2d(world.npcs[j].x, world.npcs[j].z, world.npcs[i].x, world.npcs[i].z);
             if d2 < best_d { best_d = d2; best_j = Some(j); }
         }
         if best_j.is_some() {
@@ -791,9 +782,7 @@ fn npc_work_mechanic(world: &mut WorldData, i: usize, net: &mut RoadNetwork, ter
             let mut best_z = world.npcs[i].z;
             for v in &world.vehicles {
                 if v.speed.abs() > 0.5 { continue; } // skip moving vehicles
-                let dx = v.x - world.npcs[i].x;
-                let dz = v.z - world.npcs[i].z;
-                let d = dx * dx + dz * dz;
+                let d = dist_sq_2d(v.x, v.z, world.npcs[i].x, world.npcs[i].z);
                 if d > 4.0 && d < best_dist {
                     best_dist = d;
                     best_x = v.x;
@@ -812,9 +801,7 @@ fn npc_work_construction(world: &mut WorldData, i: usize, net: &mut RoadNetwork,
     let tz = world.npcs[i].job_target_z;
 
     // Set target to dockyard if not set or reached
-    let dx = tx - world.npcs[i].x;
-    let dz = tz - world.npcs[i].z;
-    if (tx == 0.0 && tz == 0.0) || dx * dx + dz * dz < 9.0 {
+    if (tx == 0.0 && tz == 0.0) || dist_sq_2d(tx, tz, world.npcs[i].x, world.npcs[i].z) < 9.0 {
         world.npcs[i].job_target_x = world.npcs[i].rng.range(-30.0, 30.0);
         world.npcs[i].job_target_z = DOCK_Z_START + world.npcs[i].rng.range(5.0, 15.0);
     }
@@ -916,9 +903,7 @@ fn npc_work_lumberjack(world: &mut WorldData, i: usize, net: &mut RoadNetwork, t
             let mut best_x = world.npcs[i].x;
             let mut best_z = world.npcs[i].z;
             for t in &world.trees {
-                let dx = t.x - world.npcs[i].x;
-                let dz = t.z - world.npcs[i].z;
-                let d = dx * dx + dz * dz;
+                let d = dist_sq_2d(t.x, t.z, world.npcs[i].x, world.npcs[i].z);
                 if d > 4.0 && d < best_dist {
                     best_dist = d;
                     best_x = t.x + 1.5;
@@ -1026,9 +1011,7 @@ fn find_best_item(world: &WorldData, npc_idx: usize) -> Option<usize> {
         if let Some(claimer) = item.claimed_by {
             if claimer != npc_idx { continue; }
         }
-        let dx = item.x - npc.x;
-        let dz = item.z - npc.z;
-        let dist = dx * dx + dz * dz;
+        let dist = dist_sq_2d(item.x, item.z, npc.x, npc.z);
         if dist > max_dist_sq { continue; }
         if path_clear(world, npc.x, npc.z, item.x, item.z, home) {
             if dist < best_dist {
@@ -1044,17 +1027,23 @@ fn find_best_item(world: &WorldData, npc_idx: usize) -> Option<usize> {
     best_idx.or(fallback_idx)
 }
 
-fn find_nearest_bin(world: &WorldData, x: f32, z: f32, home_idx: usize) -> Option<usize> {
+fn find_nearest_with_fallback<T, F, G>(
+    world: &WorldData, x: f32, z: f32, home_idx: usize,
+    items: &[T], skip: F, pos: G,
+) -> Option<usize>
+where
+    F: Fn(&T) -> bool,
+    G: Fn(&T) -> (f32, f32),
+{
     let mut best_dist = f32::MAX;
     let mut best_idx = None;
     let mut fallback_dist = f32::MAX;
     let mut fallback_idx = None;
-    for (idx, bin) in world.trash_bins.iter().enumerate() {
-        if bin.carried_by.is_some() { continue; }
-        let dx = bin.x - x;
-        let dz = bin.z - z;
-        let dist = dx * dx + dz * dz;
-        if path_clear(world, x, z, bin.x, bin.z, home_idx) {
+    for (idx, item) in items.iter().enumerate() {
+        if skip(item) { continue; }
+        let (ix, iz) = pos(item);
+        let dist = dist_sq_2d(ix, iz, x, z);
+        if path_clear(world, x, z, ix, iz, home_idx) {
             if dist < best_dist {
                 best_dist = dist;
                 best_idx = Some(idx);
@@ -1067,27 +1056,20 @@ fn find_nearest_bin(world: &WorldData, x: f32, z: f32, home_idx: usize) -> Optio
     best_idx.or(fallback_idx)
 }
 
+fn find_nearest_bin(world: &WorldData, x: f32, z: f32, home_idx: usize) -> Option<usize> {
+    find_nearest_with_fallback(
+        world, x, z, home_idx, &world.trash_bins,
+        |bin| bin.carried_by.is_some(),
+        |bin| (bin.x, bin.z),
+    )
+}
+
 fn find_nearest_interactible(world: &WorldData, x: f32, z: f32, kind: InteractibleKind, home_idx: usize) -> Option<usize> {
-    let mut best_dist = f32::MAX;
-    let mut best_idx = None;
-    let mut fallback_dist = f32::MAX;
-    let mut fallback_idx = None;
-    for (idx, inter) in world.interactibles.iter().enumerate() {
-        if inter.kind != kind { continue; }
-        let dx = inter.x - x;
-        let dz = inter.z - z;
-        let dist = dx * dx + dz * dz;
-        if path_clear(world, x, z, inter.x, inter.z, home_idx) {
-            if dist < best_dist {
-                best_dist = dist;
-                best_idx = Some(idx);
-            }
-        } else if best_idx.is_none() && dist < fallback_dist {
-            fallback_dist = dist;
-            fallback_idx = Some(idx);
-        }
-    }
-    best_idx.or(fallback_idx)
+    find_nearest_with_fallback(
+        world, x, z, home_idx, &world.interactibles,
+        |inter| inter.kind != kind,
+        |inter| (inter.x, inter.z),
+    )
 }
 
 fn pick_wander(world: &mut WorldData, i: usize, net: &RoadNetwork) {
@@ -1118,9 +1100,7 @@ fn pick_wander(world: &mut WorldData, i: usize, net: &RoadNetwork) {
         for _ in 0..5 {
             let ni = world.npcs[i].rng.next() as usize % n_nodes;
             let node = &net.nodes[ni];
-            let dx = node[0] - nx;
-            let dz = node[1] - nz;
-            let d = dx * dx + dz * dz;
+            let d = dist_sq_2d(node[0], node[1], nx, nz);
             // Must be 5-200m away, not on river
             if d > 25.0 && d < 40000.0 && !on_river_not_bridge(node[0], node[1], &world.river_segments, &world.bridges) {
                 world.npcs[i].target_x = node[0];

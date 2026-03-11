@@ -118,3 +118,10 @@ pub fn clamp_normal_tilt(n: Vec3, max_deg: f32) -> Vec3 {
     let scale = max_sin / horiz_sq.sqrt();
     [n[0] * scale, max_cos, n[2] * scale] // already unit: sin²+cos²=1
 }
+
+#[inline(always)]
+pub fn dist_sq_2d(x1: f32, z1: f32, x2: f32, z2: f32) -> f32 {
+    let dx = x1 - x2;
+    let dz = z1 - z2;
+    dx * dx + dz * dz
+}

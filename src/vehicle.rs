@@ -3,7 +3,7 @@
 // Player enters/exits with Interact key, drives with movement keys
 
 use crate::state::*;
-use crate::world::{check_building_collision, surface_at};
+use crate::world::{check_walk_collision, surface_at};
 use crate::input::Action;
 
 pub fn sys_vehicle(state: &mut GameState, dt: f32) {
@@ -68,6 +68,19 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
         ai_drive(i, &mut state.world, &state.road_network, &state.terrain, dt);
     }
 
+    // Snap newly-parked vehicles that ended up off-road to nearest parking/road position
+    for i in 0..n {
+        if !state.world.vehicles[i].parked { continue; }
+        if state.world.vehicles[i].parking_target.is_some() { continue; } // already at a spot
+        // Check if vehicle is on a road
+        let vx = state.world.vehicles[i].x;
+        let vz = state.world.vehicles[i].z;
+        let surf = surface_at(vx, vz, &state.road_network);
+        if surf == Surface::CarRoad { continue; } // already on road, fine
+        // Off-road — snap to nearest parking spot or road edge
+        snap_to_parking(i, &mut state.world, &mut state.road_network, &state.terrain);
+    }
+
     // Vehicle-vehicle collision separation — push overlapping vehicles apart
     separate_vehicles(&mut state.world, &state.terrain);
 }
@@ -105,13 +118,13 @@ fn drive_vehicle(state: &mut GameState, vi: usize, dt: f32) {
     let new_x = cur_x - rot.sin() * spd * dt;
     let new_z = cur_z - rot.cos() * spd * dt;
 
-    if !check_building_collision(&state.world, new_x, cur_z, 1.5) {
+    if !check_walk_collision(&state.world, new_x, cur_z, 1.5, None) {
         state.world.vehicles[vi].x = new_x;
     } else {
         state.world.vehicles[vi].speed *= -0.3;
     }
     let cur_x = state.world.vehicles[vi].x;
-    if !check_building_collision(&state.world, cur_x, new_z, 1.5) {
+    if !check_walk_collision(&state.world, cur_x, new_z, 1.5, None) {
         state.world.vehicles[vi].z = new_z;
     } else {
         state.world.vehicles[vi].speed *= -0.3;
@@ -514,7 +527,7 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
         let new_z = cur_z - rot.cos() * spd * dt;
 
         let river_x = crate::world::on_river_not_bridge(new_x, cur_z, &world.river_segments, &world.bridges);
-        if !check_building_collision(world, new_x, cur_z, 1.5) && !river_x {
+        if !check_walk_collision(world, new_x, cur_z, 1.5, None) && !river_x {
             world.vehicles[vi].x = new_x;
         } else {
             world.vehicles[vi].speed *= -0.3;
@@ -523,7 +536,7 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
         }
         let cur_x = world.vehicles[vi].x;
         let river_z = crate::world::on_river_not_bridge(cur_x, new_z, &world.river_segments, &world.bridges);
-        if !check_building_collision(world, cur_x, new_z, 1.5) && !river_z {
+        if !check_walk_collision(world, cur_x, new_z, 1.5, None) && !river_z {
             world.vehicles[vi].z = new_z;
         } else {
             world.vehicles[vi].speed *= -0.3;
@@ -625,6 +638,82 @@ pub fn find_nearest_parking_spot(net: &RoadNetwork, x: f32, z: f32, max_dist: f3
         if d2 < best_d2 { best_d2 = d2; best = Some(i); }
     }
     best
+}
+
+/// Find the nearest point on any road segment. Returns (x, z, rot_y) of the
+/// closest point on a road, clamped to the road edge (lane position).
+pub fn nearest_road_position(net: &RoadNetwork, x: f32, z: f32) -> Option<(f32, f32, f32)> {
+    let mut best_d2 = f32::MAX;
+    let mut best_pos: Option<(f32, f32, f32)> = None;
+    for seg in &net.segments {
+        if seg.tier != RoadTier::CarRoad { continue; }
+        let dx = seg.x1 - seg.x0;
+        let dz = seg.z1 - seg.z0;
+        let len_sq = dx * dx + dz * dz;
+        if len_sq < 0.01 { continue; }
+        // Project (x,z) onto segment
+        let t = ((x - seg.x0) * dx + (z - seg.z0) * dz) / len_sq;
+        let t = t.clamp(0.05, 0.95); // stay away from intersections
+        let px = seg.x0 + dx * t;
+        let pz = seg.z0 + dz * t;
+        // Offset to road edge (right lane curb)
+        let len = len_sq.sqrt();
+        let perp_x = -dz / len;
+        let perp_z = dx / len;
+        let curb_offset = CAR_ROAD_WIDTH * 0.5 - 1.0; // park near road edge
+        let rx = px + perp_x * curb_offset;
+        let rz = pz + perp_z * curb_offset;
+        let ddx = rx - x;
+        let ddz = rz - z;
+        let d2 = ddx * ddx + ddz * ddz;
+        if d2 < best_d2 {
+            best_d2 = d2;
+            let rot = (-dx).atan2(-dz);
+            best_pos = Some((rx, rz, rot));
+        }
+        // Try opposite side too
+        let lx = px - perp_x * curb_offset;
+        let lz = pz - perp_z * curb_offset;
+        let ddx = lx - x;
+        let ddz = lz - z;
+        let d2 = ddx * ddx + ddz * ddz;
+        if d2 < best_d2 {
+            best_d2 = d2;
+            let rot = (-dx).atan2(-dz) + std::f32::consts::PI;
+            best_pos = Some((lx, lz, rot));
+        }
+    }
+    best_pos
+}
+
+/// Snap a vehicle to the nearest parking spot or road edge when it needs to park.
+/// Returns true if the vehicle was snapped to a valid position.
+pub fn snap_to_parking(vi: usize, world: &mut WorldData, net: &mut RoadNetwork, terrain: &Terrain) -> bool {
+    let vx = world.vehicles[vi].x;
+    let vz = world.vehicles[vi].z;
+
+    // First try: find a free parking spot within 30m
+    if let Some(si) = find_nearest_parking_spot(net, vx, vz, 30.0) {
+        let spot = &net.parking_spots[si];
+        world.vehicles[vi].x = spot.x;
+        world.vehicles[vi].z = spot.z;
+        world.vehicles[vi].y = terrain.height_at(spot.x, spot.z);
+        world.vehicles[vi].rot_y = spot.rot_y;
+        world.vehicles[vi].parking_target = Some(si);
+        net.parking_spots[si].occupied_by = Some(vi);
+        return true;
+    }
+
+    // Second try: snap to nearest road edge
+    if let Some((rx, rz, rot)) = nearest_road_position(net, vx, vz) {
+        world.vehicles[vi].x = rx;
+        world.vehicles[vi].z = rz;
+        world.vehicles[vi].y = terrain.height_at(rx, rz);
+        world.vehicles[vi].rot_y = rot;
+        return true;
+    }
+
+    false
 }
 
 /// Push overlapping vehicles apart so they don't interpenetrate at intersections.

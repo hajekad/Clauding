@@ -1,13 +1,12 @@
 // NPC life simulation: state machine, physics, pathfinding, item pickup/deposit, night spawning
 
 use crate::state::*;
-use crate::world::{check_npc_walk_collision, surface_at, point_to_segment_dist, on_river_not_bridge, on_any_road};
+use crate::math::dist_sq_2d;
+use crate::world::{check_walk_collision, surface_at, point_to_segment_dist, on_river_not_bridge, on_any_road};
 use crate::rng::Rng;
 
 // Home task duration: 4 game-hours = 4 * 60 = 240 real seconds
 const HOME_TASK_DURATION: f32 = 240.0;
-// Work duration: 12 game-hours = 720 real seconds
-const WORK_DURATION: f32 = 720.0;
 // Item spawn interval: ~1 item every 1.5 seconds (items are collected efficiently)
 const NIGHT_SPAWN_INTERVAL: f32 = 1.0;
 
@@ -294,7 +293,7 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
             let push = (r - d) + 0.05;
             let px = nx + bdx / d * push;
             let pz = nz + bdz / d * push;
-            if !check_npc_walk_collision(world, px, pz, 0.4, home_idx)
+            if !check_walk_collision(world, px, pz, 0.4, Some(home_idx))
                 && !on_river_not_bridge(px, pz, &world.river_segments, &world.bridges)
             {
                 world.npcs[i].x = px;
@@ -322,8 +321,8 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
         }
         hit
     };
-    let collides_x = check_npc_walk_collision(world, new_x, world.npcs[i].z, 0.4, home_idx) || on_river_x;
-    let collides_z = check_npc_walk_collision(world, world.npcs[i].x, new_z, 0.4, home_idx) || on_river_z;
+    let collides_x = check_walk_collision(world, new_x, world.npcs[i].z, 0.4, Some(home_idx)) || on_river_x;
+    let collides_z = check_walk_collision(world, world.npcs[i].x, new_z, 0.4, Some(home_idx)) || on_river_z;
 
     // Apply movement
     let old_x = world.npcs[i].x;
@@ -409,7 +408,7 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
                 let cx = cx.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
                 let cz = cz.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
                 if !on_river_not_bridge(cx, cz, &world.river_segments, &world.bridges)
-                    && !check_npc_walk_collision(world, cx, cz, 0.4, home_idx)
+                    && !check_walk_collision(world, cx, cz, 0.4, Some(home_idx))
                 {
                     dest_x = cx;
                     dest_z = cz;
@@ -502,9 +501,7 @@ fn find_nearest_vending_machine(world: &WorldData, x: f32, z: f32) -> Option<(f3
     let mut best = None;
     for inter in &world.interactibles {
         if inter.kind != InteractibleKind::VendingMachine { continue; }
-        let dx = inter.x - x;
-        let dz = inter.z - z;
-        let d = dx * dx + dz * dz;
+        let d = dist_sq_2d(inter.x, inter.z, x, z);
         if d < best_dist { best_dist = d; best = Some((inter.x, inter.z)); }
     }
     best
@@ -598,7 +595,7 @@ fn npc_going_to_work(world: &mut WorldData, i: usize, net: &mut RoadNetwork, ter
     // Find nearest unclaimed item to set as work target area
     let npc = &world.npcs[i];
     if npc.target_item.is_none() {
-        let item_idx = find_best_item(world, i);
+        let item_idx = find_closest_item(world, i);
         if let Some(idx) = item_idx {
             world.npcs[i].target_x = world.items[idx].x;
             world.npcs[i].target_z = world.items[idx].z;
@@ -890,6 +887,9 @@ pub fn npc_exit_car(world: &mut WorldData, i: usize, terrain: &Terrain, net: &mu
         if si < net.parking_spots.len() {
             net.parking_spots[si].occupied_by = Some(car_idx);
         }
+    } else {
+        // No parking target — snap vehicle to nearest parking spot or road edge
+        crate::vehicle::snap_to_parking(car_idx, world, net, terrain);
     }
 
     let npc = &world.npcs[i];
@@ -902,7 +902,7 @@ pub fn npc_exit_car(world: &mut WorldData, i: usize, terrain: &Terrain, net: &mu
     world.npcs[i].stuck_timer = 0.0;
 }
 
-fn find_best_item(world: &WorldData, npc_idx: usize) -> Option<usize> {
+fn find_closest_item(world: &WorldData, npc_idx: usize) -> Option<usize> {
     let npc = &world.npcs[npc_idx];
     let mut best_dist = f32::MAX;
     let mut best_idx = None;
@@ -914,9 +914,7 @@ fn find_best_item(world: &WorldData, npc_idx: usize) -> Option<usize> {
         if let Some(claimer) = item.claimed_by {
             if claimer != npc_idx { continue; }
         }
-        let dx = item.x - npc.x;
-        let dz = item.z - npc.z;
-        let dist = dx * dx + dz * dz;
+        let dist = dist_sq_2d(item.x, item.z, npc.x, npc.z);
         if dist < best_dist {
             best_dist = dist;
             best_idx = Some(idx);
@@ -995,7 +993,7 @@ pub fn sys_night_spawning(
             }
             attempts += 1;
             if on_any_road(x, z, road_network) { continue; }
-            if check_npc_walk_collision(world, x, z, 0.5, usize::MAX) { continue; }
+            if check_walk_collision(world, x, z, 0.5, Some(usize::MAX)) { continue; }
             if on_river_not_bridge(x, z, &world.river_segments, &world.bridges) { continue; }
             break;
         }
@@ -1173,9 +1171,7 @@ pub fn sys_player_interact(
         let mut best_bi = None;
         for (bi, bin) in world.trash_bins.iter().enumerate() {
             if bin.carried_by.is_some() { continue; }
-            let dx = px - bin.x;
-            let dz = pz - bin.z;
-            let d2 = dx * dx + dz * dz;
+            let d2 = dist_sq_2d(px, pz, bin.x, bin.z);
             if d2 < best_dist {
                 best_dist = d2;
                 best_bi = Some(bi);
@@ -1209,9 +1205,7 @@ pub fn sys_player_interact(
         let mut best_ii = None;
         for (ii, item) in world.items.iter().enumerate() {
             if !item.active || item.falling { continue; }
-            let dx = px - item.x;
-            let dz = pz - item.z;
-            let d2 = dx * dx + dz * dz;
+            let d2 = dist_sq_2d(px, pz, item.x, item.z);
             if d2 < best_dist {
                 best_dist = d2;
                 best_ii = Some(ii);
@@ -1244,9 +1238,7 @@ pub fn sys_player_interact(
         let mut best_bi = None;
         for (bi, bin) in world.trash_bins.iter().enumerate() {
             if bin.carried_by.is_some() { continue; }
-            let dx = px - bin.x;
-            let dz = pz - bin.z;
-            let d2 = dx * dx + dz * dz;
+            let d2 = dist_sq_2d(px, pz, bin.x, bin.z);
             if d2 < best_dist {
                 best_dist = d2;
                 best_bi = Some(bi);
@@ -1266,9 +1258,7 @@ pub fn sys_player_interact(
         let mut best_ii = None;
         for (ii, inter) in world.interactibles.iter().enumerate() {
             if inter.cooldown > 0.0 { continue; }
-            let dx = px - inter.x;
-            let dz = pz - inter.z;
-            let d2 = dx * dx + dz * dz;
+            let d2 = dist_sq_2d(px, pz, inter.x, inter.z);
             if d2 < best_dist {
                 best_dist = d2;
                 best_ii = Some(ii);

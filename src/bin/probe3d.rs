@@ -134,8 +134,8 @@ fn probe_point(world: &state::WorldData, net: &state::RoadNetwork, terrain: &sta
         println!("Distance to river: {:.1}m", min_dist);
     }
 
-    let building_col = world::check_building_collision(world, x, z, 0.4);
-    let npc_col = world::check_npc_walk_collision(world, x, z, 0.4, usize::MAX);
+    let building_col = world::check_walk_collision(world, x, z, 0.4, None);
+    let npc_col = world::check_walk_collision(world, x, z, 0.4, Some(usize::MAX));
     println!("Building collision (r=0.4): {}", building_col);
     println!("NPC walk collision (r=0.4): {}", npc_col);
 
@@ -237,8 +237,8 @@ fn probe_line(world: &state::WorldData, net: &state::RoadNetwork, terrain: &stat
         let h = terrain.height_at(x, z);
         let surf = world::surface_at(x, z, net);
         let riv = world::on_river(x, z, &world.river_segments);
-        let bc = world::check_building_collision(world, x, z, 0.4);
-        let nc = world::check_npc_walk_collision(world, x, z, 0.4, usize::MAX);
+        let bc = world::check_walk_collision(world, x, z, 0.4, None);
+        let nc = world::check_walk_collision(world, x, z, 0.4, Some(usize::MAX));
         println!("{:>8.1} {:>8.1} {:>7.2} {:>10} {:>6} {:>6} {:>6}",
             x, z, h, surf_str(surf), riv, bc, nc);
     }
@@ -256,8 +256,8 @@ fn probe_grid(world: &state::WorldData, net: &state::RoadNetwork,
         let mut x = cx - half;
         while x <= cx + half {
             let riv = world::on_river(x, z, &world.river_segments);
-            let bc = world::check_building_collision(world, x, z, 0.3);
-            let nc = world::check_npc_walk_collision(world, x, z, 0.3, usize::MAX);
+            let bc = world::check_walk_collision(world, x, z, 0.3, None);
+            let nc = world::check_walk_collision(world, x, z, 0.3, Some(usize::MAX));
             let surf = world::surface_at(x, z, net);
 
             let ch = if riv { '~' }
@@ -289,7 +289,7 @@ fn probe_cross_section(world: &state::WorldData, net: &state::RoadNetwork, terra
         let (x, z) = if axis == "x" { (p, pos) } else { (pos, p) };
         let h = terrain.height_at(x, z);
         let riv = world::on_river(x, z, &world.river_segments);
-        let col = world::check_building_collision(world, x, z, 0.3);
+        let col = world::check_walk_collision(world, x, z, 0.3, None);
         let surf = world::surface_at(x, z, net);
         points.push((p, h, riv, col, surf));
         p += step;
@@ -343,7 +343,7 @@ fn analyze_npc_homes(world: &state::WorldData, net: &state::RoadNetwork, _terrai
         } else { (0.0, 0.0) };
 
         let riv = world::on_river(hx, hz, &world.river_segments);
-        let col = world::check_building_collision(world, hx, hz, 0.5);
+        let col = world::check_walk_collision(world, hx, hz, 0.5, None);
         let dist = ((npc.x - hx).powi(2) + (npc.z - hz).powi(2)).sqrt();
         let surf = world::surface_at(hx, hz, net);
 
@@ -401,8 +401,8 @@ fn collision_full_scan(world: &state::WorldData, step: f32) {
         let mut x = -half;
         while x < half {
             total += 1;
-            let bc = world::check_building_collision(world, x, z, 0.4);
-            let nc = world::check_npc_walk_collision(world, x, z, 0.4, usize::MAX);
+            let bc = world::check_walk_collision(world, x, z, 0.4, None);
+            let nc = world::check_walk_collision(world, x, z, 0.4, Some(usize::MAX));
             let riv = world::on_river(x, z, &world.river_segments);
             if bc { building_hits += 1; }
             if nc { npc_walk_hits += 1; }
@@ -738,7 +738,7 @@ fn analyze_reachability(world: &state::WorldData, net: &state::RoadNetwork) {
     for gz in 0..GRID_RES {
         for gx in 0..GRID_RES {
             let (wx, wz) = WalkGrid::to_world(gx, gz);
-            let blocked = world::check_npc_walk_collision(world, wx, wz, 0.4, usize::MAX)
+            let blocked = world::check_walk_collision(world, wx, wz, 0.4, Some(usize::MAX))
                 || world::on_river_not_bridge(wx, wz, &world.river_segments, &world.bridges);
             let idx = WalkGrid::idx(gx, gz);
             if blocked {
@@ -1161,7 +1161,7 @@ fn analyze_bins(game: &state::GameState) {
 
     for (i, bin) in game.world.trash_bins.iter().enumerate() {
         let on_river = world::on_river(bin.x, bin.z, &game.world.river_segments);
-        let in_building = world::check_building_collision(&game.world, bin.x, bin.z, 0.3);
+        let in_building = world::check_walk_collision(&game.world, bin.x, bin.z, 0.3, None);
         let terrain_normal = game.terrain.normal_at(bin.x, bin.z);
         let slope_deg = terrain_normal[1].clamp(-1.0, 1.0).acos().to_degrees();
         let steep = slope_deg > 40.0;

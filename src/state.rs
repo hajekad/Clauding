@@ -47,6 +47,7 @@ pub const HEADLESS_DT: f32 = 1.0 / 30.0; // shared timestep for headless simulat
 pub const NUM_NPCS: usize = 100;
 pub const NUM_ITEMS: usize = 250;
 pub const NPC_SPEED: f32 = 2.5;
+pub const WORK_DURATION: f32 = 720.0;
 pub const TERRAIN_GRID: usize = 250;
 pub const TERRAIN_CELL: f32 = WORLD_SIZE / TERRAIN_GRID as f32; // 2m per cell
 pub const GRAVITY: f32 = 20.0;
@@ -329,6 +330,91 @@ pub enum NpcJob {
 
 pub const NPC_JOB_COUNT: usize = 15;
 
+impl NpcJob {
+    pub fn name(self) -> &'static str {
+        match self {
+            NpcJob::Collector => "Collector",
+            NpcJob::GarbageCollector => "Garbage",
+            NpcJob::TaxiDriver => "Taxi",
+            NpcJob::DeliveryCourier => "Delivery",
+            NpcJob::MailCarrier => "Mail",
+            NpcJob::Paramedic => "Paramedic",
+            NpcJob::Firefighter => "Firefighter",
+            NpcJob::PolicePatrol => "Police",
+            NpcJob::StreetVendor => "Vendor",
+            NpcJob::Mechanic => "Mechanic",
+            NpcJob::ConstructionWorker => "Construction",
+            NpcJob::Fisherman => "Fisherman",
+            NpcJob::Farmer => "Farmer",
+            NpcJob::Lumberjack => "Lumberjack",
+            NpcJob::Scavenger => "Scavenger",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            NpcJob::Collector => 0,
+            NpcJob::GarbageCollector => 1,
+            NpcJob::TaxiDriver => 2,
+            NpcJob::DeliveryCourier => 3,
+            NpcJob::MailCarrier => 4,
+            NpcJob::Paramedic => 5,
+            NpcJob::Firefighter => 6,
+            NpcJob::PolicePatrol => 7,
+            NpcJob::StreetVendor => 8,
+            NpcJob::Mechanic => 9,
+            NpcJob::ConstructionWorker => 10,
+            NpcJob::Fisherman => 11,
+            NpcJob::Farmer => 12,
+            NpcJob::Lumberjack => 13,
+            NpcJob::Scavenger => 14,
+        }
+    }
+
+    pub fn is_mobile(self) -> bool {
+        matches!(self,
+            NpcJob::Collector | NpcJob::GarbageCollector |
+            NpcJob::DeliveryCourier | NpcJob::MailCarrier |
+            NpcJob::Paramedic | NpcJob::PolicePatrol |
+            NpcJob::TaxiDriver
+        )
+    }
+}
+
+pub const JOB_NAMES: [&str; NPC_JOB_COUNT] = [
+    "Collector", "Garbage", "Taxi", "Delivery", "Mail",
+    "Paramedic", "Firefighter", "Police", "Vendor", "Mechanic",
+    "Construction", "Fisherman", "Farmer", "Lumberjack", "Scavenger",
+];
+
+impl NpcState {
+    pub fn name(self) -> &'static str {
+        match self {
+            NpcState::Sleeping => "Sleeping",
+            NpcState::HomeTask => "HomeTask",
+            NpcState::GoingToWork => "GoToWork",
+            NpcState::Working => "Working",
+            NpcState::GoingHome => "GoHome",
+            NpcState::Driving => "Driving",
+            NpcState::Interacting => "Interacting",
+            NpcState::KnockedOut => "KnockedOut",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            NpcState::Sleeping => 0,
+            NpcState::HomeTask => 1,
+            NpcState::GoingToWork => 2,
+            NpcState::Working => 3,
+            NpcState::GoingHome => 4,
+            NpcState::Driving => 5,
+            NpcState::Interacting => 6,
+            NpcState::KnockedOut => 7,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum PlayerJobType {
     None,
@@ -346,6 +432,28 @@ pub enum PlayerJobType {
     Farmer,
     Lumberjack,
     Scavenger,
+}
+
+impl PlayerJobType {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::GarbageCollector => "Garbage",
+            Self::TaxiDriver => "Taxi",
+            Self::DeliveryCourier => "Delivery",
+            Self::MailCarrier => "Mail",
+            Self::Paramedic => "Paramedic",
+            Self::Firefighter => "Firefighter",
+            Self::PolicePatrol => "Police",
+            Self::StreetVendor => "Vendor",
+            Self::Mechanic => "Mechanic",
+            Self::ConstructionWorker => "Construction",
+            Self::Fisherman => "Fisherman",
+            Self::Farmer => "Farmer",
+            Self::Lumberjack => "Lumberjack",
+            Self::Scavenger => "Scavenger",
+        }
+    }
 }
 
 pub struct PlayerJob {
@@ -664,5 +772,70 @@ impl GameState {
             neat_brains: Vec::new(),
             time_speed: 1,
         }
+    }
+
+    /// Create game state with world generated and NEAT brains loaded.
+    /// Common init shared by all binaries.
+    pub fn init(w: usize, h: usize, seed: u64) -> Self {
+        let mut game = Self::new(w, h, seed);
+        crate::world::generate_world(&mut game);
+
+        // Load trained NEAT population (try neat_trained.bin first)
+        if let Some(loaded) = crate::neat::load_population("neat_trained.bin", NUM_NPCS) {
+            eprintln!("Loaded NEAT population: gen {}, {} genomes", loaded.generation, loaded.genomes.len());
+            game.neat_population = loaded;
+        }
+
+        // Compile brains from population
+        game.neat_brains = game.neat_population.genomes.iter()
+            .map(|g| crate::neat::NeatBrain::compile(g))
+            .collect();
+
+        game
+    }
+
+    /// Run one headless simulation tick (no rendering, no player input).
+    /// Shared by train, observe, render_map, and other headless binaries.
+    pub fn tick_headless(&mut self, dt: f32) {
+        let prev_time_of_day = self.time_of_day;
+
+        // Advance time
+        self.time_of_day += dt * 24.0 / DAY_LENGTH;
+        if self.time_of_day >= 24.0 { self.time_of_day -= 24.0; }
+
+        // Midnight reset
+        if crate::npc::sys_midnight_reset(
+            &mut self.world, self.time_of_day, prev_time_of_day,
+            &mut self.neat_population, &mut self.neat_brains,
+        ) {
+            self.day_count += 1;
+        }
+
+        // Vehicle AI
+        crate::vehicle::sys_vehicle(self, dt);
+
+        // NPC systems
+        crate::npc::sys_npc(
+            &mut self.world, &mut self.road_network, &self.terrain,
+            dt, self.time_of_day, &mut self.neat_brains,
+            self.player.x, self.player.z,
+        );
+        crate::npc::sys_night_spawning(
+            &mut self.world, &self.terrain, self.time_of_day,
+            dt, &mut self.spawn_rng, &self.road_network,
+        );
+        crate::npc::sys_items_update(&mut self.world, dt);
+        crate::npc::sys_npc_interactions(&mut self.world, dt);
+        crate::npc::sys_hunger_thirst(&mut self.world, &mut self.player, dt);
+
+        // Collision + ragdoll
+        crate::collision::sys_collisions_headless(&mut self.world, &self.terrain, dt);
+        crate::combat::sys_ragdoll_update(&mut self.world, &self.terrain, dt);
+        crate::combat::sys_combat_headless(&mut self.world, &self.terrain, dt);
+
+        // River escape
+        crate::npc::sys_river_escape(&mut self.world, &self.terrain);
+
+        self.frame_counter += 1;
     }
 }

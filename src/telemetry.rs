@@ -33,7 +33,7 @@ pub fn sys_telemetry(game: &GameState) {
     let _ = writeln!(s);
     if p.active_job.job_type != PlayerJobType::None {
         let _ = writeln!(s, "job: {} items={}/{} time={:.0}s",
-            player_job_name(p.active_job.job_type),
+            p.active_job.job_type.name(),
             p.active_job.items_done, p.active_job.items_needed,
             p.active_job.time_remaining);
     }
@@ -122,7 +122,7 @@ pub fn sys_telemetry(game: &GameState) {
     // Job counts
     let mut job_counts = [0u32; NPC_JOB_COUNT];
     for npc in &w.npcs {
-        let idx = npc_job_index(npc.job);
+        let idx = npc.job.index();
         if idx < NPC_JOB_COUNT { job_counts[idx] += 1; }
     }
     let _ = write!(s, "Jobs:");
@@ -142,8 +142,8 @@ pub fn sys_telemetry(game: &GameState) {
     for (i, npc) in w.npcs.iter().enumerate() {
         let _ = writeln!(s, "[{:2}] {:12} {:10} pos=({:6.1},{:6.1}) money=${:<5.0} carry={} bin={} dep={} snd=({:.2},{:.2},{:.2})",
             i,
-            npc_job_name(npc.job),
-            npc_state_name(npc.state),
+            npc.job.name(),
+            npc.state.name(),
             npc.x, npc.z,
             npc.money,
             npc.carrying_item,
@@ -241,78 +241,6 @@ fn grid_to_world(_col: usize, row: usize) -> (f32, f32) {
     (0.0, wz)
 }
 
-fn npc_state_name(s: NpcState) -> &'static str {
-    match s {
-        NpcState::Sleeping => "Sleeping",
-        NpcState::HomeTask => "HomeTask",
-        NpcState::GoingToWork => "GoToWork",
-        NpcState::Working => "Working",
-        NpcState::GoingHome => "GoHome",
-        NpcState::Driving => "Driving",
-        NpcState::Interacting => "Interacting",
-        NpcState::KnockedOut => "KnockedOut",
-    }
-}
-
-fn npc_job_name(j: NpcJob) -> &'static str {
-    match j {
-        NpcJob::Collector => "Collector",
-        NpcJob::GarbageCollector => "Garbage",
-        NpcJob::TaxiDriver => "Taxi",
-        NpcJob::DeliveryCourier => "Delivery",
-        NpcJob::MailCarrier => "Mail",
-        NpcJob::Paramedic => "Paramedic",
-        NpcJob::Firefighter => "Firefighter",
-        NpcJob::PolicePatrol => "Police",
-        NpcJob::StreetVendor => "Vendor",
-        NpcJob::Mechanic => "Mechanic",
-        NpcJob::ConstructionWorker => "Construction",
-        NpcJob::Fisherman => "Fisherman",
-        NpcJob::Farmer => "Farmer",
-        NpcJob::Lumberjack => "Lumberjack",
-        NpcJob::Scavenger => "Scavenger",
-    }
-}
-
-fn npc_job_index(j: NpcJob) -> usize {
-    match j {
-        NpcJob::Collector => 0,
-        NpcJob::GarbageCollector => 1,
-        NpcJob::TaxiDriver => 2,
-        NpcJob::DeliveryCourier => 3,
-        NpcJob::MailCarrier => 4,
-        NpcJob::Paramedic => 5,
-        NpcJob::Firefighter => 6,
-        NpcJob::PolicePatrol => 7,
-        NpcJob::StreetVendor => 8,
-        NpcJob::Mechanic => 9,
-        NpcJob::ConstructionWorker => 10,
-        NpcJob::Fisherman => 11,
-        NpcJob::Farmer => 12,
-        NpcJob::Lumberjack => 13,
-        NpcJob::Scavenger => 14,
-    }
-}
-
-fn player_job_name(j: PlayerJobType) -> &'static str {
-    match j {
-        PlayerJobType::None => "None",
-        PlayerJobType::GarbageCollector => "Garbage",
-        PlayerJobType::TaxiDriver => "Taxi",
-        PlayerJobType::DeliveryCourier => "Delivery",
-        PlayerJobType::MailCarrier => "Mail",
-        PlayerJobType::Paramedic => "Paramedic",
-        PlayerJobType::Firefighter => "Firefighter",
-        PlayerJobType::PolicePatrol => "Police",
-        PlayerJobType::StreetVendor => "Vendor",
-        PlayerJobType::Mechanic => "Mechanic",
-        PlayerJobType::ConstructionWorker => "Construction",
-        PlayerJobType::Fisherman => "Fisherman",
-        PlayerJobType::Farmer => "Farmer",
-        PlayerJobType::Lumberjack => "Lumberjack",
-        PlayerJobType::Scavenger => "Scavenger",
-    }
-}
 
 fn interactible_name(k: InteractibleKind) -> &'static str {
     match k {

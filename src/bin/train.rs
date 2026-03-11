@@ -26,19 +26,10 @@ fn main() {
     eprintln!("  {} NPCs, {} items, {}m world", state::NUM_NPCS, state::NUM_ITEMS, state::WORLD_SIZE as u32);
     eprintln!("  Press Ctrl+C to save and exit early\n");
 
-    let mut game = state::GameState::new(1, 1, seed);
-    world::generate_world(&mut game);
-
-    // Try to resume from existing trained population
-    if let Some(loaded) = neat::load_population("neat_trained.bin", state::NUM_NPCS) {
-        eprintln!("Resuming from gen {}, {} species", loaded.generation, loaded.species.len());
-        game.neat_population = loaded;
+    let mut game = state::GameState::init(1, 1, seed);
+    if game.neat_population.generation > 0 {
+        eprintln!("Resuming from gen {}, {} species", game.neat_population.generation, game.neat_population.species.len());
     }
-
-    // Compile brains
-    game.neat_brains = game.neat_population.genomes.iter()
-        .map(|g| neat::NeatBrain::compile(g))
-        .collect();
 
     let mut prev_time_of_day: f32 = game.time_of_day;
     let _ = prev_time_of_day;
@@ -159,17 +150,7 @@ fn print_diagnostic(game: &state::GameState) {
     let w = &game.world;
     let mut states = [0u32; 8];
     for npc in &w.npcs {
-        let idx = match npc.state {
-            state::NpcState::Sleeping => 0,
-            state::NpcState::HomeTask => 1,
-            state::NpcState::GoingToWork => 2,
-            state::NpcState::Working => 3,
-            state::NpcState::GoingHome => 4,
-            state::NpcState::Driving => 5,
-            state::NpcState::Interacting => 6,
-            state::NpcState::KnockedOut => 7,
-        };
-        states[idx] += 1;
+        states[npc.state.index()] += 1;
     }
     let active_items = w.items.iter().filter(|it| it.active).count();
     let falling_items = w.items.iter().filter(|it| it.falling).count();
