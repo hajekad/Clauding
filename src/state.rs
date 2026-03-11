@@ -680,6 +680,7 @@ pub struct WorldData {
     pub walls: Vec<Wall>,
     pub river_segments: Vec<RiverSegment>,
     pub bridges: Vec<Bridge>,
+    pub clutter: Vec<[f32; 3]>, // (x, z, radius) for barrels/crates/sacks/handcarts
 }
 
 pub struct GameState {
@@ -758,6 +759,7 @@ impl GameState {
                 walls: Vec::new(),
                 river_segments: Vec::new(),
                 bridges: Vec::new(),
+                clutter: Vec::new(),
             },
             mouse_dx: 0.0,
             mouse_dy: 0.0,

@@ -38,7 +38,7 @@ const ROAD_SEG_STEP: f32 = 2.0; // subdivision step for terrain-following road s
 
 // Dockyard colors
 const DOCK_GROUND: u32 = 0xFF555544;
-const WATER_COLOR: u32 = 0xFF224466;
+const WATER_COLOR: u32 = 0xFF2A5580;
 const WAREHOUSE_COLORS: [u32; 4] = [0xFF666655, 0xFF555566, 0xFF665544, 0xFF556655];
 const CRANE_COLOR: u32 = 0xFFCC8833;
 const CONTAINER_COLORS: [u32; 5] = [0xFFCC3333, 0xFF3333CC, 0xFF33CC33, 0xFFCCCC33, 0xFFCC8833];
@@ -60,9 +60,9 @@ const MAILBOX_COLOR: u32 = 0xFF3344CC;
 const PAYPHONE_COLOR: u32 = 0xFF888888;
 
 // River/bridge colors — deep center to lighter edge
-const RIVER_DEEP: u32 = 0xFF1A3D7A;   // deep center
-const RIVER_MID: u32 = 0xFF2255AA;    // mid-channel
-const RIVER_EDGE: u32 = 0xFF3A7ABB;   // lighter near banks
+const RIVER_DEEP: u32 = 0xFF3070AA;   // deep center — rich blue with riverbed warmth
+const RIVER_MID: u32 = 0xFF5599CC;    // mid-channel — lighter cyan-blue
+const RIVER_EDGE: u32 = 0xFF88BBCC;   // near banks — very light, clear shallow water
 const BANK_MUD: u32 = 0xFF445533;     // muddy brown near waterline
 const BANK_GRASS: u32 = 0xFF3A7A3A;   // grassy bank top (blends to terrain)
 const BRIDGE_DECK_COLOR: u32 = 0xFF666666;
@@ -1304,7 +1304,7 @@ fn generate_river(
         let water_y = avg_bank_h - 0.5;
 
         // For each segment, generate wave surface within the segment's river corridor
-        for (si, seg) in river_segments.iter().enumerate() {
+        for (_si, seg) in river_segments.iter().enumerate() {
             let dx = seg.x2 - seg.x1;
             let dz = seg.z2 - seg.z1;
             let len = (dx * dx + dz * dz).sqrt();
@@ -1312,7 +1312,6 @@ fn generate_river(
             let perp_x = -dz / len;
             let perp_z = dx / len;
             let hw = RIVER_WIDTH * 0.5;
-            let wy = (bank_heights[si].0 + bank_heights[si].1) * 0.5 - 0.5;
 
             // Subdivide along segment length
             let sub_count = (len / 2.0).ceil() as usize;
@@ -1333,9 +1332,9 @@ fn generate_river(
                     let x11 = seg.x1 + dx * t1 + perp_x * hw * c1;
                     let z11 = seg.z1 + dz * t1 + perp_z * hw * c1;
 
-                    // Multi-octave wave offset
+                    // Multi-octave wave offset using global water level
                     let wave = |x: f32, z: f32| -> f32 {
-                        wy + (x * 0.8).sin() * (z * 0.5).cos() * 0.15
+                        water_y + (x * 0.8).sin() * (z * 0.5).cos() * 0.15
                             + (x * 1.5 + 1.0).sin() * 0.08
                             + (x * 2.3 + z * 1.7).sin() * 0.04
                     };
@@ -1533,7 +1532,7 @@ fn generate_bridges(
         let bank_h0 = terrain.height_at(bank0_x, bank0_z);
         let bank_h1 = terrain.height_at(bank1_x, bank1_z);
         let road_h = bank_h0.max(bank_h1);
-        let deck_y = road_h + 0.5; // bridge 0.5m above road surface
+        let deck_y = road_h + 0.1; // bridge slightly above road surface
 
         let bridge_hw = CAR_ROAD_WIDTH * 0.5 + 0.5;
         // Bridge spans river width + 10m (5m clearance each side)
@@ -1553,8 +1552,8 @@ fn generate_bridges(
                 let across = (to_x * perp_x + to_z * perp_z).abs();
                 if along.abs() < bridge_len * 0.5 && across < bridge_hw {
                     let h = &mut terrain.heights[iz * stride + ix];
-                    if *h < deck_y - 0.3 {
-                        *h = deck_y - 0.3;
+                    if *h < road_h {
+                        *h = road_h;
                     }
                 }
             }
@@ -1906,6 +1905,7 @@ fn generate_decorations(
     net: &RoadNetwork, buildings: &[Building],
     walls: &mut Vec<Wall>, rocks: &mut Vec<Rock>,
     _street_lights: &mut Vec<StreetLight>,
+    clutter: &mut Vec<[f32; 3]>,
 ) {
     let car_segs: Vec<&RoadSegment> = net.segments.iter()
         .filter(|s| s.tier == RoadTier::CarRoad).collect();
@@ -2034,10 +2034,11 @@ fn generate_decorations(
         let gy = terrain.height_at(bx, bz);
         let barrel_h = rng.range(0.6, 0.9);
         let barrel_r = rng.range(0.2, 0.3);
-        mesh::cylinder_tris(tris, bx, gy + barrel_h * 0.5, bz, barrel_r, barrel_h, 8, 0xFF664422);
-        mesh::cylinder_tris(tris, bx, gy + barrel_h * 0.15, bz, barrel_r + 0.01, 0.04, 8, 0xFF444444);
-        mesh::cylinder_tris(tris, bx, gy + barrel_h * 0.85, bz, barrel_r + 0.01, 0.04, 8, 0xFF444444);
-        mesh::cylinder_tris(tris, bx, gy + barrel_h + 0.01, bz, barrel_r - 0.02, 0.02, 8, 0xFF775533);
+        mesh::cylinder_tris(tris, bx, gy + barrel_h * 0.5, bz, barrel_r, barrel_h, 16, 0xFF664422);
+        mesh::cylinder_tris(tris, bx, gy + barrel_h * 0.15, bz, barrel_r + 0.01, 0.04, 16, 0xFF444444);
+        mesh::cylinder_tris(tris, bx, gy + barrel_h * 0.85, bz, barrel_r + 0.01, 0.04, 16, 0xFF444444);
+        mesh::cylinder_tris(tris, bx, gy + barrel_h + 0.01, bz, barrel_r - 0.02, 0.02, 16, 0xFF775533);
+        clutter.push([bx, bz, barrel_r]);
     }
 
     // Wooden crates (25) — with cross-braces
@@ -2055,6 +2056,7 @@ fn generate_decorations(
             mesh::box_tris(tris, cx + 0.05, gy + crate_s + s2 * 0.5, cz - 0.03,
                 s2, s2, s2, 0xFF775533);
         }
+        clutter.push([cx, cz, crate_s * 0.5]);
     }
 
     // Sacks/grain bags (20)
@@ -2066,6 +2068,7 @@ fn generate_decorations(
         let sack_r = rng.range(0.15, 0.25);
         mesh::perturbed_sphere_tris(tris, sx, gy + sack_r * 0.7, sz,
             sack_r, 0, 0.15, rng.next() as u64, 0xFF998866);
+        clutter.push([sx, sz, sack_r]);
     }
 
     // Wooden planks/debris on streets (15 clusters)
@@ -2172,6 +2175,7 @@ fn generate_decorations(
         mesh::cylinder_between(tris,
             [cx + 0.9, gy + 0.55, cz + 0.3], [cx + 1.6, gy + 0.8, cz + 0.3],
             0.025, 4, 0xFF664422);
+        clutter.push([cx, cz, 0.9]); // half-length of cart as radius
     }
 }
 
@@ -2248,9 +2252,9 @@ fn generate_suburbs(
                 let roof_peak = hh * 0.35 + 0.6;
                 mesh::pitched_roof_tris(tris, hx, gy + hh, hz, hw + 0.6, hd + 0.6, roof_peak, roof_color);
 
-                // Chimney on roof
-                let chim_ox = dir_x * hw * 0.2;
-                let chim_oz = dir_z * hw * 0.2;
+                // Chimney on roof — offset along X (ridge direction) to stay on ridge
+                let chim_ox = hw * 0.2;
+                let chim_oz = 0.0;
                 mesh::box_tris(tris, hx + chim_ox, gy + hh + roof_peak * 0.6, hz + chim_oz,
                     0.35, roof_peak * 0.8 + 0.5, 0.35, darken(color, 0.45));
                 mesh::box_tris(tris, hx + chim_ox, gy + hh + roof_peak * 0.6 + roof_peak * 0.4 + 0.3, hz + chim_oz,
@@ -3018,10 +3022,9 @@ pub fn generate_world(game: &mut GameState) {
             }
         }
 
-        // Canopy raised well above trunk top so lower trunk is visible.
-        // Canopy center sits at trunk_top + canopy_r * 0.6 (instead of 0.15).
+        // Canopy sits near trunk top — overlaps branches for natural connection
         let num_canopies = 3 + (ti % 3);
-        let canopy_base_y = ground_y + trunk_h + canopy_r * 0.6;
+        let canopy_base_y = ground_y + trunk_h + canopy_r * 0.2;
 
         // Central cluster — fills the core of the crown
         let central_cr = canopy_r * 0.5;
@@ -3248,15 +3251,15 @@ pub fn generate_world(game: &mut GameState) {
     // Decorative objects throughout town
     generate_decorations(&mut tris, &game.terrain, &mut rng,
         &game.road_network, &game.world.buildings,
-        &mut game.world.walls, &mut game.world.rocks, &mut game.world.street_lights);
+        &mut game.world.walls, &mut game.world.rocks, &mut game.world.street_lights,
+        &mut game.world.clutter);
 
-    // Building ground shadows — dark disc at base for contact grounding
+    // Building ground shadows — subtle darkened patch at base
     for b in &game.world.buildings {
-        let shadow_y = b.ground_y + 0.02;
-        let shadow_hw = b.w * 0.5 + 1.0;
-        let shadow_hd = b.d * 0.5 + 1.0;
-        let shadow_color: u32 = 0xFF101A10; // darker green-tinted shadow for contact grounding
-        // Simple quad shadow footprint
+        let shadow_y = b.ground_y + 0.05;
+        let shadow_hw = b.w * 0.5 + 0.3;
+        let shadow_hd = b.d * 0.5 + 0.3;
+        let shadow_color: u32 = 0xFF1E3E1E; // darkened green, blends with terrain
         let v0 = [b.x - shadow_hw, shadow_y, b.z - shadow_hd];
         let v1 = [b.x + shadow_hw, shadow_y, b.z - shadow_hd];
         let v2 = [b.x + shadow_hw, shadow_y, b.z + shadow_hd];
@@ -3544,6 +3547,14 @@ pub fn check_walk_collision(world: &WorldData, x: f32, z: f32, radius: f32, home
         let dx = x - inter.x;
         let dz = z - inter.z;
         let r2 = 0.5 + radius;
+        if dx * dx + dz * dz < r2 * r2 {
+            return true;
+        }
+    }
+    for c in &world.clutter {
+        let dx = x - c[0];
+        let dz = z - c[1];
+        let r2 = c[2] + radius;
         if dx * dx + dz * dz < r2 * r2 {
             return true;
         }
