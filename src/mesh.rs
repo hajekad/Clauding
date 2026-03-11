@@ -25,7 +25,7 @@ fn quality_segments(base: usize) -> usize {
 }
 
 /// Compute normalized cross product of triangle edges (CCW winding)
-fn tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
+pub fn tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
     let e1 = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
     let e2 = [c[0]-a[0], c[1]-a[1], c[2]-a[2]];
     let n = [e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]];
@@ -166,67 +166,77 @@ pub fn cone_tris(
 
 // ── Icosphere ───────────────────────────────────────────────────────────────
 
+const ICOSPHERE_FACES: [[usize; 3]; 20] = [
+    [0,11,5], [0,5,1], [0,1,7], [0,7,10], [0,10,11],
+    [1,5,9], [5,11,4], [11,10,2], [10,7,6], [7,1,8],
+    [3,9,4], [3,4,2], [3,2,6], [3,6,8], [3,8,9],
+    [4,9,5], [2,4,11], [6,2,10], [8,6,7], [9,8,1],
+];
+
+const ICOSPHERE_VERTS: [[f32; 3]; 12] = {
+    const PHI: f32 = 1.618034; // (1 + sqrt(5)) / 2
+    const A: f32 = 1.0;
+    const B: f32 = PHI;
+    [
+        [-A, B, 0.0], [ A, B, 0.0], [-A,-B, 0.0], [ A,-B, 0.0],
+        [0.0,-A, B], [0.0, A, B], [0.0,-A,-B], [0.0, A,-B],
+        [ B, 0.0,-A], [ B, 0.0, A], [-B, 0.0,-A], [-B, 0.0, A],
+    ]
+};
+
+fn icosphere_unit_verts() -> Vec<[f32; 3]> {
+    ICOSPHERE_VERTS.iter().map(|v| {
+        let l = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
+        [v[0]/l, v[1]/l, v[2]/l]
+    }).collect()
+}
+
+fn subdivide_icosphere_mid(
+    a_idx: usize, b_idx: usize,
+    verts: &mut Vec<[f32;3]>,
+    cache: &mut Vec<(usize, usize, usize)>,
+) -> usize {
+    let (lo, hi) = if a_idx < b_idx { (a_idx, b_idx) } else { (b_idx, a_idx) };
+    for &(ca, cb, ci) in cache.iter() {
+        if ca == lo && cb == hi { return ci; }
+    }
+    let va = verts[a_idx];
+    let vb = verts[b_idx];
+    let mid = [(va[0]+vb[0])*0.5, (va[1]+vb[1])*0.5, (va[2]+vb[2])*0.5];
+    let l = (mid[0]*mid[0] + mid[1]*mid[1] + mid[2]*mid[2]).sqrt();
+    let idx = verts.len();
+    verts.push([mid[0]/l, mid[1]/l, mid[2]/l]);
+    cache.push((lo, hi, idx));
+    idx
+}
+
+fn subdivide_icosphere(verts: &mut Vec<[f32; 3]>, faces: &mut Vec<[usize; 3]>, subdivisions: u32) {
+    for _ in 0..quality_subdivisions(subdivisions) {
+        let mut new_faces = Vec::with_capacity(faces.len() * 4);
+        let mut midpoint_cache: Vec<(usize, usize, usize)> = Vec::new();
+
+        for f in faces.iter() {
+            let m01 = subdivide_icosphere_mid(f[0], f[1], verts, &mut midpoint_cache);
+            let m12 = subdivide_icosphere_mid(f[1], f[2], verts, &mut midpoint_cache);
+            let m20 = subdivide_icosphere_mid(f[2], f[0], verts, &mut midpoint_cache);
+            new_faces.push([f[0], m01, m20]);
+            new_faces.push([f[1], m12, m01]);
+            new_faces.push([f[2], m20, m12]);
+            new_faces.push([m01, m12, m20]);
+        }
+        *faces = new_faces;
+    }
+}
+
 /// Icosphere centered at (cx, cy, cz) with radius r.
 /// subdivisions=0: 20 tris (icosahedron), 1: 80, 2: 320, 3: 1280.
 pub fn sphere_tris(
     tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32,
     r: f32, subdivisions: u32, color: u32,
 ) {
-    // Golden ratio vertices for icosahedron
-    let phi = (1.0 + 5.0_f32.sqrt()) / 2.0;
-    let a = 1.0;
-    let b = phi;
-
-    let raw_verts: [[f32;3]; 12] = [
-        [-a, b, 0.0], [ a, b, 0.0], [-a,-b, 0.0], [ a,-b, 0.0],
-        [0.0,-a, b], [0.0, a, b], [0.0,-a,-b], [0.0, a,-b],
-        [ b, 0.0,-a], [ b, 0.0, a], [-b, 0.0,-a], [-b, 0.0, a],
-    ];
-
-    // Normalize to unit sphere
-    let mut verts: Vec<[f32;3]> = raw_verts.iter().map(|v| {
-        let l = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
-        [v[0]/l, v[1]/l, v[2]/l]
-    }).collect();
-
-    let mut faces: Vec<[usize;3]> = vec![
-        [0,11,5], [0,5,1], [0,1,7], [0,7,10], [0,10,11],
-        [1,5,9], [5,11,4], [11,10,2], [10,7,6], [7,1,8],
-        [3,9,4], [3,4,2], [3,2,6], [3,6,8], [3,8,9],
-        [4,9,5], [2,4,11], [6,2,10], [8,6,7], [9,8,1],
-    ];
-
-    // Subdivide
-    for _ in 0..quality_subdivisions(subdivisions) {
-        let mut new_faces = Vec::with_capacity(faces.len() * 4);
-        let mut midpoint_cache: Vec<(usize, usize, usize)> = Vec::new();
-
-        let get_mid = |a_idx: usize, b_idx: usize, verts: &mut Vec<[f32;3]>, cache: &mut Vec<(usize, usize, usize)>| -> usize {
-            let (lo, hi) = if a_idx < b_idx { (a_idx, b_idx) } else { (b_idx, a_idx) };
-            for &(ca, cb, ci) in cache.iter() {
-                if ca == lo && cb == hi { return ci; }
-            }
-            let va = verts[a_idx];
-            let vb = verts[b_idx];
-            let mid = [(va[0]+vb[0])*0.5, (va[1]+vb[1])*0.5, (va[2]+vb[2])*0.5];
-            let l = (mid[0]*mid[0] + mid[1]*mid[1] + mid[2]*mid[2]).sqrt();
-            let idx = verts.len();
-            verts.push([mid[0]/l, mid[1]/l, mid[2]/l]);
-            cache.push((lo, hi, idx));
-            idx
-        };
-
-        for f in &faces {
-            let m01 = get_mid(f[0], f[1], &mut verts, &mut midpoint_cache);
-            let m12 = get_mid(f[1], f[2], &mut verts, &mut midpoint_cache);
-            let m20 = get_mid(f[2], f[0], &mut verts, &mut midpoint_cache);
-            new_faces.push([f[0], m01, m20]);
-            new_faces.push([f[1], m12, m01]);
-            new_faces.push([f[2], m20, m12]);
-            new_faces.push([m01, m12, m20]);
-        }
-        faces = new_faces;
-    }
+    let mut verts = icosphere_unit_verts();
+    let mut faces = ICOSPHERE_FACES.to_vec();
+    subdivide_icosphere(&mut verts, &mut faces, subdivisions);
 
     // Output tris scaled and translated
     for f in &faces {
@@ -243,53 +253,9 @@ pub fn perturbed_sphere_tris(
     tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32,
     r: f32, subdivisions: u32, perturbation: f32, seed: u64, color: u32,
 ) {
-    // Generate base icosphere vertices
-    let phi = (1.0 + 5.0_f32.sqrt()) / 2.0;
-    let a = 1.0;
-    let b = phi;
-    let raw_verts: [[f32;3]; 12] = [
-        [-a, b, 0.0], [ a, b, 0.0], [-a,-b, 0.0], [ a,-b, 0.0],
-        [0.0,-a, b], [0.0, a, b], [0.0,-a,-b], [0.0, a,-b],
-        [ b, 0.0,-a], [ b, 0.0, a], [-b, 0.0,-a], [-b, 0.0, a],
-    ];
-    let mut verts: Vec<[f32;3]> = raw_verts.iter().map(|v| {
-        let l = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
-        [v[0]/l, v[1]/l, v[2]/l]
-    }).collect();
-    let mut faces: Vec<[usize;3]> = vec![
-        [0,11,5], [0,5,1], [0,1,7], [0,7,10], [0,10,11],
-        [1,5,9], [5,11,4], [11,10,2], [10,7,6], [7,1,8],
-        [3,9,4], [3,4,2], [3,2,6], [3,6,8], [3,8,9],
-        [4,9,5], [2,4,11], [6,2,10], [8,6,7], [9,8,1],
-    ];
-    for _ in 0..quality_subdivisions(subdivisions) {
-        let mut new_faces = Vec::with_capacity(faces.len() * 4);
-        let mut midpoint_cache: Vec<(usize, usize, usize)> = Vec::new();
-        let get_mid = |a_idx: usize, b_idx: usize, verts: &mut Vec<[f32;3]>, cache: &mut Vec<(usize, usize, usize)>| -> usize {
-            let (lo, hi) = if a_idx < b_idx { (a_idx, b_idx) } else { (b_idx, a_idx) };
-            for &(ca, cb, ci) in cache.iter() {
-                if ca == lo && cb == hi { return ci; }
-            }
-            let va = verts[a_idx];
-            let vb = verts[b_idx];
-            let mid = [(va[0]+vb[0])*0.5, (va[1]+vb[1])*0.5, (va[2]+vb[2])*0.5];
-            let l = (mid[0]*mid[0] + mid[1]*mid[1] + mid[2]*mid[2]).sqrt();
-            let idx = verts.len();
-            verts.push([mid[0]/l, mid[1]/l, mid[2]/l]);
-            cache.push((lo, hi, idx));
-            idx
-        };
-        for f in &faces {
-            let m01 = get_mid(f[0], f[1], &mut verts, &mut midpoint_cache);
-            let m12 = get_mid(f[1], f[2], &mut verts, &mut midpoint_cache);
-            let m20 = get_mid(f[2], f[0], &mut verts, &mut midpoint_cache);
-            new_faces.push([f[0], m01, m20]);
-            new_faces.push([f[1], m12, m01]);
-            new_faces.push([f[2], m20, m12]);
-            new_faces.push([m01, m12, m20]);
-        }
-        faces = new_faces;
-    }
+    let mut verts = icosphere_unit_verts();
+    let mut faces = ICOSPHERE_FACES.to_vec();
+    subdivide_icosphere(&mut verts, &mut faces, subdivisions);
 
     // Perturb each vertex radially using a hash of its direction
     for v in &mut verts {
@@ -641,6 +607,55 @@ pub fn wall_with_holes_tris(
             push_quad(tris, v(rx, hy0, fz), v(rx, hy0, bz), v(rx, hy1, bz), v(rx, hy1, fz), wall_color);
         } else {
             push_quad(tris, v(rx, hy0, bz), v(rx, hy0, fz), v(rx, hy1, fz), v(rx, hy1, bz), wall_color);
+        }
+    }
+
+    // Overall wall side edges (left, right, top, back face for solid areas)
+    {
+        let wall_lx = pos_x;
+        let wall_rx = pos_x + wall_w * left_dir;
+        let (wlx, wrx) = if left_dir > 0.0 { (wall_lx, wall_rx) } else { (wall_rx, wall_lx) };
+        let wy0 = pos_y;
+        let wy1 = pos_y + wall_h;
+
+        // Left side wall (depth edge)
+        if face_dir > 0.0 {
+            push_quad(tris, v(wlx, wy0, bz), v(wlx, wy0, fz), v(wlx, wy1, fz), v(wlx, wy1, bz), wall_color);
+        } else {
+            push_quad(tris, v(wlx, wy0, fz), v(wlx, wy0, bz), v(wlx, wy1, bz), v(wlx, wy1, fz), wall_color);
+        }
+        // Right side wall (depth edge)
+        if face_dir > 0.0 {
+            push_quad(tris, v(wrx, wy0, fz), v(wrx, wy0, bz), v(wrx, wy1, bz), v(wrx, wy1, fz), wall_color);
+        } else {
+            push_quad(tris, v(wrx, wy0, bz), v(wrx, wy0, fz), v(wrx, wy1, fz), v(wrx, wy1, bz), wall_color);
+        }
+        // Top edge (depth strip along top of wall)
+        if face_dir > 0.0 {
+            push_quad(tris, v(wlx, wy1, fz), v(wrx, wy1, fz), v(wrx, wy1, bz), v(wlx, wy1, bz), wall_color);
+        } else {
+            push_quad(tris, v(wrx, wy1, fz), v(wlx, wy1, fz), v(wlx, wy1, bz), v(wrx, wy1, bz), wall_color);
+        }
+        // Back face of wall (solid areas — render using same strip logic as front)
+        for yi in 0..y_cuts.len()-1 {
+            let strip_bot = y_cuts[yi];
+            let strip_top = y_cuts[yi + 1];
+            if (strip_top - strip_bot) < 0.001 { continue; }
+
+            let strip_holes: Vec<&(usize, &WallHole)> = sorted_holes.iter()
+                .filter(|(_, h)| h.y < strip_top - 0.001 && h.y + h.h > strip_bot + 0.001)
+                .collect();
+
+            let mut x_start = 0.0_f32;
+            for (_, hole) in &strip_holes {
+                if hole.x > x_start + 0.001 {
+                    emit_wall_quad(tris, pos_x, pos_y, bz, x_start, strip_bot, hole.x, strip_top, wall_color, -face_dir, left_dir, swap_xz);
+                }
+                x_start = hole.x + hole.w;
+            }
+            if x_start < wall_w - 0.001 {
+                emit_wall_quad(tris, pos_x, pos_y, bz, x_start, strip_bot, wall_w, strip_top, wall_color, -face_dir, left_dir, swap_xz);
+            }
         }
     }
 }
