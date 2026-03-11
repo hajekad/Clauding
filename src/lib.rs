@@ -2,10 +2,13 @@
 
 pub mod math;
 pub mod state;
+pub mod color;
+pub mod image;
 pub mod raster;
 pub mod render;
 pub mod platform;
 pub mod gpu;
+pub mod gpu_spirv;
 pub mod gpu_kernels;
 pub mod gpu_shaders;
 pub mod world;

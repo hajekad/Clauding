@@ -469,32 +469,26 @@ fn time_colors(hour: f32) -> TimeColors {
         if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 }
     };
 
-    // --- Sky color, ambient, and sun_strength as continuous curves ---
-    // Night: subtle variation (moonlight waxes/wanes, pre-dawn glow)
-    // Day: morning warmup -> midday peak -> afternoon decline
-    // Transitions: gradual twilight zones
-
     let (sky, amb, sun) = if hour < 3.0 {
-        // Deep night -> pre-dawn hint: ambient subtly rises from 0.08 at midnight
-        // to 0.10 at 3AM (moon overhead gives faint light)
+        // Deep night: moonlight ambient so terrain/buildings are faintly visible
         let t = hour / 3.0;
-        let night_amb = 0.08 + t * 0.02;
-        (lerp_color(0xFF080818, 0xFF0A0A20, t), night_amb, 0.0)
+        let night_amb = 0.18 + t * 0.02;
+        (lerp_color(0xFF101028, 0xFF141430, t), night_amb, 0.0)
     } else if hour < 4.5 {
-        // Pre-dawn: sky begins to lighten on horizon, ambient slowly rises
+        // Pre-dawn: sky begins to lighten, ambient slowly rises
         let t = (hour - 3.0) / 1.5;
         let te = ease(t);
-        (lerp_color(0xFF0A0A20, 0xFF1A1535, te), 0.10 + te * 0.06, 0.0)
+        (lerp_color(0xFF141430, 0xFF1A1535, te), 0.20 + te * 0.06, 0.0)
     } else if hour < 5.5 {
         // Civil twilight begins: purple/pink horizon glow, first hint of sun
         let t = (hour - 4.5) / 1.0;
         let te = ease(t);
-        (lerp_color(0xFF1A1535, 0xFF553366, te), 0.16 + te * 0.16, te * 0.08)
+        (lerp_color(0xFF1A1535, 0xFF553366, te), 0.26 + te * 0.10, te * 0.08)
     } else if hour < 6.5 {
         // Sunrise: orange/gold horizon, rapid ambient increase
         let t = (hour - 5.5) / 1.0;
         let te = ease(t);
-        (lerp_color(0xFF553366, 0xFFEE9944, te), 0.32 + te * 0.20, 0.08 + te * 0.30)
+        (lerp_color(0xFF553366, 0xFFEE9944, te), 0.36 + te * 0.16, 0.08 + te * 0.30)
     } else if hour < 8.0 {
         // Golden hour -> morning: warm light transitions to blue sky
         let t = (hour - 6.5) / 1.5;
@@ -531,15 +525,15 @@ fn time_colors(hour: f32) -> TimeColors {
         let te = ease(t);
         (lerp_color(0xFFCC4422, 0xFF332244, te), 0.46 - te * 0.18, 0.25 - te * 0.18)
     } else if hour < 21.0 {
-        // Late dusk -> night: purple fading to deep blue
+        // Late dusk -> night: purple fading to deep blue, ambient settles to moonlight
         let t = (hour - 19.5) / 1.5;
         let te = ease(t);
-        (lerp_color(0xFF332244, 0xFF0A0A20, te), 0.28 - te * 0.16, 0.07 - te * 0.07)
+        (lerp_color(0xFF332244, 0xFF141430, te), 0.28 - te * 0.08, 0.07 - te * 0.07)
     } else {
-        // Night: very gradual darkening toward midnight
-        let t = (hour - 21.0) / 3.0; // 0 at 21, 1 at midnight
-        let night_amb = 0.12 - t * 0.04;
-        (lerp_color(0xFF0A0A20, 0xFF080818, t), night_amb, 0.0)
+        // Night: moonlight ambient so terrain/buildings are faintly visible
+        let t = (hour - 21.0) / 3.0;
+        let night_amb = 0.20 - t * 0.02;
+        (lerp_color(0xFF141430, 0xFF101028, t), night_amb, 0.0)
     };
 
     // Fog color: tracks sky but biases warm during sunset/sunrise transitions
@@ -2199,62 +2193,70 @@ fn gen_player_clothing(
             // Breast coverage bumps (theta=±0.30) match nude body breast profile.
             {
                 let sf = s(1.08); let bb = breast_bump(1.08);
-                let mut b = vec![(hp, 0.45, 0.04), (PI + hp, 0.45, 0.04), (PI, 0.5, 0.02 * sf)];
+                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02), (PI, 0.5, 0.02 * sf)];
                 if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
                 (1.08, body_ring(0.0, 0.0, 0.19 * sf + co, 0.16 * sf + co, &b, n), coat)
             },
             {
                 let sf = s(1.12); let bb = breast_bump(1.12);
-                let mut b = vec![(hp, 0.45, 0.05), (PI + hp, 0.45, 0.05), (PI, 0.4, 0.02 * sf)];
+                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02), (PI, 0.4, 0.02 * sf)];
                 if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
                 (1.12, body_ring(0.0, 0.0, 0.21 * sf + co, 0.17 * sf + co, &b, n), coat)
             },
             {
                 let sf = s(1.16); let bb = breast_bump(1.16);
-                let mut b = vec![(hp, 0.45, 0.06), (PI + hp, 0.45, 0.06)];
+                let pm = props.muscle_def * 0.5; // pec coverage (attenuated muscle bump)
+                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02),
+                    (0.4, 0.35, 0.020 * pm), (-0.4, 0.35, 0.020 * pm)];
                 if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
                 (1.16, body_ring(0.0, 0.0, 0.22 * sf + co, 0.18 * sf + co, &b, n), coat)
             },
             {
                 let sf = s(1.21); let bb = breast_bump(1.21);
-                let mut b = vec![(hp, 0.45, 0.07), (PI + hp, 0.45, 0.07)];
+                let pm = props.muscle_def * 0.5;
+                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02),
+                    (0.4, 0.35, 0.025 * pm), (-0.4, 0.35, 0.025 * pm)];
                 if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
                 (1.21, body_ring(0.0, 0.0, 0.23 * sf + co, 0.20 * sf + co, &b, n), coat)
             },
             {
                 let sf = s(1.26); let bb = breast_bump(1.26);
-                let mut b = vec![(hp, 0.45, 0.07), (PI + hp, 0.45, 0.07)];
+                let pm = props.muscle_def * 0.5;
+                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02),
+                    (0.4, 0.40, 0.025 * pm), (-0.4, 0.40, 0.025 * pm)];
                 if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
                 (1.26, body_ring(0.0, 0.0, 0.24 * sf + co, 0.21 * sf + co, &b, n), coat)
             },
             {
                 let sf = s(1.32); let bb = breast_bump(1.32);
-                let mut b = vec![(hp, 0.45, 0.08), (PI + hp, 0.45, 0.08), (PI, 0.5, 0.02 * sf)];
+                let pm = props.muscle_def * 0.5;
+                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02), (PI, 0.5, 0.02 * sf),
+                    (0.35, 0.35, 0.018 * pm), (-0.35, 0.35, 0.018 * pm)];
                 if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
                 (1.32, body_ring(0.0, 0.0, 0.24 * sf + co, 0.20 * sf + co, &b, n), coat)
             },
             {
                 let sf = s(1.36); let da = props.shoulder_deltoid_amp * 0.5;
                 (1.36, body_ring(0.0, 0.0, 0.22 * sf + co, 0.20 * sf + co, &[
-                    (hp, 0.45, da + 0.05), (PI + hp, 0.45, da + 0.05), (PI, 0.5, 0.030 * sf),
+                    (hp, 0.45, da + 0.02), (PI + hp, 0.45, da + 0.02), (PI, 0.5, 0.030 * sf),
                 ], n), coat)
             },
             {
                 let sf = s(1.39); let da = props.shoulder_deltoid_amp * 0.5;
                 (1.39, body_ring(0.0, 0.0, 0.20 * sf + co, 0.19 * sf + co, &[
-                    (hp, 0.45, da + 0.06), (PI + hp, 0.45, da + 0.06), (PI, 0.5, 0.035 * sf),
+                    (hp, 0.45, da + 0.03), (PI + hp, 0.45, da + 0.03), (PI, 0.5, 0.035 * sf),
                 ], n), coat)
             },
             {
                 let sf = s(1.42); let da = props.shoulder_deltoid_amp * 0.5;
                 (1.42, body_ring(0.0, 0.0, 0.18 * sf + co, 0.18 * sf + co, &[
-                    (hp, 0.45, da + 0.07), (PI + hp, 0.45, da + 0.07), (PI, 0.5, 0.035 * sf),
+                    (hp, 0.45, da + 0.04), (PI + hp, 0.45, da + 0.04), (PI, 0.5, 0.035 * sf),
                 ], n), coat)
             },
             {
                 let sf = s(1.44);
                 (1.44, body_ring(0.0, 0.0, 0.14 * sf + co, 0.14 * sf + co, &[
-                    (hp, 0.35, 0.03), (PI + hp, 0.35, 0.03), (PI, 0.5, 0.028 * sf),
+                    (hp, 0.35, 0.02), (PI + hp, 0.35, 0.02), (PI, 0.5, 0.028 * sf),
                 ], n), darken(coat, 0.92))
             },
             (1.48, body_ring(0.0, 0.0, props.neck_rx + co, props.neck_rz + co, &[], n),
@@ -2275,17 +2277,17 @@ fn gen_player_clothing(
             }
         }
         // Back seam
-        push_seam(tris, 0.0, 0.78, 1.40, 0.14 * sh + co + 0.005, STITCH_DARK);
+        push_seam(tris, 0.0, 0.88, 1.40, 0.14 * sh + co + 0.005, STITCH_DARK);
 
         // ── COAT TAILS — 3D lofted curtains ──
         let tail_sway = swing * 0.08;
         let back_z = 0.14 * sh + co;
         for &tx in &[-0.06f32, 0.06] {
             let tail_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-                (0.88, body_ring(tx, back_z, 0.08, 0.015, &[], 8), coat),
-                (0.74, body_ring(tx, back_z + 0.02 + tail_sway * 0.3, 0.09, 0.012, &[], 8), coat),
-                (0.58, body_ring(tx, back_z + 0.04 + tail_sway * 0.6, 0.10, 0.010, &[], 8), coat),
-                (0.42, body_ring(tx, back_z + 0.06 + tail_sway, 0.11, 0.008, &[], 8),
+                (0.88, body_ring(tx, back_z, 0.06, 0.020, &[], 8), coat),
+                (0.74, body_ring(tx, back_z + 0.02 + tail_sway * 0.3, 0.065, 0.018, &[], 8), coat),
+                (0.58, body_ring(tx, back_z + 0.04 + tail_sway * 0.6, 0.07, 0.015, &[], 8), coat),
+                (0.42, body_ring(tx, back_z + 0.06 + tail_sway, 0.075, 0.012, &[], 8),
                     darken(coat, 0.95)),
             ];
             mesh::loft_y_tris(tris, &tail_rings);
@@ -2294,24 +2296,23 @@ fn gen_player_clothing(
         let front_z = -(0.14 * sh + co);
         for &tx in &[-0.09f32, 0.09] {
             let skirt_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-                (0.88, body_ring(tx, front_z, 0.06, 0.012, &[], 8), coat),
-                (0.76, body_ring(tx, front_z - 0.01 - tail_sway * 0.15, 0.07, 0.010, &[], 8), coat),
-                (0.64, body_ring(tx, front_z - 0.02 - tail_sway * 0.3, 0.07, 0.008, &[], 8),
+                (0.88, body_ring(tx, front_z, 0.05, 0.015, &[], 8), coat),
+                (0.76, body_ring(tx, front_z - 0.01 - tail_sway * 0.15, 0.055, 0.012, &[], 8), coat),
+                (0.64, body_ring(tx, front_z - 0.02 - tail_sway * 0.3, 0.055, 0.010, &[], 8),
                     darken(coat, 0.96)),
             ];
             mesh::loft_y_tris(tris, &skirt_rings);
         }
 
-        // ── CAPE ──
+        // ── CAPE (short shoulder mantle) ──
         if app.has_cape {
             let cape_col = darken(coat, 0.88);
             let cape_z = 0.21 * sc + co;
             let cape_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-                (1.44, body_ring(0.0, cape_z * 0.5, 0.16, 0.02, &[], 8), cape_col),
-                (1.32, body_ring(0.0, cape_z, 0.20, 0.03, &[], 8), cape_col),
-                (1.16, body_ring(0.0, cape_z + 0.01, 0.22, 0.03, &[], 8), cape_col),
-                (1.00, body_ring(0.0, cape_z + 0.02, 0.22, 0.03, &[], 8), cape_col),
-                (0.86, body_ring(0.0, cape_z + 0.03, 0.24, 0.02, &[], 8),
+                (1.44, body_ring(0.0, cape_z * 0.5, 0.10, 0.02, &[], 8), cape_col),
+                (1.36, body_ring(0.0, cape_z, 0.14, 0.03, &[], 8), cape_col),
+                (1.26, body_ring(0.0, cape_z + 0.01, 0.16, 0.03, &[], 8), cape_col),
+                (1.16, body_ring(0.0, cape_z + 0.02, 0.16, 0.03, &[], 8),
                     darken(cape_col, 0.95)),
             ];
             mesh::loft_y_tris(tris, &cape_rings);
@@ -2321,7 +2322,10 @@ fn gen_player_clothing(
         let vco = 0.025;
         let vest_ring = |y: f32, rx: f32, rz: f32| -> (f32, Vec<[f32; 2]>, u32) {
             let sf = s(y);
-            (y, body_ring(0.0, 0.0, rx * sf + vco, rz * sf + vco, &[], n), vest)
+            let bb = breast_bump(y);
+            let mut bumps: Vec<(f32, f32, f32)> = Vec::new();
+            if bb > 0.001 { bumps.push((0.30, 0.55, bb)); bumps.push((-0.30, 0.55, bb)); }
+            (y, body_ring(0.0, 0.0, rx * sf + vco, rz * sf + vco, &bumps, n), vest)
         };
         let vest_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
             // F1: Extended vest below waist to eliminate midriff gap
@@ -2789,6 +2793,15 @@ fn gen_nude_player_body(
                 v[1] *= bs;
                 v[2] *= bw;
             }
+            let e1 = [tri.v[1][0] - tri.v[0][0], tri.v[1][1] - tri.v[0][1], tri.v[1][2] - tri.v[0][2]];
+            let e2 = [tri.v[2][0] - tri.v[0][0], tri.v[2][1] - tri.v[0][1], tri.v[2][2] - tri.v[0][2]];
+            let nx = e1[1]*e2[2] - e1[2]*e2[1];
+            let ny = e1[2]*e2[0] - e1[0]*e2[2];
+            let nz = e1[0]*e2[1] - e1[1]*e2[0];
+            let nl = (nx*nx + ny*ny + nz*nz).sqrt();
+            if nl > 1e-10 {
+                tri.normal = [nx/nl, ny/nl, nz/nl];
+            }
         }
         // Head (scaled and positioned on seated neck)
         let hs = props.head_scale;
@@ -2866,6 +2879,16 @@ fn gen_nude_player_body(
             v[0] *= bw;
             v[1] *= bs;
             v[2] *= bw;
+        }
+        // Recalculate normal from stretched vertices for correct lighting
+        let e1 = [tri.v[1][0] - tri.v[0][0], tri.v[1][1] - tri.v[0][1], tri.v[1][2] - tri.v[0][2]];
+        let e2 = [tri.v[2][0] - tri.v[0][0], tri.v[2][1] - tri.v[0][1], tri.v[2][2] - tri.v[0][2]];
+        let nx = e1[1]*e2[2] - e1[2]*e2[1];
+        let ny = e1[2]*e2[0] - e1[0]*e2[2];
+        let nz = e1[0]*e2[1] - e1[1]*e2[0];
+        let nl = (nx*nx + ny*ny + nz*nz).sqrt();
+        if nl > 1e-10 {
+            tri.normal = [nx/nl, ny/nl, nz/nl];
         }
     }
 
@@ -3797,14 +3820,7 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
     }
 
     // Job-specific hat color
-    let job_hat = match npc.job {
-        NpcJob::PolicePatrol => Some(0xFF2233AA),
-        NpcJob::Firefighter => Some(0xFFCC3322),
-        NpcJob::Paramedic => Some(0xFFDDDDDD),
-        NpcJob::ConstructionWorker => Some(0xFFDDAA22),
-        NpcJob::MailCarrier => Some(0xFF3344CC),
-        _ => None,
-    };
+    let job_hat = job_hat_color(npc.job);
 
     gen_nude_player_body(
         tris,
@@ -3826,16 +3842,7 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         mesh::sphere_tris(tris, 0.0, 2.70, -0.1, 0.04, 0, 0xFFFFFFFF);
     }
 
-    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 25.0), npc.rot_y);
-    for tri in &mut tris[base..] {
-        for v in &mut tri.v {
-            let rv = rot3x3_apply(&rot, *v);
-            v[0] = rv[0] + npc.x;
-            v[1] = rv[1] + npc.y;
-            v[2] = rv[2] + npc.z;
-        }
-        tri.normal = rot3x3_apply(&rot, tri.normal);
-    }
+    place_mesh(tris, base, npc.terrain_normal, 25.0, npc.rot_y, npc.x, npc.y, npc.z);
 }
 
 pub fn gen_item_mesh(item: &Item, tris: &mut Vec<WorldTri>) {
@@ -3951,24 +3958,7 @@ pub fn gen_trash_bin_mesh(bin: &TrashBin, tris: &mut Vec<WorldTri>) {
     if bin.items_held > 5 {
         mesh::sphere_tris(tris, 0.0, 0.95, 0.0, 0.15, 0, BAG_COLOR);
     }
-    // Terrain-aligned transform
-    let rot = terrain_rot3x3(clamp_normal_tilt(bin.terrain_normal, 25.0), 0.0);
-    for tri in &mut tris[base..] {
-        for v in &mut tri.v {
-            let rv = rot3x3_apply(&rot, *v);
-            v[0] = rv[0] + bin.x;
-            v[1] = rv[1] + bin.y;
-            v[2] = rv[2] + bin.z;
-        }
-        tri.normal = rot3x3_apply(&rot, tri.normal);
-    }
-}
-
-fn darken(color: u32, factor: f32) -> u32 {
-    let r = (((color >> 16) & 0xFF) as f32 * factor) as u32;
-    let g = (((color >> 8) & 0xFF) as f32 * factor) as u32;
-    let b = ((color & 0xFF) as f32 * factor) as u32;
-    0xFF000000 | (r << 16) | (g << 8) | b
+    place_mesh(tris, base, bin.terrain_normal, 25.0, 0.0, bin.x, bin.y, bin.z);
 }
 
 fn push_box(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, w: f32, h: f32, d: f32, color: u32) {
@@ -4044,17 +4034,8 @@ pub fn gen_npc_mesh_mid(npc: &Npc, tris: &mut Vec<WorldTri>) {
     push_box(tris,  0.09, 0.04,  swing * 0.15, 0.07, 0.06, 0.11, app.boot_col);
 
     // Apply body stretch + world transform
-    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 25.0), npc.rot_y);
-    for tri in &mut tris[base..] {
-        for v in &mut tri.v {
-            v[1] *= BODY_STRETCH;
-            let rv = rot3x3_apply(&rot, *v);
-            v[0] = rv[0] + npc.x;
-            v[1] = rv[1] + npc.y;
-            v[2] = rv[2] + npc.z;
-        }
-        tri.normal = rot3x3_apply(&rot, tri.normal);
-    }
+    for tri in &mut tris[base..] { for v in &mut tri.v { v[1] *= BODY_STRETCH; } }
+    place_mesh(tris, base, npc.terrain_normal, 25.0, npc.rot_y, npc.x, npc.y, npc.z);
 }
 
 /// Low-detail NPC: 3 colored boxes (~36 tris vs ~14K full detail)
@@ -4066,16 +4047,7 @@ fn gen_npc_mesh_lod(npc: &Npc, tris: &mut Vec<WorldTri>) {
     push_box(tris, 0.0, 0.75, 0.0, 0.20, 0.55, 0.12, body_col);
     push_box(tris, 0.0, 0.25, 0.0, 0.13, 0.25, 0.10, npc.pants_color);
     push_box(tris, 0.0, 1.55, 0.0, 0.10, 0.12, 0.10, app.skin);
-    let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 25.0), npc.rot_y);
-    for tri in &mut tris[base..] {
-        for v in &mut tri.v {
-            let rv = rot3x3_apply(&rot, *v);
-            v[0] = rv[0] + npc.x;
-            v[1] = rv[1] + npc.y;
-            v[2] = rv[2] + npc.z;
-        }
-        tri.normal = rot3x3_apply(&rot, tri.normal);
-    }
+    place_mesh(tris, base, npc.terrain_normal, 25.0, npc.rot_y, npc.x, npc.y, npc.z);
 }
 
 // LOD distance thresholds (squared)
@@ -4101,16 +4073,7 @@ pub fn gen_vehicle_mesh_mid(v: &Vehicle, tris: &mut Vec<WorldTri>) {
     for &(wx, wz) in &[(-0.88f32, -1.1f32), (0.88, -1.1), (-0.88, 1.1), (0.88, 1.1)] {
         mesh::cylinder_tris(tris, wx, 0.28, wz, 0.28, 0.22, 5, TIRE_COLOR);
     }
-    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 30.0), v.rot_y);
-    for tri in &mut tris[base..] {
-        for vert in &mut tri.v {
-            let rv = rot3x3_apply(&rot, *vert);
-            vert[0] = rv[0] + v.x;
-            vert[1] = rv[1] + v.y;
-            vert[2] = rv[2] + v.z;
-        }
-        tri.normal = rot3x3_apply(&rot, tri.normal);
-    }
+    place_mesh(tris, base, v.terrain_normal, 30.0, v.rot_y, v.x, v.y, v.z);
 }
 
 /// Low-detail vehicle mesh: 2 colored boxes (body + cabin), ~24 tris
@@ -4118,16 +4081,7 @@ fn gen_vehicle_mesh_lod(v: &Vehicle, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
     push_box(tris, 0.0, 0.35, 0.0, 1.8, 0.5, 3.6, v.color);
     push_box(tris, 0.0, 0.95, 0.2, 1.4, 0.45, 1.8, darken(v.color, 0.85));
-    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 30.0), v.rot_y);
-    for tri in &mut tris[base..] {
-        for vert in &mut tri.v {
-            let rv = rot3x3_apply(&rot, *vert);
-            vert[0] = rv[0] + v.x;
-            vert[1] = rv[1] + v.y;
-            vert[2] = rv[2] + v.z;
-        }
-        tri.normal = rot3x3_apply(&rot, tri.normal);
-    }
+    place_mesh(tris, base, v.terrain_normal, 30.0, v.rot_y, v.x, v.y, v.z);
 }
 
 /// Generate GPU vertices for dynamic entities only (call each frame)
@@ -4137,7 +4091,7 @@ pub fn generate_dynamic_gpu_vertices(
     hour: f32,
 ) {
     let eye = v3(cam.x, cam.y, cam.z);
-    let fog_dist_sq = FOG_DIST * FOG_DIST;
+    let fog_dist_sq = FOG_DIST_SQ;
 
     let fdx = cam.tx - cam.x;
     let fdz = cam.tz - cam.z;
@@ -4165,6 +4119,10 @@ pub fn generate_dynamic_gpu_vertices(
         }
     }
     // NPCs: frustum + distance-based LOD
+    // At night, reduce render distances to avoid floating bright dots (skin-colored head)
+    let is_night = hour < 6.0 || hour > 20.0;
+    let npc_mid_sq = if is_night { 2500.0 } else { LOD_NPC_MID_SQ }; // 50m at night vs 80m day
+    let npc_low_sq = if is_night { npc_mid_sq } else { LOD_NPC_LOW_SQ }; // no low LOD at night
     for npc in &world.npcs {
         if npc.state == NpcState::Sleeping { continue; }
         if npc.in_vehicle { continue; }
@@ -4174,9 +4132,9 @@ pub fn generate_dynamic_gpu_vertices(
         };
         if dist_sq < LOD_NPC_FULL_SQ {
             gen_npc_mesh(npc, scratch);
-        } else if dist_sq < LOD_NPC_MID_SQ {
+        } else if dist_sq < npc_mid_sq {
             gen_npc_mesh_mid(npc, scratch);
-        } else if dist_sq < LOD_NPC_LOW_SQ {
+        } else if dist_sq < npc_low_sq {
             gen_npc_mesh_lod(npc, scratch);
         }
     }
@@ -4297,6 +4255,66 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             out.push(GpuVertex { pos: pos(RINGS - 1, seg), color_packed: rim_color, normal: norm(RINGS - 1, seg) });
             out.push(GpuVertex { pos: pos(RINGS - 1, nseg), color_packed: rim_color, normal: norm(RINGS - 1, nseg) });
             out.push(GpuVertex { pos: zenith_pos, color_packed: zenith_color, normal: zenith_norm });
+        }
+    }
+
+    // Lower hemisphere: horizon → ground-fog color below the terrain.
+    // Prevents sky-blue clear color showing through gaps at map edges.
+    // Full 90° below horizon to nadir, so even steep downward views are covered.
+    const LOW_RINGS: usize = 4;
+
+    // Ground-fog color: dark greenish (blends with terrain at distance)
+    let gr = 42.0_f32;
+    let gg = 107.0_f32;
+    let gb = 42.0_f32;
+
+    let low_ring_color = |ring: usize| -> u32 {
+        // ring 0 = horizon, ring LOW_RINGS = nadir
+        let t = ring as f32 / LOW_RINGS as f32;
+        let r = ((hr + (gr - hr) * t) / boost).min(255.0).max(0.0) as u32;
+        let g = ((hg + (gg - hg) * t) / boost).min(255.0).max(0.0) as u32;
+        let b = ((hb + (gb - hb) * t) / boost).min(255.0).max(0.0) as u32;
+        (r << 16) | (g << 8) | b  // alpha=0x00 (emissive)
+    };
+
+    // Vertex positions on lower hemisphere (negative altitude, full 90° to nadir)
+    let low_pos = |ring: usize, seg: usize| -> Vec3 {
+        let alt = -(ring as f32 / LOW_RINGS as f32) * std::f32::consts::FRAC_PI_2; // full 90° down
+        let az = (seg as f32 / SEGS as f32) * std::f32::consts::TAU;
+        let cos_alt = alt.cos();
+        [
+            eye[0] + az.cos() * cos_alt * RADIUS,
+            eye[1] + alt.sin() * RADIUS,
+            eye[2] + az.sin() * cos_alt * RADIUS,
+        ]
+    };
+
+    let low_norm = |ring: usize, seg: usize| -> Vec3 {
+        let alt = -(ring as f32 / LOW_RINGS as f32) * std::f32::consts::FRAC_PI_2;
+        let az = (seg as f32 / SEGS as f32) * std::f32::consts::TAU;
+        let cos_alt = alt.cos();
+        [-az.cos() * cos_alt, -alt.sin(), -az.sin() * cos_alt]
+    };
+
+    for ring in 0..LOW_RINGS {
+        let c0 = low_ring_color(ring);
+        let c1 = low_ring_color(ring + 1);
+        for seg in 0..SEGS {
+            let nseg = (seg + 1) % SEGS;
+            let p00 = low_pos(ring, seg);     let n00 = low_norm(ring, seg);
+            let p10 = low_pos(ring, nseg);    let n10 = low_norm(ring, nseg);
+            let p01 = low_pos(ring + 1, seg); let n01 = low_norm(ring + 1, seg);
+            let p11 = low_pos(ring + 1, nseg); let n11 = low_norm(ring + 1, nseg);
+
+            // Same winding as upper hemisphere (CCW from inside → CW after Vulkan Y-flip)
+            // In upper hemisphere, increasing ring = up; here, increasing ring = down.
+            // The altitude reversal flips the effective winding, so we reverse vertex order.
+            out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
+            out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
+            out.push(GpuVertex { pos: p10, color_packed: c0, normal: n10 });
+            out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
+            out.push(GpuVertex { pos: p01, color_packed: c1, normal: n01 });
+            out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
         }
     }
 
@@ -4505,7 +4523,7 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
 /// Build GPU push constants from current frame state
 pub fn gpu_push_constants(hour: f32, eye: Vec3, target: Vec3, vp: &Mat4) -> crate::gpu::GpuPushConstants {
     let tc = time_colors(hour);
-    let fog_dist_sq = FOG_DIST * FOG_DIST;
+    let fog_dist_sq = FOG_DIST_SQ;
     let fdx = target[0] - eye[0];
     let fdz = target[2] - eye[2];
     let flen = (fdx * fdx + fdz * fdz).sqrt().max(0.001);
