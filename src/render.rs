@@ -4076,12 +4076,13 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             let p10 = pos(ring, nseg);    let n10 = norm(ring, nseg);
             let p01 = pos(ring + 1, seg); let n01 = norm(ring + 1, seg);
             let p11 = pos(ring + 1, nseg); let n11 = norm(ring + 1, nseg);
+            // Inward-facing: CW winding so front face points toward viewer inside dome
             out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
+            out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
             out.push(GpuVertex { pos: p10, color_packed: c0, normal: n10 });
-            out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
             out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
-            out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
             out.push(GpuVertex { pos: p01, color_packed: c1, normal: n01 });
+            out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
         }
     }
     // Zenith cap: triangle fan — avoids degenerate near-zero quads at pole (E4)
@@ -4093,8 +4094,8 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
         for seg in 0..SEGS {
             let nseg = (seg + 1) % SEGS;
             out.push(GpuVertex { pos: pos(RINGS - 1, seg), color_packed: rim_color, normal: norm(RINGS - 1, seg) });
-            out.push(GpuVertex { pos: pos(RINGS - 1, nseg), color_packed: rim_color, normal: norm(RINGS - 1, nseg) });
             out.push(GpuVertex { pos: zenith_pos, color_packed: zenith_color, normal: zenith_norm });
+            out.push(GpuVertex { pos: pos(RINGS - 1, nseg), color_packed: rim_color, normal: norm(RINGS - 1, nseg) });
         }
     }
 
@@ -4146,15 +4147,14 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             let p01 = low_pos(ring + 1, seg); let n01 = low_norm(ring + 1, seg);
             let p11 = low_pos(ring + 1, nseg); let n11 = low_norm(ring + 1, nseg);
 
-            // Same winding as upper hemisphere (CCW from inside → CW after Vulkan Y-flip)
-            // In upper hemisphere, increasing ring = up; here, increasing ring = down.
-            // The altitude reversal flips the effective winding, so we reverse vertex order.
+            // Lower hemisphere faces inward — altitude reversal flips effective winding,
+            // so use standard order (opposite of upper hemisphere's reversed order)
             out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
-            out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
             out.push(GpuVertex { pos: p10, color_packed: c0, normal: n10 });
-            out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
-            out.push(GpuVertex { pos: p01, color_packed: c1, normal: n01 });
             out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
+            out.push(GpuVertex { pos: p00, color_packed: c0, normal: n00 });
+            out.push(GpuVertex { pos: p11, color_packed: c1, normal: n11 });
+            out.push(GpuVertex { pos: p01, color_packed: c1, normal: n01 });
         }
     }
 
@@ -4221,11 +4221,11 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             let p3 = [px - rx * hw, py + hh, pz - rz * hw];
 
             out.push(GpuVertex { pos: p0, color_packed: cc, normal: n });
-            out.push(GpuVertex { pos: p2, color_packed: cc, normal: n });
             out.push(GpuVertex { pos: p1, color_packed: cc, normal: n });
-            out.push(GpuVertex { pos: p0, color_packed: cc, normal: n });
-            out.push(GpuVertex { pos: p3, color_packed: cc, normal: n });
             out.push(GpuVertex { pos: p2, color_packed: cc, normal: n });
+            out.push(GpuVertex { pos: p0, color_packed: cc, normal: n });
+            out.push(GpuVertex { pos: p2, color_packed: cc, normal: n });
+            out.push(GpuVertex { pos: p3, color_packed: cc, normal: n });
         }
     }
 
@@ -4257,8 +4257,8 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             let p1 = [cx + (a0.cos()*tx[0] + a0.sin()*ty[0])*radius, cy + (a0.cos()*tx[1] + a0.sin()*ty[1])*radius, cz + (a0.cos()*tx[2] + a0.sin()*ty[2])*radius];
             let p2 = [cx + (a1.cos()*tx[0] + a1.sin()*ty[0])*radius, cy + (a1.cos()*tx[1] + a1.sin()*ty[1])*radius, cz + (a1.cos()*tx[2] + a1.sin()*ty[2])*radius];
             out.push(GpuVertex { pos: p0, color_packed: color, normal: dn });
-            out.push(GpuVertex { pos: p2, color_packed: color, normal: dn });
             out.push(GpuVertex { pos: p1, color_packed: color, normal: dn });
+            out.push(GpuVertex { pos: p2, color_packed: color, normal: dn });
         }
     };
 
@@ -4280,11 +4280,11 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
                 let po0 = [cx+(a0.cos()*tx[0]+a0.sin()*ty[0])*r1, cy+(a0.cos()*tx[1]+a0.sin()*ty[1])*r1, cz+(a0.cos()*tx[2]+a0.sin()*ty[2])*r1];
                 let po1 = [cx+(a1.cos()*tx[0]+a1.sin()*ty[0])*r1, cy+(a1.cos()*tx[1]+a1.sin()*ty[1])*r1, cz+(a1.cos()*tx[2]+a1.sin()*ty[2])*r1];
                 out.push(GpuVertex { pos: pi0, color_packed: ci, normal: dn });
-                out.push(GpuVertex { pos: po1, color_packed: co, normal: dn });
                 out.push(GpuVertex { pos: pi1, color_packed: ci, normal: dn });
-                out.push(GpuVertex { pos: pi0, color_packed: ci, normal: dn });
-                out.push(GpuVertex { pos: po0, color_packed: co, normal: dn });
                 out.push(GpuVertex { pos: po1, color_packed: co, normal: dn });
+                out.push(GpuVertex { pos: pi0, color_packed: ci, normal: dn });
+                out.push(GpuVertex { pos: po1, color_packed: co, normal: dn });
+                out.push(GpuVertex { pos: po0, color_packed: co, normal: dn });
             }
         }
     };
@@ -4351,11 +4351,11 @@ fn gen_sky_dome_gpu(out: &mut Vec<GpuVertex>, eye: Vec3, hour: f32) {
             let p2 = [sx+stx[0]*star_r+sty[0]*star_r, sy+stx[1]*star_r+sty[1]*star_r, sz+stx[2]*star_r+sty[2]*star_r];
             let p3 = [sx-stx[0]*star_r+sty[0]*star_r, sy-stx[1]*star_r+sty[1]*star_r, sz-stx[2]*star_r+sty[2]*star_r];
             out.push(GpuVertex { pos: p0, color_packed: star_color, normal: n });
-            out.push(GpuVertex { pos: p2, color_packed: star_color, normal: n });
             out.push(GpuVertex { pos: p1, color_packed: star_color, normal: n });
-            out.push(GpuVertex { pos: p0, color_packed: star_color, normal: n });
-            out.push(GpuVertex { pos: p3, color_packed: star_color, normal: n });
             out.push(GpuVertex { pos: p2, color_packed: star_color, normal: n });
+            out.push(GpuVertex { pos: p0, color_packed: star_color, normal: n });
+            out.push(GpuVertex { pos: p2, color_packed: star_color, normal: n });
+            out.push(GpuVertex { pos: p3, color_packed: star_color, normal: n });
         }
     }
 }

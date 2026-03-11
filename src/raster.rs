@@ -74,14 +74,13 @@ pub fn draw_triangle_smooth(fb: &mut Framebuffer, tri: &ScreenTriSmooth) {
     let max_y = ((v0[1].max(v1[1]).max(v2[1]) + 1.0).min((fb.h - 1) as f32)) as usize;
     if min_x > max_x || min_y > max_y { return; }
 
-    let mut area = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
-    if area.abs() < 0.5 { return; }
+    // Signed 2x area — negative = front face (CCW world → CW screen after Y-flip)
+    let area = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
+    if area > -0.5 { return; } // backface cull + degenerate reject
 
-    if area < 0.0 {
-        std::mem::swap(&mut v1, &mut v2);
-        std::mem::swap(&mut c1_raw, &mut c2_raw);
-        area = -area;
-    }
+    std::mem::swap(&mut v1, &mut v2);
+    std::mem::swap(&mut c1_raw, &mut c2_raw);
+    let area = -area;
     let inv_area = 1.0 / area;
 
     let dx0 = v1[1] - v2[1];
@@ -188,20 +187,15 @@ pub fn draw_triangle(fb: &mut Framebuffer, tri: &ScreenTri) {
     let max_y = ((v0[1].max(v1[1]).max(v2[1]) + 1.0).min((fb.h - 1) as f32)) as usize;
     if min_x > max_x || min_y > max_y { return; }
 
-    // Signed 2x area
-    let mut area = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
-    if area.abs() < 0.5 { return; }
+    // Signed 2x area — negative = front face (CCW world → CW screen after Y-flip)
+    let area = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
+    if area > -0.5 { return; } // backface cull (area >= 0) + degenerate reject
 
-    // Normalize to CCW (positive area) by swapping v1/v2
-    if area < 0.0 {
-        std::mem::swap(&mut v1, &mut v2);
-        area = -area;
-    }
+    // Normalize: flip sign + swap v1/v2 for CCW edge functions
+    std::mem::swap(&mut v1, &mut v2);
+    let area = -area;
     let inv_area = 1.0 / area;
 
-    // Edge function increments per x/y step
-    // E0 = edge(v1→v2), E1 = edge(v2→v0)
-    // E2 = area - E0 - E1 (not tracked, checked via e0+e1 <= area)
     let dx0 = v1[1] - v2[1];
     let dy0 = v2[0] - v1[0];
     let dx1 = v2[1] - v0[1];

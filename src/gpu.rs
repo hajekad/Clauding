@@ -1835,7 +1835,7 @@ impl GpuContext {
                 rasterizer_discard_enable: 0,
                 polygon_mode: VK_POLYGON_MODE_FILL,
                 cull_mode: VK_CULL_MODE_BACK_BIT,
-                front_face: _VK_FRONT_FACE_CLOCKWISE, // CCW world-space becomes CW after Vulkan Y-flip in projection
+                front_face: _VK_FRONT_FACE_COUNTER_CLOCKWISE, // CCW mesh winding stays CCW in framebuffer (proj Y-flip + Vulkan Y-down cancel)
                 depth_bias_enable: 0,
                 depth_bias_constant_factor: 0.0,
                 depth_bias_clamp: 0.0,
