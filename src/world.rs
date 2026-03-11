@@ -4,6 +4,7 @@
 use crate::state::*;
 use crate::rng::Rng;
 use crate::mesh;
+use crate::color::{lerp_color, darken};
 
 const BUILDING_COLORS: [u32; 10] = [
     0xFFCCBB99, 0xFFBBAA88, 0xFFDDCCAA, 0xFFBBBBAA, 0xFFCCBBAA,
@@ -24,7 +25,7 @@ const ROCK_COLOR: u32 = 0xFF777777;
 const GROUND_LOW: u32 = 0xFF2A6B2A;  // darker green in valleys
 const GROUND_HIGH: u32 = 0xFF44AA44; // lighter green on hills
 const ROAD_COLOR: u32 = 0xFF444444;
-const ROAD_LINE_COLOR: u32 = 0xFFCCCC33;
+const ROAD_LINE_COLOR: u32 = 0xFFBBAA44;
 const ROAD_EDGE_COLOR: u32 = 0xFFBBBBBB;
 const SIDEWALK_COLOR: u32 = 0xFF888888;
 const FIELD_ROAD_COLOR: u32 = 0xFF665544;
@@ -110,6 +111,26 @@ pub fn point_to_segment_dist(px: f32, pz: f32, x0: f32, z0: f32, x1: f32, z1: f3
     let ex = px - proj_x;
     let ez = pz - proj_z;
     (ex * ex + ez * ez).sqrt()
+}
+
+/// Linearly interpolate along a road segment: returns (x, z) at parameter t in [0,1]
+fn sample_segment(seg: &RoadSegment, t: f32) -> (f32, f32) {
+    (seg.x0 + (seg.x1 - seg.x0) * t, seg.z0 + (seg.z1 - seg.z0) * t)
+}
+
+fn overlaps_building(x: f32, z: f32, margin: f32, buildings: &[Building]) -> bool {
+    buildings.iter().any(|b| {
+        (x - b.x).abs() < b.w * 0.5 + margin && (z - b.z).abs() < b.d * 0.5 + margin
+    })
+}
+
+/// Direction and perpendicular for a road segment. Returns (perp_x, perp_z, dir_x, dir_z, length).
+fn segment_perp(seg: &RoadSegment) -> Option<(f32, f32, f32, f32, f32)> {
+    let dx = seg.x1 - seg.x0;
+    let dz = seg.z1 - seg.z0;
+    let len = (dx * dx + dz * dz).sqrt();
+    if len < 0.01 { return None; }
+    Some((-dz / len, dx / len, dx / len, dz / len, len))
 }
 
 /// What surface is at world position (x, z)?
@@ -387,16 +408,10 @@ fn generate_parking_spots(net: &RoadNetwork, buildings: &[Building], terrain: &T
 
     for seg in &net.segments {
         if seg.tier != RoadTier::CarRoad { continue; }
-        let dx = seg.x1 - seg.x0;
-        let dz = seg.z1 - seg.z0;
-        let len = (dx * dx + dz * dz).sqrt();
+        let Some((perp_x, perp_z, dir_x, dir_z, len)) = segment_perp(seg) else { continue };
         if len < 20.0 { continue; }
 
-        let dir_x = dx / len;
-        let dir_z = dz / len;
-        let perp_x = -dir_z;
-        let perp_z = dir_x;
-        let rot_y = (-dx).atan2(-dz);
+        let rot_y = (-dir_x).atan2(-dir_z);
 
         // Place parking spots along segment, both sides
         let spot_spacing = PARKING_SPOT_LENGTH + 1.0; // 6m between spot starts
@@ -408,15 +423,12 @@ fn generate_parking_spots(net: &RoadNetwork, buildings: &[Building], terrain: &T
             for k in 0..num_spots {
                 let t = 0.2 + (k as f32 + 0.5) * spot_spacing / len;
                 if t > 0.8 { break; }
-                let sx = seg.x0 + dx * t + perp_x * curb_offset * side;
-                let sz = seg.z0 + dz * t + perp_z * curb_offset * side;
+                let (pt_x, pt_z) = sample_segment(seg, t);
+                let sx = pt_x + perp_x * curb_offset * side;
+                let sz = pt_z + perp_z * curb_offset * side;
 
                 // Skip if overlapping buildings
-                let overlaps = buildings.iter().any(|b| {
-                    sx > b.x - b.w * 0.5 - 1.0 && sx < b.x + b.w * 0.5 + 1.0
-                    && sz > b.z - b.d * 0.5 - 1.0 && sz < b.z + b.d * 0.5 + 1.0
-                });
-                if overlaps { continue; }
+                if overlaps_building(sx, sz, 1.0, buildings) { continue; }
 
                 // Skip if on river
                 if on_river(sx, sz, river_segments) { continue; }
@@ -433,34 +445,102 @@ fn generate_parking_spots(net: &RoadNetwork, buildings: &[Building], terrain: &T
     spots
 }
 
-fn normalize_tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
-    let e1 = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
-    let e2 = [c[0]-a[0], c[1]-a[1], c[2]-a[2]];
-    let n = [e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]];
-    let l = (n[0]*n[0] + n[1]*n[1] + n[2]*n[2]).sqrt();
-    if l < 1e-10 { [0.0, 1.0, 0.0] } else { [n[0]/l, n[1]/l, n[2]/l] }
-}
-
-fn lerp_color(a: u32, b: u32, t: f32) -> u32 {
-    let t = t.clamp(0.0, 1.0);
-    let r = (((a >> 16) & 0xFF) as f32 * (1.0 - t) + ((b >> 16) & 0xFF) as f32 * t) as u32;
-    let g = (((a >> 8) & 0xFF) as f32 * (1.0 - t) + ((b >> 8) & 0xFF) as f32 * t) as u32;
-    let bl = ((a & 0xFF) as f32 * (1.0 - t) + (b & 0xFF) as f32 * t) as u32;
-    0xFF000000 | (r << 16) | (g << 8) | bl
-}
-
-fn darken_color(c: u32, factor: f32) -> u32 {
-    let r = (((c >> 16) & 0xFF) as f32 * factor) as u32;
-    let g = (((c >> 8) & 0xFF) as f32 * factor) as u32;
-    let b = ((c & 0xFF) as f32 * factor) as u32;
-    0xFF000000 | (r.min(255) << 16) | (g.min(255) << 8) | b.min(255)
-}
 
 fn jitter_color(c: u32, delta: i32) -> u32 {
     let r = (((c >> 16) & 0xFF) as i32 + delta).clamp(0, 255) as u32;
     let g = (((c >> 8) & 0xFF) as i32 + delta).clamp(0, 255) as u32;
     let b = ((c & 0xFF) as i32 + delta).clamp(0, 255) as u32;
     (c & 0xFF000000) | (r << 16) | (g << 8) | b
+}
+
+/// Compute a building's ground_y by sampling terrain across the footprint and returning
+/// the minimum height. This prevents buildings from floating above terrain at corners/edges.
+/// Also returns the maximum height for foundation depth calculation.
+fn building_ground_height(terrain: &Terrain, cx: f32, cz: f32, w: f32, d: f32) -> (f32, f32) {
+    let hw = w * 0.5;
+    let hd = d * 0.5;
+    // Sample corners, edge midpoints, and center (9 points)
+    let samples = [
+        terrain.height_at(cx, cz),           // center
+        terrain.height_at(cx - hw, cz - hd), // corners
+        terrain.height_at(cx + hw, cz - hd),
+        terrain.height_at(cx - hw, cz + hd),
+        terrain.height_at(cx + hw, cz + hd),
+        terrain.height_at(cx - hw, cz),       // edge midpoints
+        terrain.height_at(cx + hw, cz),
+        terrain.height_at(cx, cz - hd),
+        terrain.height_at(cx, cz + hd),
+    ];
+    let mut min_h = samples[0];
+    let mut max_h = samples[0];
+    for &h in &samples[1..] {
+        if h < min_h { min_h = h; }
+        if h > max_h { max_h = h; }
+    }
+    (min_h, max_h)
+}
+
+/// Add foundation geometry around a building to seal gaps between building base and terrain.
+/// Creates a skirt (4 walls) extending from ground_y down past the lowest terrain point,
+/// plus a floor quad at ground_y.
+fn add_building_foundation(
+    tris: &mut Vec<WorldTri>, terrain: &Terrain,
+    cx: f32, ground_y: f32, cz: f32, w: f32, d: f32, color: u32,
+) {
+    let hw = w * 0.5 + 0.05; // slightly wider than building to prevent seams
+    let hd = d * 0.5 + 0.05;
+    let foundation_color = darken(color, 0.4);
+
+    // Sample terrain at corners and edges to find how deep foundation must go
+    let (min_h, _max_h) = building_ground_height(terrain, cx, cz, w + 1.0, d + 1.0);
+    // Extend foundation 1m below lowest terrain point to ensure full coverage
+    let foundation_bottom = min_h - 1.0;
+    let skirt_h = ground_y - foundation_bottom;
+    if skirt_h < 0.05 { return; } // terrain is flat under building, no skirt needed
+
+    let top = ground_y;
+    let bot = foundation_bottom;
+
+    // Front skirt wall (z+) — CCW outward
+    mesh::push_quad(tris,
+        [cx - hw, bot, cz + hd],
+        [cx + hw, bot, cz + hd],
+        [cx + hw, top, cz + hd],
+        [cx - hw, top, cz + hd],
+        foundation_color,
+    );
+    // Back skirt wall (z-) — CCW outward
+    mesh::push_quad(tris,
+        [cx + hw, bot, cz - hd],
+        [cx - hw, bot, cz - hd],
+        [cx - hw, top, cz - hd],
+        [cx + hw, top, cz - hd],
+        foundation_color,
+    );
+    // Left skirt wall (x-) — CCW outward
+    mesh::push_quad(tris,
+        [cx - hw, bot, cz - hd],
+        [cx - hw, bot, cz + hd],
+        [cx - hw, top, cz + hd],
+        [cx - hw, top, cz - hd],
+        foundation_color,
+    );
+    // Right skirt wall (x+) — CCW outward
+    mesh::push_quad(tris,
+        [cx + hw, bot, cz + hd],
+        [cx + hw, bot, cz - hd],
+        [cx + hw, top, cz - hd],
+        [cx + hw, top, cz + hd],
+        foundation_color,
+    );
+    // Bottom cap (y-) — CCW facing down
+    mesh::push_quad(tris,
+        [cx - hw, bot, cz - hd],
+        [cx + hw, bot, cz - hd],
+        [cx + hw, bot, cz + hd],
+        [cx - hw, bot, cz + hd],
+        foundation_color,
+    );
 }
 
 /// Generate heightmap from multi-octave sinusoidal waves, flattened near roads/downtown
@@ -558,9 +638,9 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
             let vz1 = vz0 + cell;
 
             // Tri 1: v00, v10, v11 — face normal
-            let fn1 = normalize_tri_normal([vx0,vh00,vz0], [vx1,vh11,vz1], [vx1,vh10,vz0]);
+            let fn1 = mesh::tri_normal([vx0,vh00,vz0], [vx1,vh11,vz1], [vx1,vh10,vz0]);
             // Tri 2: v00, v11, v01 — face normal
-            let fn2 = normalize_tri_normal([vx0,vh00,vz0], [vx0,vh01,vz1], [vx1,vh11,vz1]);
+            let fn2 = mesh::tri_normal([vx0,vh00,vz0], [vx0,vh01,vz1], [vx1,vh11,vz1]);
 
             let i00 = iz * stride + ix;
             let i10 = iz * stride + ix + 1;
@@ -644,6 +724,93 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
             // CW winding for Vulkan front-face (VK_FRONT_FACE_CLOCKWISE + Y-flip)
             tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color: c1 });
             tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color: c2 });
+        }
+    }
+
+    // Ground skirt: vertical walls dropping from terrain edges + extended floor plane.
+    // Prevents sky bleed-through when camera looks toward or beyond map edges.
+    // Winding matches terrain mesh: e1×e2 cross product points AWAY from visible face
+    // (Vulkan Y-flip + FRONT_FACE_CLOCKWISE makes this the front face).
+    let skirt_y = -15.0; // floor level well below any terrain height
+    let skirt_color = GROUND_LOW; // dark green matches terrain base
+    let skirt_n_up: [f32; 3] = [0.0, 1.0, 0.0];
+
+    // South edge (iz = 0, z = -WORLD_HALF): visible from inside (+Z)
+    let south_n: [f32; 3] = [0.0, 0.0, 1.0];
+    for ix in 0..grid {
+        let x0 = -WORLD_HALF + ix as f32 * cell;
+        let x1 = x0 + cell;
+        let h0 = terrain.heights[0 * stride + ix];
+        let h1 = terrain.heights[0 * stride + ix + 1];
+        let z = -WORLD_HALF;
+        // cross(e1,e2) points -Z (away from +Z viewer) → front face from inside
+        tris.push(WorldTri { v: [[x0, h0, z], [x1, h1, z], [x1, skirt_y, z]], normal: south_n, color: skirt_color });
+        tris.push(WorldTri { v: [[x0, h0, z], [x1, skirt_y, z], [x0, skirt_y, z]], normal: south_n, color: skirt_color });
+    }
+
+    // North edge (iz = grid, z = +WORLD_HALF): visible from inside (-Z)
+    let north_n: [f32; 3] = [0.0, 0.0, -1.0];
+    for ix in 0..grid {
+        let x0 = -WORLD_HALF + ix as f32 * cell;
+        let x1 = x0 + cell;
+        let h0 = terrain.heights[grid * stride + ix];
+        let h1 = terrain.heights[grid * stride + ix + 1];
+        let z = WORLD_HALF;
+        // cross(e1,e2) points +Z (away from -Z viewer) → front face from inside
+        tris.push(WorldTri { v: [[x1, h1, z], [x0, h0, z], [x0, skirt_y, z]], normal: north_n, color: skirt_color });
+        tris.push(WorldTri { v: [[x1, h1, z], [x0, skirt_y, z], [x1, skirt_y, z]], normal: north_n, color: skirt_color });
+    }
+
+    // West edge (ix = 0, x = -WORLD_HALF): visible from inside (+X)
+    let west_n: [f32; 3] = [1.0, 0.0, 0.0];
+    for iz in 0..grid {
+        let z0 = -WORLD_HALF + iz as f32 * cell;
+        let z1 = z0 + cell;
+        let h0 = terrain.heights[iz * stride + 0];
+        let h1 = terrain.heights[(iz + 1) * stride + 0];
+        let x = -WORLD_HALF;
+        // cross(e1,e2) points -X (away from +X viewer) → front face from inside
+        tris.push(WorldTri { v: [[x, h1, z1], [x, h0, z0], [x, skirt_y, z0]], normal: west_n, color: skirt_color });
+        tris.push(WorldTri { v: [[x, h1, z1], [x, skirt_y, z0], [x, skirt_y, z1]], normal: west_n, color: skirt_color });
+    }
+
+    // East edge (ix = grid, x = +WORLD_HALF): visible from inside (-X)
+    let east_n: [f32; 3] = [-1.0, 0.0, 0.0];
+    for iz in 0..grid {
+        let z0 = -WORLD_HALF + iz as f32 * cell;
+        let z1 = z0 + cell;
+        let h0 = terrain.heights[iz * stride + grid];
+        let h1 = terrain.heights[(iz + 1) * stride + grid];
+        let x = WORLD_HALF;
+        // cross(e1,e2) points +X (away from -X viewer) → front face from inside
+        tris.push(WorldTri { v: [[x, h0, z0], [x, h1, z1], [x, skirt_y, z1]], normal: east_n, color: skirt_color });
+        tris.push(WorldTri { v: [[x, h0, z0], [x, skirt_y, z1], [x, skirt_y, z0]], normal: east_n, color: skirt_color });
+    }
+
+    // Extended ground floor plane beyond terrain bounds.
+    // Large flat quad at skirt_y extending to 2x world half in all directions.
+    // This catches any downward-looking rays that miss the terrain mesh entirely.
+    let ext = WORLD_HALF * 2.0; // extend to 500m from center (1km total)
+    let floor_color = darken(GROUND_LOW, 0.7); // slightly darker to hint at distance
+
+    // Floor is split into tiles to avoid precision issues with huge triangles.
+    // 4x4 grid of floor tiles covering -ext..+ext on X and Z.
+    let floor_tiles = 4;
+    let tile_size = (ext * 2.0) / floor_tiles as f32;
+    for tz in 0..floor_tiles {
+        for tx in 0..floor_tiles {
+            let fx0 = -ext + tx as f32 * tile_size;
+            let fz0 = -ext + tz as f32 * tile_size;
+            let fx1 = fx0 + tile_size;
+            let fz1 = fz0 + tile_size;
+            // Match terrain winding: cross product points -Y but Vulkan Y-flip
+            // makes it visible from above. Same pattern as terrain mesh triangles.
+            let a = [fx0, skirt_y, fz0]; // bottom-left
+            let b = [fx1, skirt_y, fz0]; // bottom-right
+            let c = [fx1, skirt_y, fz1]; // top-right
+            let d = [fx0, skirt_y, fz1]; // top-left
+            tris.push(WorldTri { v: [a, b, c], normal: skirt_n_up, color: floor_color });
+            tris.push(WorldTri { v: [a, c, d], normal: skirt_n_up, color: floor_color });
         }
     }
 }
@@ -743,7 +910,7 @@ fn generate_dockyard(
     let z_min = DOCK_Z_START + 15.0;
     let z_max = WORLD_HALF - 5.0;
     mesh::wave_surface_tris(tris, x_min, x_max, z_min, z_max,
-        WATER_Y, 0.12, 0.5,
+        WATER_Y, 0.5, 0.5,
         ((x_max - x_min) / 5.0) as usize, ((z_max - z_min) / 5.0).max(1.0) as usize,
         WATER_COLOR);
 
@@ -754,13 +921,17 @@ fn generate_dockyard(
         let ww = rng.range(8.0, 14.0);
         let wd = rng.range(6.0, 10.0);
         let wh = rng.range(4.0, 7.0);
-        let gy = terrain.height_at(wx, wz);
+        // Use minimum terrain height across footprint so warehouse never floats
+        let (min_h, _) = building_ground_height(terrain, wx, wz, ww, wd);
+        let gy = min_h;
         let color = WAREHOUSE_COLORS[i % WAREHOUSE_COLORS.len()];
+        // Foundation skirt to seal gap between warehouse base and terrain
+        add_building_foundation(tris, terrain, wx, gy, wz, ww, wd, color);
         mesh::beveled_box_tris(tris, wx, gy + wh * 0.5, wz, ww, wh, wd, 0.1, color);
         // Recessed garage door
         mesh::box_tris(tris, wx, gy + 2.0, wz - wd * 0.5 + 0.08, ww * 0.4, 4.0, 0.16, 0xFF333322);
         // Pitched roof
-        mesh::pitched_roof_tris(tris, wx, gy + wh, wz, ww + 0.2, wd + 0.2, 1.5, darken_color(color, 0.7));
+        mesh::pitched_roof_tris(tris, wx, gy + wh, wz, ww + 0.2, wd + 0.2, 1.5, darken(color, 0.7));
         buildings.push(Building { x: wx, z: wz, w: ww, d: wd, h: wh, ground_y: gy });
     }
 
@@ -855,8 +1026,7 @@ fn generate_interactibles(
     // Helper: pick a sidewalk position along a car road segment
     let sidewalk_pos = |rng: &mut Rng, seg: &RoadSegment, side: f32| -> (f32, f32) {
         let t = rng.range(0.2, 0.8);
-        let sx = seg.x0 + (seg.x1 - seg.x0) * t;
-        let sz = seg.z0 + (seg.z1 - seg.z0) * t;
+        let (sx, sz) = sample_segment(seg, t);
         let dx = seg.x1 - seg.x0;
         let dz = seg.z1 - seg.z0;
         let len = (dx * dx + dz * dz).sqrt().max(0.01);
@@ -1203,9 +1373,9 @@ fn generate_river(
                     let color = jitter_color(base, noise);
 
                     // CW winding for Vulkan front-face (VK_FRONT_FACE_CLOCKWISE + Y-flip)
-                    let n1 = normalize_tri_normal(v00, v10, v11);
+                    let n1 = mesh::tri_normal(v00, v10, v11);
                     tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
-                    let n2 = normalize_tri_normal(v00, v11, v01);
+                    let n2 = mesh::tri_normal(v00, v11, v01);
                     tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
                 }
             }
@@ -1285,14 +1455,14 @@ fn generate_river(
 
                         // CW winding depends on side: mirrored grid flips winding
                         if side > 0.0 {
-                            let n1 = normalize_tri_normal(v00, v10, v11);
+                            let n1 = mesh::tri_normal(v00, v10, v11);
                             tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
-                            let n2 = normalize_tri_normal(v00, v11, v01);
+                            let n2 = mesh::tri_normal(v00, v11, v01);
                             tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
                         } else {
-                            let n1 = normalize_tri_normal(v00, v11, v10);
+                            let n1 = mesh::tri_normal(v00, v11, v10);
                             tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
-                            let n2 = normalize_tri_normal(v00, v01, v11);
+                            let n2 = mesh::tri_normal(v00, v01, v11);
                             tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
                         }
                     }
@@ -1315,29 +1485,29 @@ fn generate_river(
                     let pr = 0.05 + peb_next(&mut ph) * 0.12;
                     let peb_shade = (ph % 30) as i32 - 15;
                     let peb_color = jitter_color(BANK_PEBBLE, peb_shade);
-                    // Small flat pebble — 4 tris (flattened diamond, CCW winding for +Y normal)
+                    // Small flat pebble — 4 tris (flattened diamond, CW winding for Vulkan)
                     let pa = peb_next(&mut ph) * std::f32::consts::TAU;
                     let (ps, pc) = (pa.sin(), pa.cos());
                     let pn = [0.0_f32, 1.0, 0.0];
                     tris.push(WorldTri { v: [
                         [px, py, pz],
-                        [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
                         [px + pc * pr, py, pz + ps * pr],
-                    ], normal: pn, color: peb_color });
-                    tris.push(WorldTri { v: [
-                        [px, py, pz],
-                        [px - pc * pr, py, pz - ps * pr],
                         [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
                     ], normal: pn, color: peb_color });
                     tris.push(WorldTri { v: [
                         [px, py, pz],
-                        [px + ps * pr * 0.6, py, pz - pc * pr * 0.6],
+                        [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
                         [px - pc * pr, py, pz - ps * pr],
                     ], normal: pn, color: peb_color });
                     tris.push(WorldTri { v: [
                         [px, py, pz],
-                        [px + pc * pr, py, pz + ps * pr],
+                        [px - pc * pr, py, pz - ps * pr],
                         [px + ps * pr * 0.6, py, pz - pc * pr * 0.6],
+                    ], normal: pn, color: peb_color });
+                    tris.push(WorldTri { v: [
+                        [px, py, pz],
+                        [px + ps * pr * 0.6, py, pz - pc * pr * 0.6],
+                        [px + pc * pr, py, pz + ps * pr],
                     ], normal: pn, color: peb_color });
                 }
             }
@@ -1357,9 +1527,7 @@ fn generate_bridges(
         if seg.tier != RoadTier::CarRoad { continue; }
 
         // Find the crossing point of this road with the river
-        let dx = seg.x1 - seg.x0;
-        let dz = seg.z1 - seg.z0;
-        let len = (dx * dx + dz * dz).sqrt();
+        let Some((perp_x, perp_z, dir_x, dir_z, len)) = segment_perp(seg) else { continue };
         if len < 5.0 { continue; }
 
         let mut cross_x = 0.0f32;
@@ -1368,8 +1536,7 @@ fn generate_bridges(
         let sample_count = (len / 2.0).ceil() as i32;
         for s in 0..=sample_count {
             let t = s as f32 / sample_count as f32;
-            let px = seg.x0 + dx * t;
-            let pz = seg.z0 + dz * t;
+            let (px, pz) = sample_segment(seg, t);
             for rseg in river_segments {
                 let d = point_to_segment_dist(px, pz, rseg.x1, rseg.z1, rseg.x2, rseg.z2);
                 if d < RIVER_WIDTH * 0.5 {
@@ -1382,11 +1549,6 @@ fn generate_bridges(
             if crosses { break; }
         }
         if !crosses { continue; }
-
-        let dir_x = dx / len;
-        let dir_z = dz / len;
-        let perp_x = -dir_z;
-        let perp_z = dir_x;
 
         // Bridge center at crossing point
         let cx = cross_x;
@@ -1432,7 +1594,7 @@ fn generate_bridges(
         mesh::beveled_box_tris(tris, cx, deck_y - 0.2, cz, bridge_hw * 2.0, 0.4, bridge_len, 0.05, BRIDGE_DECK_COLOR);
 
         // Girder under deck
-        mesh::box_tris(tris, cx, deck_y - 0.5, cz, bridge_hw * 1.5, 0.2, bridge_len, darken_color(BRIDGE_DECK_COLOR, 0.7));
+        mesh::box_tris(tris, cx, deck_y - 0.5, cz, bridge_hw * 1.5, 0.2, bridge_len, darken(BRIDGE_DECK_COLOR, 0.7));
 
         // Cylinder pillar supports
         let pillar_count = (bridge_len / 8.0).ceil() as i32;
@@ -1452,23 +1614,30 @@ fn generate_bridges(
         let rail_z_l = cz + perp_z * bridge_hw;
         let rail_x_r = cx - perp_x * bridge_hw;
         let rail_z_r = cz - perp_z * bridge_hw;
-        // Rail bars (cylinder between endpoints)
+        // Rail bars (cylinder between endpoints, 6 segments for visibility from all angles)
         let rail_start_l = [rail_x_l - dir_x * bridge_len * 0.5, deck_y + 0.8, rail_z_l - dir_z * bridge_len * 0.5];
         let rail_end_l = [rail_x_l + dir_x * bridge_len * 0.5, deck_y + 0.8, rail_z_l + dir_z * bridge_len * 0.5];
-        mesh::cylinder_between(tris, rail_start_l, rail_end_l, 0.04, 4, BRIDGE_RAIL_COLOR);
+        mesh::cylinder_between(tris, rail_start_l, rail_end_l, 0.06, 6, BRIDGE_RAIL_COLOR);
         let rail_start_r = [rail_x_r - dir_x * bridge_len * 0.5, deck_y + 0.8, rail_z_r - dir_z * bridge_len * 0.5];
         let rail_end_r = [rail_x_r + dir_x * bridge_len * 0.5, deck_y + 0.8, rail_z_r + dir_z * bridge_len * 0.5];
-        mesh::cylinder_between(tris, rail_start_r, rail_end_r, 0.04, 4, BRIDGE_RAIL_COLOR);
-        // Railing posts (vertical cylinders)
+        mesh::cylinder_between(tris, rail_start_r, rail_end_r, 0.06, 6, BRIDGE_RAIL_COLOR);
+        // Lower rail bar for additional visibility
+        let lower_start_l = [rail_x_l - dir_x * bridge_len * 0.5, deck_y + 0.4, rail_z_l - dir_z * bridge_len * 0.5];
+        let lower_end_l = [rail_x_l + dir_x * bridge_len * 0.5, deck_y + 0.4, rail_z_l + dir_z * bridge_len * 0.5];
+        mesh::cylinder_between(tris, lower_start_l, lower_end_l, 0.04, 6, BRIDGE_RAIL_COLOR);
+        let lower_start_r = [rail_x_r - dir_x * bridge_len * 0.5, deck_y + 0.4, rail_z_r - dir_z * bridge_len * 0.5];
+        let lower_end_r = [rail_x_r + dir_x * bridge_len * 0.5, deck_y + 0.4, rail_z_r + dir_z * bridge_len * 0.5];
+        mesh::cylinder_between(tris, lower_start_r, lower_end_r, 0.04, 6, BRIDGE_RAIL_COLOR);
+        // Railing posts (vertical cylinders, 6 segments for all-angle visibility)
         let post_count = (bridge_len / 3.0).ceil() as i32;
         for pi in 0..post_count {
             let t = (pi as f32 + 0.5) / post_count as f32 - 0.5;
             let pxl = rail_x_l + dir_x * t * bridge_len;
             let pzl = rail_z_l + dir_z * t * bridge_len;
-            mesh::cylinder_tris(tris, pxl, deck_y + 0.4, pzl, 0.03, 0.8, 4, BRIDGE_RAIL_COLOR);
+            mesh::cylinder_tris(tris, pxl, deck_y + 0.4, pzl, 0.04, 0.8, 6, BRIDGE_RAIL_COLOR);
             let pxr = rail_x_r + dir_x * t * bridge_len;
             let pzr = rail_z_r + dir_z * t * bridge_len;
-            mesh::cylinder_tris(tris, pxr, deck_y + 0.4, pzr, 0.03, 0.8, 4, BRIDGE_RAIL_COLOR);
+            mesh::cylinder_tris(tris, pxr, deck_y + 0.4, pzr, 0.04, 0.8, 6, BRIDGE_RAIL_COLOR);
         }
 
         // Railing walls for collision
@@ -1643,8 +1812,8 @@ fn generate_parking_lots(
         }
         // Wider base section
         mesh::cylinder_tris(tris, lx, lgy + 0.2, lz, 0.12, 0.4, 6, LAMP_BASE_COLOR);
-        // Main pole
-        mesh::cylinder_tris(tris, lx, lgy + 2.7, lz, 0.06, 4.6, 6, LAMP_POLE_COLOR);
+        // Main pole (8 segments for rounder appearance)
+        mesh::cylinder_tris(tris, lx, lgy + 2.7, lz, 0.06, 4.6, 8, LAMP_POLE_COLOR);
         mesh::sphere_tris(tris, lx, lgy + 5.2, lz, 0.2, 1, LAMP_GLOW_COLOR);
         // (glow halo removed — too large, creates dark umbrella shapes in daylight)
         // Ground light pool
@@ -1679,10 +1848,7 @@ fn generate_market_stalls(
         let sz = angle.sin() * radius;
 
         // Skip if overlapping buildings
-        let overlaps = buildings.iter().any(|b| {
-            (sx - b.x).abs() < b.w * 0.5 + 2.0 && (sz - b.z).abs() < b.d * 0.5 + 2.0
-        });
-        if overlaps { continue; }
+        if overlaps_building(sx, sz, 2.0, buildings) { continue; }
         if on_road_surface(sx, sz, net) { continue; }
 
         let gy = terrain.height_at(sx, sz);
@@ -1705,10 +1871,10 @@ fn generate_market_stalls(
         let v1 = [sx + sw * 0.5, roof_y + 0.3, sz - sd * 0.5];
         let v2 = [sx + sw * 0.5, roof_y - 0.1, sz + sd * 0.5];
         let v3 = [sx - sw * 0.5, roof_y - 0.1, sz + sd * 0.5];
-        // CCW winding (outward normal points upward for canopy)
-        let roof_n = normalize_tri_normal(v0, v2, v1);
-        tris.push(WorldTri { v: [v0, v2, v1], normal: roof_n, color: canvas_color });
-        tris.push(WorldTri { v: [v0, v3, v2], normal: roof_n, color: canvas_color });
+        // CW winding for Vulkan front-face
+        let roof_n = mesh::tri_normal(v0, v1, v2);
+        tris.push(WorldTri { v: [v0, v1, v2], normal: roof_n, color: canvas_color });
+        tris.push(WorldTri { v: [v0, v2, v3], normal: roof_n, color: canvas_color });
 
         // Counter front — beveled
         mesh::beveled_box_tris(tris, sx, gy + 0.5, sz - sd * 0.5 + 0.1, sw * 0.9, 1.0, 0.2, 0.03, STALL_COUNTER_COLOR);
@@ -1729,25 +1895,16 @@ fn generate_bus_stops(
     for i in 0..stop_count {
         let seg = car_segs[i % car_segs.len()];
         let t = rng.range(0.3, 0.7);
-        let sx = seg.x0 + (seg.x1 - seg.x0) * t;
-        let sz = seg.z0 + (seg.z1 - seg.z0) * t;
+        let (sx, sz) = sample_segment(seg, t);
 
-        let dx = seg.x1 - seg.x0;
-        let dz = seg.z1 - seg.z0;
-        let len = (dx * dx + dz * dz).sqrt();
-        if len < 0.01 { continue; }
-        let perp_x = -dz / len;
-        let perp_z = dx / len;
+        let Some((perp_x, perp_z, _dir_x, _dir_z, _len)) = segment_perp(seg) else { continue };
         let offset = CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH + 1.5;
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
         let bx = sx + perp_x * offset * side;
         let bz = sz + perp_z * offset * side;
 
         // Skip if overlapping buildings
-        let overlaps = buildings.iter().any(|b| {
-            (bx - b.x).abs() < b.w * 0.5 + 2.0 && (bz - b.z).abs() < b.d * 0.5 + 2.0
-        });
-        if overlaps { continue; }
+        if overlaps_building(bx, bz, 2.0, buildings) { continue; }
 
         let gy = terrain.height_at(bx, bz);
 
@@ -1807,10 +1964,7 @@ fn generate_decorations(
     for _ in 0..25 {
         let (bx, bz) = town_pos(rng);
         if on_any_road(bx, bz, net) { continue; }
-        let overlaps = buildings.iter().any(|b| {
-            (bx - b.x).abs() < b.w * 0.5 + 0.5 && (bz - b.z).abs() < b.d * 0.5 + 0.5
-        });
-        if overlaps { continue; }
+        if overlaps_building(bx, bz, 0.5, buildings) { continue; }
         let gy = terrain.height_at(bx, bz);
         mesh::cylinder_tris(tris, bx, gy + 0.25, bz, 0.08, 0.5, 6, BOLLARD_COLOR);
         // Rounded top
@@ -1822,10 +1976,7 @@ fn generate_decorations(
     for _ in 0..12 {
         let (px, pz) = town_pos(rng);
         if on_any_road(px, pz, net) { continue; }
-        let overlaps = buildings.iter().any(|b| {
-            (px - b.x).abs() < b.w * 0.5 + 0.5 && (pz - b.z).abs() < b.d * 0.5 + 0.5
-        });
-        if overlaps { continue; }
+        if overlaps_building(px, pz, 0.5, buildings) { continue; }
         let gy = terrain.height_at(px, pz);
         mesh::beveled_box_tris(tris, px, gy + 0.2, pz, 0.5, 0.4, 0.5, 0.04, PLANTER_BOX_COLOR);
         mesh::sphere_tris(tris, px, gy + 0.55, pz, 0.3, 1, PLANTER_GREEN_COLOR);
@@ -1836,10 +1987,7 @@ fn generate_decorations(
     for _ in 0..5 {
         let (px, pz) = town_pos(rng);
         if on_any_road(px, pz, net) { continue; }
-        let overlaps = buildings.iter().any(|b| {
-            (px - b.x).abs() < b.w * 0.5 + 1.5 && (pz - b.z).abs() < b.d * 0.5 + 1.5
-        });
-        if overlaps { continue; }
+        if overlaps_building(px, pz, 1.5, buildings) { continue; }
         let gy = terrain.height_at(px, pz);
         // Table top
         mesh::box_tris(tris, px, gy + 0.75, pz, 1.8, 0.08, 0.9, PICNIC_TABLE_COLOR);
@@ -1857,15 +2005,12 @@ fn generate_decorations(
     for _ in 0..3 {
         let (bx, bz) = town_pos(rng);
         if on_any_road(bx, bz, net) { continue; }
-        let overlaps = buildings.iter().any(|b| {
-            (bx - b.x).abs() < b.w * 0.5 + 1.0 && (bz - b.z).abs() < b.d * 0.5 + 1.0
-        });
-        if overlaps { continue; }
+        if overlaps_building(bx, bz, 1.0, buildings) { continue; }
         let gy = terrain.height_at(bx, bz);
         // Cylinder post
         mesh::cylinder_tris(tris, bx, gy + 2.5, bz, 0.12, 5.0, 6, BILLBOARD_POST_COLOR);
         // Beveled panel
-        mesh::beveled_box_tris(tris, bx, gy + 5.5, bz, 3.0, 2.0, 0.15, 0.03, BILLBOARD_PANEL_COLOR);
+        mesh::beveled_box_tris(tris, bx, gy + 5.5, bz, 3.0, 2.0, 0.5, 0.03, BILLBOARD_PANEL_COLOR);
         walls.push(Wall { x: bx, z: bz, hw: 0.2, hd: 0.2, height: 5.0 });
     }
 
@@ -1895,23 +2040,14 @@ fn generate_decorations(
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let t = rng.range(0.2, 0.8);
-        let sx = seg.x0 + (seg.x1 - seg.x0) * t;
-        let sz = seg.z0 + (seg.z1 - seg.z0) * t;
-        let dx = seg.x1 - seg.x0;
-        let dz = seg.z1 - seg.z0;
-        let len = (dx * dx + dz * dz).sqrt();
-        if len < 0.01 { continue; }
-        let perp_x = -dz / len;
-        let perp_z = dx / len;
+        let (sx, sz) = sample_segment(seg, t);
+        let Some((perp_x, perp_z, _dir_x, _dir_z, _len)) = segment_perp(seg) else { continue };
         let offset = CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH + 0.8;
         let side = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
         let bx = sx + perp_x * offset * side;
         let bz = sz + perp_z * offset * side;
 
-        let overlaps = buildings.iter().any(|b| {
-            (bx - b.x).abs() < b.w * 0.5 + 0.5 && (bz - b.z).abs() < b.d * 0.5 + 0.5
-        });
-        if overlaps { continue; }
+        if overlaps_building(bx, bz, 0.5, buildings) { continue; }
 
         let gy = terrain.height_at(bx, bz);
         // Seat slats (3)
@@ -1937,10 +2073,7 @@ fn generate_decorations(
     for _ in 0..30 {
         let (bx, bz) = town_pos(rng);
         if on_any_road(bx, bz, net) { continue; }
-        let overlaps = buildings.iter().any(|b| {
-            (bx - b.x).abs() < b.w * 0.5 + 0.5 && (bz - b.z).abs() < b.d * 0.5 + 0.5
-        });
-        if overlaps { continue; }
+        if overlaps_building(bx, bz, 0.5, buildings) { continue; }
         let gy = terrain.height_at(bx, bz);
         let barrel_h = rng.range(0.6, 0.9);
         let barrel_r = rng.range(0.2, 0.3);
@@ -1954,10 +2087,7 @@ fn generate_decorations(
     for _ in 0..25 {
         let (cx, cz) = town_pos(rng);
         if on_any_road(cx, cz, net) { continue; }
-        let overlaps = buildings.iter().any(|b| {
-            (cx - b.x).abs() < b.w * 0.5 + 0.5 && (cz - b.z).abs() < b.d * 0.5 + 0.5
-        });
-        if overlaps { continue; }
+        if overlaps_building(cx, cz, 0.5, buildings) { continue; }
         let gy = terrain.height_at(cx, cz);
         let crate_s = rng.range(0.3, 0.5);
         mesh::box_tris(tris, cx, gy + crate_s * 0.5, cz, crate_s, crate_s, crate_s, 0xFF886644);
@@ -1974,10 +2104,7 @@ fn generate_decorations(
     for _ in 0..20 {
         let (sx, sz) = town_pos(rng);
         if on_any_road(sx, sz, net) { continue; }
-        let overlaps = buildings.iter().any(|b| {
-            (sx - b.x).abs() < b.w * 0.5 + 0.5 && (sz - b.z).abs() < b.d * 0.5 + 0.5
-        });
-        if overlaps { continue; }
+        if overlaps_building(sx, sz, 0.5, buildings) { continue; }
         let gy = terrain.height_at(sx, sz);
         let sack_r = rng.range(0.15, 0.25);
         mesh::perturbed_sphere_tris(tris, sx, gy + sack_r * 0.7, sz,
@@ -1989,8 +2116,7 @@ fn generate_decorations(
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let t = rng.range(0.2, 0.8);
-        let px = seg.x0 + (seg.x1 - seg.x0) * t;
-        let pz = seg.z0 + (seg.z1 - seg.z0) * t;
+        let (px, pz) = sample_segment(seg, t);
         let gy = terrain.height_at(px, pz);
         let num_planks = 2 + (rng.next() % 3) as i32;
         for _ in 0..num_planks {
@@ -2075,10 +2201,7 @@ fn generate_decorations(
         let cx = rng.range(-30.0, 30.0);
         let cz = rng.range(-30.0, 30.0);
         if on_any_road(cx, cz, net) { continue; }
-        let overlaps = buildings.iter().any(|b| {
-            (cx - b.x).abs() < b.w * 0.5 + 1.5 && (cz - b.z).abs() < b.d * 0.5 + 1.5
-        });
-        if overlaps { continue; }
+        if overlaps_building(cx, cz, 1.5, buildings) { continue; }
         let gy = terrain.height_at(cx, cz);
         mesh::box_tris(tris, cx, gy + 0.5, cz, 1.8, 0.08, 1.0, 0xFF775533);
         mesh::box_tris(tris, cx, gy + 0.65, cz - 0.48, 1.8, 0.22, 0.04, 0xFF664422);
@@ -2120,9 +2243,7 @@ fn generate_suburbs(
     for seg in &net.segments {
         if seg.tier != RoadTier::CarRoad { continue; }
 
-        let dx = seg.x1 - seg.x0;
-        let dz = seg.z1 - seg.z0;
-        let len = (dx * dx + dz * dz).sqrt();
+        let Some((perp_x, perp_z, dir_x, dir_z, len)) = segment_perp(seg) else { continue };
         if len < 25.0 { continue; }
 
         let mid_x = (seg.x0 + seg.x1) * 0.5;
@@ -2132,11 +2253,6 @@ fn generate_suburbs(
         if dist_from_center < 50.0 || dist_from_center > 170.0 { continue; }
         if mid_z > DOCK_Z_START - 10.0 { continue; }
 
-        let dir_x = dx / len;
-        let dir_z = dz / len;
-        let perp_x = -dir_z;
-        let perp_z = dir_x;
-
         let houses_per_side = ((len - 10.0) / 25.0).ceil() as i32;
         let houses_per_side = houses_per_side.min(3);
 
@@ -2145,24 +2261,28 @@ fn generate_suburbs(
 
             for k in 0..houses_per_side {
                 let t = 0.15 + (k as f32 + 0.5) / houses_per_side as f32 * 0.7;
-                let hx = seg.x0 + dx * t + perp_x * house_offset * side;
-                let hz = seg.z0 + dz * t + perp_z * house_offset * side;
+                let (sx, sz) = sample_segment(seg, t);
+                let hx = sx + perp_x * house_offset * side;
+                let hz = sz + perp_z * house_offset * side;
 
                 if on_river(hx, hz, river_segments) { continue; }
 
                 // Check building overlap
-                let overlaps = buildings.iter().any(|b| {
-                    (hx - b.x).abs() < 6.0 + b.w * 0.5 && (hz - b.z).abs() < 6.0 + b.d * 0.5
-                });
-                if overlaps { continue; }
+                if overlaps_building(hx, hz, 6.0, buildings) { continue; }
 
-                let gy = terrain.height_at(hx, hz);
                 let hw = rng.range(4.0, 7.0);
                 let hd = rng.range(4.0, 7.0);
                 let hh = rng.range(3.0, 5.0);
                 let color = rng.pick(&SUBURB_HOUSE_COLORS);
                 let roof_color = rng.pick(&SUBURB_ROOF_COLORS);
                 let shutter_c = SHUTTER_COLORS[k as usize % SHUTTER_COLORS.len()];
+
+                // Use minimum terrain height across footprint so house never floats
+                let (min_h, _) = building_ground_height(terrain, hx, hz, hw, hd);
+                let gy = min_h;
+
+                // Foundation skirt to seal gap between house base and terrain
+                add_building_foundation(tris, terrain, hx, gy, hz, hw, hd, color);
 
                 // House body — beveled
                 mesh::beveled_box_tris(tris, hx, gy + hh * 0.5, hz, hw, hh, hd, 0.08, color);
@@ -2175,9 +2295,9 @@ fn generate_suburbs(
                 let chim_ox = dir_x * hw * 0.2;
                 let chim_oz = dir_z * hw * 0.2;
                 mesh::box_tris(tris, hx + chim_ox, gy + hh + roof_peak * 0.6, hz + chim_oz,
-                    0.35, roof_peak * 0.8 + 0.5, 0.35, darken_color(color, 0.45));
+                    0.35, roof_peak * 0.8 + 0.5, 0.35, darken(color, 0.45));
                 mesh::box_tris(tris, hx + chim_ox, gy + hh + roof_peak * 0.6 + roof_peak * 0.4 + 0.3, hz + chim_oz,
-                    0.45, 0.08, 0.45, darken_color(color, 0.35));
+                    0.45, 0.08, 0.45, darken(color, 0.35));
 
                 // Front face direction (toward road)
                 let face_nx = -perp_x * side;
@@ -2189,13 +2309,13 @@ fn generate_suburbs(
                 let door_depth = 0.12;
                 // Door frame (slightly larger than door)
                 mesh::box_tris(tris, door_x, gy + 1.05, door_z - face_nx * door_depth * 0.3,
-                    1.1, 2.3, door_depth * 0.6, darken_color(color, 0.7));
+                    1.1, 2.3, door_depth * 0.6, darken(color, 0.7));
                 // Door itself
                 mesh::box_tris(tris, door_x, gy + 0.95, door_z - face_nx * door_depth * 0.5,
                     0.85, 1.9, door_depth, SUBURB_DOOR_COLOR);
                 // Doorstep
                 mesh::box_tris(tris, door_x + face_nz * 0.0, gy + 0.06, door_z + face_nx * 0.3,
-                    1.2, 0.12, 0.5, darken_color(color, 0.6));
+                    1.2, 0.12, 0.5, darken(color, 0.6));
 
                 // Front windows with shutters and sills
                 const SUBURB_WIN_LIT: [u32; 3] = [0x00AA7722, 0x00BB8833, 0x00997722];
@@ -2227,7 +2347,7 @@ fn generate_suburbs(
                     let sill_ox = face_nx * 0.06;
                     let sill_oz = face_nz * 0.06;
                     mesh::box_tris(tris, fwx + sill_ox, gy + hh * 0.55 - 0.45, fwz + sill_oz,
-                        0.85, 0.06, 0.08, darken_color(color, 0.7));
+                        0.85, 0.06, 0.08, darken(color, 0.7));
                     // Left shutter
                     let ls_ox = -dir_x * 0.45 + face_nx * 0.02;
                     let ls_oz = -dir_z * 0.45 + face_nz * 0.02;
@@ -2289,12 +2409,12 @@ fn generate_suburbs(
                 for ps in [-0.55f32, 0.55] {
                     let ppx = porch_x + dir_x * ps;
                     let ppz = porch_z + dir_z * ps;
-                    mesh::cylinder_tris(tris, ppx, gy + 1.05, ppz, 0.04, 2.1, 4, darken_color(color, 0.6));
+                    mesh::cylinder_tris(tris, ppx, gy + 1.05, ppz, 0.04, 2.1, 4, darken(color, 0.6));
                 }
 
                 // Foundation / base course
                 mesh::box_tris(tris, hx, gy + 0.1, hz,
-                    hw + 0.1, 0.2, hd + 0.1, darken_color(color, 0.5));
+                    hw + 0.1, 0.2, hd + 0.1, darken(color, 0.5));
 
                 // Flower box under one front window
                 if k % 2 == 0 {
@@ -2338,10 +2458,11 @@ fn generate_suburbs(
 
                 // Driveway parking spot (between house and road)
                 let drv_offset = CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH + 3.0;
-                let drv_x = seg.x0 + dx * t + perp_x * drv_offset * side;
-                let drv_z = seg.z0 + dz * t + perp_z * drv_offset * side;
+                let (ds_x, ds_z) = sample_segment(seg, t);
+                let drv_x = ds_x + perp_x * drv_offset * side;
+                let drv_z = ds_z + perp_z * drv_offset * side;
                 if !on_river(drv_x, drv_z, river_segments) {
-                    let rot = (-dx).atan2(-dz) + if side > 0.0 { 0.0 } else { std::f32::consts::PI };
+                    let rot = (-dir_x).atan2(-dir_z) + if side > 0.0 { 0.0 } else { std::f32::consts::PI };
                     parking_spots.push(ParkingSpot { x: drv_x, z: drv_z, rot_y: rot, occupied_by: None });
                 }
             }
@@ -2365,7 +2486,7 @@ fn validate_building_accessibility(world: &WorldData, net: &RoadNetwork) -> Vec<
             let sx = b.x + angle.cos() * half_extent;
             let sz = b.z + angle.sin() * half_extent;
             // Sample must be clear
-            if check_npc_walk_collision(world, sx, sz, 0.4, bi)
+            if check_walk_collision(world, sx, sz, 0.4, Some(bi))
                 || on_river_not_bridge(sx, sz, &world.river_segments, &world.bridges) {
                 continue;
             }
@@ -2391,7 +2512,7 @@ fn validate_building_accessibility(world: &WorldData, net: &RoadNetwork) -> Vec<
                 let t = s as f32 / (steps + 1) as f32;
                 let px = sx + dx * t;
                 let pz = sz + dz * t;
-                if check_npc_walk_collision(world, px, pz, 0.4, bi)
+                if check_walk_collision(world, px, pz, 0.4, Some(bi))
                     || on_river_not_bridge(px, pz, &world.river_segments, &world.bridges) {
                     blocked = true;
                     break;
@@ -2437,7 +2558,7 @@ fn apply_building_base_ao(tris: &mut Vec<WorldTri>, buildings: &[Building]) {
             // Smooth falloff: strongest at edge, fading to nothing at AO_RADIUS
             let t = min_dist / AO_RADIUS; // 0 at edge, 1 at max radius
             let factor = AO_STRENGTH + (1.0 - AO_STRENGTH) * t * t; // quadratic ease-out
-            tri.color = darken_color(tri.color, factor);
+            tri.color = darken(tri.color, factor);
         }
     }
 }
@@ -2474,15 +2595,10 @@ pub fn generate_world(game: &mut GameState) {
                     seg.x0, seg.z0, seg.x1, seg.z1, hw, 0.05, ROAD_COLOR);
                 // Center line (yellow) — raised well above road to prevent Z-fighting
                 generate_road_strip(&mut tris, &game.terrain,
-                    seg.x0, seg.z0, seg.x1, seg.z1, 0.15, 0.12, ROAD_LINE_COLOR);
+                    seg.x0, seg.z0, seg.x1, seg.z1, 0.15, 0.08, ROAD_LINE_COLOR);
 
                 // Direction for edge lines + sidewalks
-                let dx = seg.x1 - seg.x0;
-                let dz = seg.z1 - seg.z0;
-                let len = (dx * dx + dz * dz).sqrt();
-                if len > 0.01 {
-                    let perp_x = -dz / len;
-                    let perp_z = dx / len;
+                if let Some((perp_x, perp_z, _dir_x, _dir_z, _len)) = segment_perp(seg) {
 
                     // White edge lines along both sides of road
                     let edge_offset = hw - 0.2;
@@ -2562,12 +2678,9 @@ pub fn generate_world(game: &mut GameState) {
                 let seg_idx = rng.next() as usize % game.road_network.segments.len();
                 let seg = &game.road_network.segments[seg_idx];
                 let t = rng.range(0.1, 0.9);
-                let dx = seg.x1 - seg.x0;
-                let dz = seg.z1 - seg.z0;
-                let len = (dx * dx + dz * dz).sqrt();
+                let Some((perp_x, perp_z, _dir_x, _dir_z, len)) = segment_perp(seg) else { continue };
                 if len < 1.0 { continue; }
-                let perp_x = -dz / len;
-                let perp_z = dx / len;
+                let (sx, sz) = sample_segment(seg, t);
                 let road_hw = if seg.tier == RoadTier::CarRoad { CAR_ROAD_WIDTH } else { FIELD_ROAD_WIDTH };
                 let offset = if bi < NUM_BUILDINGS * 7 / 10 {
                     road_hw * 0.5 + SIDEWALK_WIDTH + rng.range(3.0, 15.0)
@@ -2575,8 +2688,8 @@ pub fn generate_world(game: &mut GameState) {
                     road_hw * 0.5 + SIDEWALK_WIDTH + rng.range(8.0, 25.0)
                 };
                 let side = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
-                x = seg.x0 + dx * t + perp_x * offset * side;
-                z = seg.z0 + dz * t + perp_z * offset * side;
+                x = sx + perp_x * offset * side;
+                z = sz + perp_z * offset * side;
             } else {
                 x = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
                 z = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
@@ -2592,8 +2705,13 @@ pub fn generate_world(game: &mut GameState) {
             { placed = true; break; }
         }
         if !placed { continue; } // skip building if couldn't find valid spot
-        let ground_y = game.terrain.height_at(x, z);
+        // Use minimum terrain height across footprint so building never floats
+        let (min_h, _max_h) = building_ground_height(&game.terrain, x, z, w, d);
+        let ground_y = min_h;
         let color = rng.pick(&BUILDING_COLORS);
+
+        // Foundation skirt to seal gap between building base and terrain
+        add_building_foundation(&mut tris, &game.terrain, x, ground_y, z, w, d, color);
 
         // --- ACU-style building with rich facade detail ---
         let bevel = 0.15_f32.min(w * 0.1).min(d * 0.1);
@@ -2710,7 +2828,7 @@ pub fn generate_world(game: &mut GameState) {
                     0.12, win_h, 0.04, shutter_color);
                 // Window sill (small ledge under window)
                 mesh::box_tris(&mut tris, wx + win_w * 0.5, wy - 0.02, front_z + 0.04,
-                    win_w + 0.2, 0.06, 0.08, darken_color(color, 0.8));
+                    win_w + 0.2, 0.06, 0.08, darken(color, 0.8));
             }
         }
 
@@ -2765,7 +2883,7 @@ pub fn generate_world(game: &mut GameState) {
                 w - 0.2, 0.06, 1.2, awning_color);
             // Awning underside brace
             mesh::box_tris(&mut tris, x, ground_y + shop_h + 0.05, shop_front_z + 0.6,
-                w - 0.3, 0.02, 1.1, darken_color(awning_color, 0.6));
+                w - 0.3, 0.02, 1.1, darken(awning_color, 0.6));
             // Hanging shop sign (on bracket from facade)
             let sign_color = SIGN_COLORS[bi % SIGN_COLORS.len()];
             let sign_x = x + w * 0.25;
@@ -2791,7 +2909,7 @@ pub fn generate_world(game: &mut GameState) {
             let bal_w = w * 0.6;
             // Platform
             mesh::box_tris(&mut tris, x, bal_y - 0.04, bal_z + bal_depth * 0.5,
-                bal_w, 0.08, bal_depth, darken_color(color, 0.75));
+                bal_w, 0.08, bal_depth, darken(color, 0.75));
             // Railing posts
             let num_posts = ((bal_w / 0.4) as i32).max(2);
             for pi in 0..=num_posts {
@@ -2831,7 +2949,7 @@ pub fn generate_world(game: &mut GameState) {
 
         // --- Roof (3 varieties) ---
         let roof_type = (bi + (color & 0xFF) as usize) % 3;
-        let roof_color = darken_color(color, 0.55);
+        let roof_color = darken(color, 0.55);
         match roof_type {
             0 => {
                 // Flat roof with parapet
@@ -2857,7 +2975,7 @@ pub fn generate_world(game: &mut GameState) {
         }
 
         // Cornice with more detail (double ledge)
-        let cornice_color = darken_color(color, 0.8);
+        let cornice_color = darken(color, 0.8);
         mesh::box_tris(&mut tris, x, ground_y + h - 0.1, z,
             w + 0.35, 0.12, d + 0.35, cornice_color);
         mesh::box_tris(&mut tris, x, ground_y + h - 0.25, z,
@@ -2874,10 +2992,10 @@ pub fn generate_world(game: &mut GameState) {
             let chim_x = x + w * 0.3;
             let chim_z = z - d * 0.3;
             mesh::box_tris(&mut tris, chim_x, ground_y + h + 1.2, chim_z,
-                0.4, 2.4, 0.4, darken_color(color, 0.5));
+                0.4, 2.4, 0.4, darken(color, 0.5));
             // Chimney cap
             mesh::box_tris(&mut tris, chim_x, ground_y + h + 2.5, chim_z,
-                0.5, 0.1, 0.5, darken_color(color, 0.4));
+                0.5, 0.1, 0.5, darken(color, 0.4));
         }
 
         game.world.buildings.push(Building { x, z, w, d, h, ground_y });
@@ -3040,14 +3158,8 @@ pub fn generate_world(game: &mut GameState) {
         if car_segments.is_empty() { break; }
         let seg = &car_segments[seg_idx];
         let t = rng.range(0.1, 0.9);
-        let sx = seg.x0 + (seg.x1 - seg.x0) * t;
-        let sz = seg.z0 + (seg.z1 - seg.z0) * t;
-        let dx = seg.x1 - seg.x0;
-        let dz = seg.z1 - seg.z0;
-        let len = (dx * dx + dz * dz).sqrt();
-        if len < 0.01 { continue; }
-        let perp_x = -dz / len;
-        let perp_z = dx / len;
+        let (sx, sz) = sample_segment(seg, t);
+        let Some((perp_x, perp_z, _dir_x, _dir_z, _len)) = segment_perp(seg) else { continue };
         let offset = CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH + 0.5;
         let side = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
         let x = sx + perp_x * offset * side;
@@ -3068,8 +3180,8 @@ pub fn generate_world(game: &mut GameState) {
         }
         // Wider base section — tapered cylinder at bottom of pole
         mesh::cylinder_tris(&mut tris, x, ground_y + 0.2, z, 0.12, 0.4, 6, LAMP_BASE_COLOR);
-        // Main cylinder pole
-        mesh::cylinder_tris(&mut tris, x, ground_y + 2.7, z, 0.06, 4.6, 6, LAMP_POLE_COLOR);
+        // Main cylinder pole (8 segments for rounder appearance)
+        mesh::cylinder_tris(&mut tris, x, ground_y + 2.7, z, 0.06, 4.6, 8, LAMP_POLE_COLOR);
 
         // Curved arm — short cylinder from pole top toward road
         let arm_dx = -perp_x * side * 0.8;
@@ -3131,14 +3243,8 @@ pub fn generate_world(game: &mut GameState) {
         let seg_idx = rng.next() as usize % car_segments.len();
         let seg = &car_segments[seg_idx];
         let t = rng.range(0.2, 0.8);
-        let sx = seg.x0 + (seg.x1 - seg.x0) * t;
-        let sz = seg.z0 + (seg.z1 - seg.z0) * t;
-        let dx = seg.x1 - seg.x0;
-        let dz = seg.z1 - seg.z0;
-        let len = (dx * dx + dz * dz).sqrt();
-        if len < 0.01 { continue; }
-        let perp_x = -dz / len;
-        let perp_z = dx / len;
+        let (sx, sz) = sample_segment(seg, t);
+        let Some((perp_x, perp_z, _dir_x, _dir_z, _len)) = segment_perp(seg) else { continue };
         let offset = CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH + 0.3;
         let side = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
         let bx = sx + perp_x * offset * side;
@@ -3208,9 +3314,9 @@ pub fn generate_world(game: &mut GameState) {
         let v1 = [b.x + shadow_hw, shadow_y, b.z - shadow_hd];
         let v2 = [b.x + shadow_hw, shadow_y, b.z + shadow_hd];
         let v3 = [b.x - shadow_hw, shadow_y, b.z + shadow_hd];
-        // CCW winding for +Y normal (upward-facing ground shadow)
-        tris.push(WorldTri { v: [v0, v2, v1], normal: [0.0, 1.0, 0.0], color: shadow_color });
-        tris.push(WorldTri { v: [v0, v3, v2], normal: [0.0, 1.0, 0.0], color: shadow_color });
+        // CW winding for Vulkan front-face (upward-facing ground shadow)
+        tris.push(WorldTri { v: [v0, v1, v2], normal: [0.0, 1.0, 0.0], color: shadow_color });
+        tris.push(WorldTri { v: [v0, v2, v3], normal: [0.0, 1.0, 0.0], color: shadow_color });
     }
 
     // NPC-owned vehicles — one per NPC, all start parked
@@ -3296,7 +3402,7 @@ pub fn generate_world(game: &mut GameState) {
             let extent = b.w.max(b.d) * 0.5 + 1.5 + rng.range(0.0, 2.0);
             let sx = b.x + angle.cos() * extent;
             let sz = b.z + angle.sin() * extent;
-            if !check_npc_walk_collision(&game.world, sx, sz, 0.4, home_idx)
+            if !check_walk_collision(&game.world, sx, sz, 0.4, Some(home_idx))
                 && !on_river_not_bridge(sx, sz, &game.world.river_segments, &game.world.bridges)
             {
                 x = sx; z = sz; spawn_ok = true; break;
@@ -3412,7 +3518,7 @@ pub fn generate_world(game: &mut GameState) {
             z = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
             attempts += 1;
             if on_any_road(x, z, &game.road_network) { continue; }
-            if check_npc_walk_collision(&game.world, x, z, 0.5, usize::MAX) { continue; }
+            if check_walk_collision(&game.world, x, z, 0.5, Some(usize::MAX)) { continue; }
             if on_river_not_bridge(x, z, &game.world.river_segments, &game.world.bridges) { continue; }
             break;
         }
@@ -3440,11 +3546,12 @@ pub fn generate_world(game: &mut GameState) {
     game.world.static_tris = tris;
 }
 
-/// Lightweight collision for NPC walking — static obstacles only (buildings, rocks, trees, lights)
-/// Skips vehicles, other NPCs, and the NPC's home building to avoid gridlock
-pub fn check_npc_walk_collision(world: &WorldData, x: f32, z: f32, radius: f32, home_idx: usize) -> bool {
+/// Unified walk collision — static obstacles (buildings, rocks, trees, lights, walls, bins, interactibles).
+/// When `home_idx` is `Some(i)`, skip building `i` and use smaller street light radius (NPC walking).
+/// When `home_idx` is `None`, check all buildings and use larger street light radius (player/vehicle).
+pub fn check_walk_collision(world: &WorldData, x: f32, z: f32, radius: f32, home_idx: Option<usize>) -> bool {
     for (bi, b) in world.buildings.iter().enumerate() {
-        if bi == home_idx { continue; }
+        if home_idx == Some(bi) { continue; }
         if x + radius > b.x - b.w * 0.5 && x - radius < b.x + b.w * 0.5
         && z + radius > b.z - b.d * 0.5 && z - radius < b.z + b.d * 0.5 {
             return true;
@@ -3465,72 +3572,17 @@ pub fn check_npc_walk_collision(world: &WorldData, x: f32, z: f32, radius: f32, 
             return true;
         }
     }
+    let light_r = if home_idx.is_none() { 0.3 } else { 0.15 };
     for sl in &world.street_lights {
         let dx = x - sl.x;
         let dz = z - sl.z;
-        let r2 = 0.15 + radius;
+        let r2 = light_r + radius;
         if dx * dx + dz * dz < r2 * r2 {
             return true;
         }
     }
     for w in &world.walls {
         if (x - w.x).abs() < w.hw + radius && (z - w.z).abs() < w.hd + radius {
-            return true;
-        }
-    }
-    for tb in &world.trash_bins {
-        if tb.carried_by.is_some() { continue; }
-        let dx = x - tb.x;
-        let dz = z - tb.z;
-        let r2 = 0.4 + radius;
-        if dx * dx + dz * dz < r2 * r2 {
-            return true;
-        }
-    }
-    for inter in &world.interactibles {
-        let dx = x - inter.x;
-        let dz = z - inter.z;
-        let r2 = 0.5 + radius;
-        if dx * dx + dz * dz < r2 * r2 {
-            return true;
-        }
-    }
-    false
-}
-
-// Collision for vehicles and player — checks buildings, rocks, trees
-pub fn check_building_collision(world: &WorldData, x: f32, z: f32, radius: f32) -> bool {
-    for b in &world.buildings {
-        if x + radius > b.x - b.w * 0.5 && x - radius < b.x + b.w * 0.5
-        && z + radius > b.z - b.d * 0.5 && z - radius < b.z + b.d * 0.5 {
-            return true;
-        }
-    }
-    for r in &world.rocks {
-        let dx = x - r.x;
-        let dz = z - r.z;
-        if dx * dx + dz * dz < (r.size + radius) * (r.size + radius) {
-            return true;
-        }
-    }
-    for t in &world.trees {
-        let dx = x - t.x;
-        let dz = z - t.z;
-        let r2 = t.trunk_radius + radius;
-        if dx * dx + dz * dz < r2 * r2 {
-            return true;
-        }
-    }
-    for w in &world.walls {
-        if (x - w.x).abs() < w.hw + radius && (z - w.z).abs() < w.hd + radius {
-            return true;
-        }
-    }
-    for sl in &world.street_lights {
-        let dx = x - sl.x;
-        let dz = z - sl.z;
-        let r2 = 0.3 + radius;
-        if dx * dx + dz * dz < r2 * r2 {
             return true;
         }
     }
