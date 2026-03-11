@@ -4,6 +4,8 @@
 // Output: debug/model_*.png
 
 use clauding::{state, render, raster, math, mesh, gpu};
+use clauding::image::save_png;
+use clauding::render::clip_to_screen;
 use clauding::rng::Rng;
 
 const VIEW_W: usize = 512;
@@ -101,15 +103,6 @@ fn render_model_normals(
 
         raster::draw_triangle(fb, &raster::ScreenTri { v: [s0, s1, s2], color });
     }
-}
-
-fn clip_to_screen(c: [f32; 4], w: f32, h: f32) -> [f32; 3] {
-    let inv_w = 1.0 / c[3];
-    [
-        (c[0] * inv_w + 1.0) * 0.5 * w,
-        (1.0 - c[1] * inv_w) * 0.5 * h,
-        c[2] * inv_w,
-    ]
 }
 
 // ── Smooth shading pipeline ────────────────────────────────────────────────
@@ -633,99 +626,6 @@ const FONT_DIGIT: [[u8; 7]; 10] = [
     [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100], // 9
 ];
 
-fn save_png(pixels: &[u32], w: usize, h: usize, path: &str) {
-    use std::io::Write;
-
-    // Build raw scanlines: filter_byte(0) + RGB per pixel, per row
-    let row_bytes = 1 + w * 3;
-    let mut raw = Vec::with_capacity(row_bytes * h);
-    for y in 0..h {
-        raw.push(0u8); // filter: None
-        for x in 0..w {
-            let c = pixels[y * w + x];
-            raw.push(((c >> 16) & 0xFF) as u8);
-            raw.push(((c >> 8) & 0xFF) as u8);
-            raw.push((c & 0xFF) as u8);
-        }
-    }
-
-    // Deflate using uncompressed (stored) blocks — valid zlib, just no compression
-    let mut deflate = Vec::with_capacity(raw.len() + raw.len() / 65535 * 5 + 20);
-    // Zlib header: CM=8 (deflate), CINFO=7 (32K window), FCHECK so header%31==0
-    deflate.push(0x78);
-    deflate.push(0x01);
-
-    // Split into stored blocks (max 65535 bytes each)
-    let mut offset = 0;
-    while offset < raw.len() {
-        let remaining = raw.len() - offset;
-        let block_len = remaining.min(65535);
-        let is_last = offset + block_len >= raw.len();
-        deflate.push(if is_last { 1 } else { 0 }); // BFINAL + BTYPE=00 (stored)
-        deflate.push((block_len & 0xFF) as u8);
-        deflate.push(((block_len >> 8) & 0xFF) as u8);
-        deflate.push((!block_len & 0xFF) as u8);
-        deflate.push(((!block_len >> 8) & 0xFF) as u8);
-        deflate.extend_from_slice(&raw[offset..offset + block_len]);
-        offset += block_len;
-    }
-
-    // Adler-32 checksum
-    let (mut s1, mut s2): (u32, u32) = (1, 0);
-    for &b in &raw {
-        s1 = (s1 + b as u32) % 65521;
-        s2 = (s2 + s1) % 65521;
-    }
-    let adler = (s2 << 16) | s1;
-    deflate.extend_from_slice(&adler.to_be_bytes());
-
-    // CRC-32 (used by PNG chunks)
-    fn crc32(data: &[u8]) -> u32 {
-        let mut crc: u32 = 0xFFFFFFFF;
-        for &b in data {
-            crc ^= b as u32;
-            for _ in 0..8 {
-                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB88320 } else { crc >> 1 };
-            }
-        }
-        !crc
-    }
-
-    fn write_chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
-        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        out.extend_from_slice(tag);
-        out.extend_from_slice(data);
-        let mut crc_data = Vec::with_capacity(4 + data.len());
-        crc_data.extend_from_slice(tag);
-        crc_data.extend_from_slice(data);
-        out.extend_from_slice(&crc32(&crc_data).to_be_bytes());
-    }
-
-    let mut png = Vec::with_capacity(deflate.len() + 100);
-    // PNG signature
-    png.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
-
-    // IHDR
-    let mut ihdr = Vec::with_capacity(13);
-    ihdr.extend_from_slice(&(w as u32).to_be_bytes());
-    ihdr.extend_from_slice(&(h as u32).to_be_bytes());
-    ihdr.push(8);  // bit depth
-    ihdr.push(2);  // color type: RGB
-    ihdr.push(0);  // compression
-    ihdr.push(0);  // filter
-    ihdr.push(0);  // interlace
-    write_chunk(&mut png, b"IHDR", &ihdr);
-
-    // IDAT
-    write_chunk(&mut png, b"IDAT", &deflate);
-
-    // IEND
-    write_chunk(&mut png, b"IEND", &[]);
-
-    let mut f = std::fs::File::create(path).unwrap();
-    f.write_all(&png).unwrap();
-}
-
 fn make_player() -> state::Player {
     state::Player {
         x: 0.0, y: 0.0, z: 0.0, rot_y: 0.0,
@@ -961,21 +861,30 @@ fn gen_bridge(tris: &mut Vec<state::WorldTri>) {
     // Railing posts + rail bars (left side)
     let rail_x_l = bridge_hw;
     let rail_x_r = -bridge_hw;
-    // Rail bars
+    // Rail bars (6 segments for visibility from all angles)
     mesh::cylinder_between(tris,
         [rail_x_l, deck_y + 0.8, -bridge_len * 0.5],
         [rail_x_l, deck_y + 0.8, bridge_len * 0.5],
-        0.04, 4, 0xFF777766);
+        0.06, 6, 0xFF777766);
     mesh::cylinder_between(tris,
         [rail_x_r, deck_y + 0.8, -bridge_len * 0.5],
         [rail_x_r, deck_y + 0.8, bridge_len * 0.5],
-        0.04, 4, 0xFF777766);
+        0.06, 6, 0xFF777766);
+    // Lower rail bars
+    mesh::cylinder_between(tris,
+        [rail_x_l, deck_y + 0.4, -bridge_len * 0.5],
+        [rail_x_l, deck_y + 0.4, bridge_len * 0.5],
+        0.04, 6, 0xFF777766);
+    mesh::cylinder_between(tris,
+        [rail_x_r, deck_y + 0.4, -bridge_len * 0.5],
+        [rail_x_r, deck_y + 0.4, bridge_len * 0.5],
+        0.04, 6, 0xFF777766);
     // Railing posts
     for pi in 0..7 {
         let t = (pi as f32 + 0.5) / 7.0 - 0.5;
         let pz = t * bridge_len;
-        mesh::cylinder_tris(tris, rail_x_l, deck_y + 0.4, pz, 0.03, 0.8, 4, 0xFF777766);
-        mesh::cylinder_tris(tris, rail_x_r, deck_y + 0.4, pz, 0.03, 0.8, 4, 0xFF777766);
+        mesh::cylinder_tris(tris, rail_x_l, deck_y + 0.4, pz, 0.04, 0.8, 6, 0xFF777766);
+        mesh::cylinder_tris(tris, rail_x_r, deck_y + 0.4, pz, 0.04, 0.8, 6, 0xFF777766);
     }
 }
 
@@ -1112,7 +1021,7 @@ fn gen_water_tower(tris: &mut Vec<state::WorldTri>) {
 
 fn gen_billboard(tris: &mut Vec<state::WorldTri>) {
     mesh::cylinder_tris(tris, 0.0, 2.5, 0.0, 0.12, 5.0, 6, 0xFF666666);
-    mesh::beveled_box_tris(tris, 0.0, 5.5, 0.0, 3.0, 2.0, 0.15, 0.03, 0xFFDDDDCC);
+    mesh::beveled_box_tris(tris, 0.0, 5.5, 0.0, 3.0, 2.0, 0.5, 0.03, 0xFFDDDDCC);
 }
 
 fn gen_tree(tris: &mut Vec<state::WorldTri>) {
@@ -1141,7 +1050,7 @@ fn gen_tree(tris: &mut Vec<state::WorldTri>) {
 }
 
 fn gen_wave_surface(tris: &mut Vec<state::WorldTri>) {
-    mesh::wave_surface_tris(tris, -5.0, 5.0, -3.0, 3.0, 0.0, 0.12, 0.5, 10, 6, 0xFF224466);
+    mesh::wave_surface_tris(tris, -5.0, 5.0, -3.0, 3.0, 0.0, 0.5, 0.5, 10, 6, 0xFF224466);
 }
 
 fn gen_dumpster(tris: &mut Vec<state::WorldTri>) {
@@ -1150,12 +1059,27 @@ fn gen_dumpster(tris: &mut Vec<state::WorldTri>) {
 }
 
 fn gen_street_light(tris: &mut Vec<state::WorldTri>) {
-    // Pole
-    mesh::cylinder_tris(tris, 0.0, 2.0, 0.0, 0.05, 4.0, 6, 0xFF666666);
+    let base_color = 0xFF555555u32;
+    let pole_color = 0xFF666666u32;
+    // Base mounting plate (flat disc)
+    for pi in 0..8u32 {
+        let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
+        let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
+        tris.push(state::WorldTri {
+            v: [[0.0, 0.04, 0.0],
+                [a1.cos() * 0.25, 0.04, a1.sin() * 0.25],
+                [a0.cos() * 0.25, 0.04, a0.sin() * 0.25]],
+            normal: [0.0, 1.0, 0.0], color: base_color,
+        });
+    }
+    // Wider base section
+    mesh::cylinder_tris(tris, 0.0, 0.2, 0.0, 0.12, 0.4, 6, base_color);
+    // Main pole (8 segments for rounder appearance)
+    mesh::cylinder_tris(tris, 0.0, 2.5, 0.0, 0.06, 4.2, 8, pole_color);
     // Curved arm (cylinder between)
-    mesh::cylinder_between(tris, [0.0, 4.0, 0.0], [0.8, 3.8, 0.0], 0.03, 4, 0xFF666666);
+    mesh::cylinder_between(tris, [0.0, 4.6, 0.0], [0.8, 4.7, 0.0], 0.03, 4, pole_color);
     // Lamp globe
-    mesh::sphere_tris(tris, 0.8, 3.7, 0.0, 0.15, 1, 0xFFFFEE88);
+    mesh::sphere_tris(tris, 0.8, 4.7, 0.0, 0.2, 1, 0xFFFFEE88);
 }
 
 fn gen_crane(tris: &mut Vec<state::WorldTri>) {

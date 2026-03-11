@@ -17,91 +17,11 @@
 //
 // Output: debug/screenshot*.png
 
-use clauding::{state, world, render, raster, math, gpu, neat, npc, vehicle, collision, combat};
+use clauding::{state, render, raster, gpu, npc, vehicle, collision, combat};
+use clauding::image::save_png;
 
 const W: usize = 1920;
 const H: usize = 1080;
-
-fn bytemuck_cast(data: &[f32]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) }
-}
-
-fn save_png(pixels: &[u32], w: usize, h: usize, path: &str) {
-    use std::io::Write;
-
-    let row_bytes = 1 + w * 3;
-    let mut raw = Vec::with_capacity(row_bytes * h);
-    for y in 0..h {
-        raw.push(0u8);
-        for x in 0..w {
-            let c = pixels[y * w + x];
-            raw.push(((c >> 16) & 0xFF) as u8);
-            raw.push(((c >> 8) & 0xFF) as u8);
-            raw.push((c & 0xFF) as u8);
-        }
-    }
-
-    let mut deflate = Vec::with_capacity(raw.len() + raw.len() / 65535 * 5 + 20);
-    deflate.push(0x78);
-    deflate.push(0x01);
-
-    let mut offset = 0;
-    while offset < raw.len() {
-        let remaining = raw.len() - offset;
-        let block_len = remaining.min(65535);
-        let is_last = offset + block_len >= raw.len();
-        deflate.push(if is_last { 1 } else { 0 });
-        deflate.push((block_len & 0xFF) as u8);
-        deflate.push(((block_len >> 8) & 0xFF) as u8);
-        deflate.push((!block_len & 0xFF) as u8);
-        deflate.push(((!block_len >> 8) & 0xFF) as u8);
-        deflate.extend_from_slice(&raw[offset..offset + block_len]);
-        offset += block_len;
-    }
-
-    let (mut s1, mut s2): (u32, u32) = (1, 0);
-    for &b in &raw {
-        s1 = (s1 + b as u32) % 65521;
-        s2 = (s2 + s1) % 65521;
-    }
-    deflate.extend_from_slice(&((s2 << 16) | s1).to_be_bytes());
-
-    fn crc32(data: &[u8]) -> u32 {
-        let mut crc: u32 = 0xFFFFFFFF;
-        for &b in data {
-            crc ^= b as u32;
-            for _ in 0..8 {
-                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB88320 } else { crc >> 1 };
-            }
-        }
-        !crc
-    }
-
-    fn write_chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
-        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        out.extend_from_slice(tag);
-        out.extend_from_slice(data);
-        let mut crc_data = Vec::with_capacity(4 + data.len());
-        crc_data.extend_from_slice(tag);
-        crc_data.extend_from_slice(data);
-        out.extend_from_slice(&crc32(&crc_data).to_be_bytes());
-    }
-
-    let mut png = Vec::with_capacity(deflate.len() + 100);
-    png.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
-
-    let mut ihdr = Vec::with_capacity(13);
-    ihdr.extend_from_slice(&(w as u32).to_be_bytes());
-    ihdr.extend_from_slice(&(h as u32).to_be_bytes());
-    ihdr.push(8); ihdr.push(2); ihdr.push(0); ihdr.push(0); ihdr.push(0);
-    write_chunk(&mut png, b"IHDR", &ihdr);
-    write_chunk(&mut png, b"IDAT", &deflate);
-    write_chunk(&mut png, b"IEND", &[]);
-
-    let mut f = std::fs::File::create(path).unwrap();
-    f.write_all(&png).unwrap();
-    eprintln!("Saved: {} ({}x{}, {:.1}MB)", path, w, h, png.len() as f64 / 1_000_000.0);
-}
 
 struct CameraSpec {
     pos: [f32; 3],
@@ -133,13 +53,7 @@ fn render_screenshot(
     );
 
     // Build VP matrix + lighting push constants
-    let aspect = fb.w as f32 / fb.h as f32;
-    let view = math::m4_look_at(eye, target, [0.0, 1.0, 0.0]);
-    let proj = math::m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.1, 500.0);
-    let vp = math::m4_mul(&proj, &view);
-    let push = render::gpu_push_constants(time_of_day, eye, target, &vp);
-
-    let clear = render::sky_color_f32(time_of_day);
+    let (_vp, push, clear) = render::frame_setup(fb.w, fb.h, eye, target, time_of_day);
     ctx.render_frame(dynamic_verts, &push, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
 
     // The GPU pipeline uses double-buffering — render a second frame to get actual output
@@ -157,6 +71,7 @@ fn main() {
     let mut orbit_count = 8;
     let mut time_of_day = 10.0_f32; // 10am default (good lighting)
     let mut sim_ticks: u32 = 0;
+    let mut custom_name: Option<String> = None;
     let mut model_type = String::new();
     let mut around_pos: Option<[f32; 3]> = None;
     let mut world_seed: u64 = 42;
@@ -204,6 +119,7 @@ fn main() {
                 }
             }
             "--timelapse" => { mode = "timelapse"; }
+            "--bulk" => { mode = "bulk"; }
             "--around" => {
                 mode = "around";
                 if i + 3 < args.len() {
@@ -248,6 +164,12 @@ fn main() {
                 show_player = true;
                 mode = "custom";
             }
+            "--name" => {
+                if i + 1 < args.len() {
+                    custom_name = Some(args[i+1].clone());
+                    i += 1;
+                }
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: screenshot [OPTIONS]");
                 eprintln!("  --pos X Y Z        Camera position (default: 0 50 -50)");
@@ -271,43 +193,11 @@ fn main() {
     }
 
     // Init GPU
-    let mut ctx = match gpu::GpuContext::try_new() {
-        Some(c) => {
-            eprintln!("GPU: {}", c.device_name);
-            let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
-            let buf = c.create_buffer(data.len() * 4);
-            c.upload(&buf, bytemuck_cast(&data));
-            c.free_buffer(buf);
-            c
-        }
-        None => {
-            eprintln!("Error: No Vulkan GPU available. Screenshot tool requires GPU.");
-            return;
-        }
-    };
-
-    // Init GPU graphics pipeline
-    ctx.init_graphics(W as u32, H as u32);
-    if !ctx.has_graphics() {
-        eprintln!("Error: GPU graphics pipeline failed to initialize.");
-        return;
-    }
-    eprintln!("GPU graphics pipeline ready ({}x{})", W, H);
+    let mut ctx = gpu::GpuContext::init_or_exit(W as u32, H as u32);
 
     // Generate world
     eprintln!("Seed: {}", world_seed);
-    let mut game = state::GameState::new(W, H, world_seed);
-    world::generate_world(&mut game);
-
-    // Load NEAT population
-    if let Some(loaded) = neat::load_population("/tmp/clauding_neat.bin", state::NUM_NPCS) {
-        game.neat_population = loaded;
-    } else if let Some(loaded) = neat::load_population("neat_trained.bin", state::NUM_NPCS) {
-        game.neat_population = loaded;
-    }
-    game.neat_brains = game.neat_population.genomes.iter()
-        .map(|g| neat::NeatBrain::compile(g))
-        .collect();
+    let mut game = state::GameState::init(W, H, world_seed);
 
     game.time_of_day = time_of_day;
 
@@ -396,7 +286,11 @@ fn main() {
 
             let cam = CameraSpec { pos, look };
             render_screenshot(&mut ctx, &game, &cam, time_of_day, &mut fb, &mut dynamic_verts, &mut render_scratch);
-            save_png(&fb.pixels, W, H, "debug/screenshot.png");
+            let path = match &custom_name {
+                Some(n) => format!("debug/screenshot_{}.png", n),
+                None => "debug/screenshot.png".to_string(),
+            };
+            save_png(&fb.pixels, W, H, &path);
         }
         "orbit" => {
             for i in 0..orbit_count {
@@ -660,6 +554,176 @@ fn main() {
                 render_screenshot(&mut ctx, &game, &cam, time_of_day, &mut fb, &mut dynamic_verts, &mut render_scratch);
                 save_png(&fb.pixels, W, H, &format!("debug/around_{:02}.png", idx));
             }
+        }
+        "bulk" => {
+            // Generate 100+ screenshots from many world locations, angles, and times
+            let mut bulk_shots: Vec<(&str, [f32; 3], [f32; 3], f32)> = Vec::new();
+
+            // Overhead survey (8 shots at different positions)
+            for (i, &(x, z)) in [(0.0,0.0), (50.0,0.0), (-50.0,0.0), (0.0,50.0),
+                (0.0,-50.0), (80.0,80.0), (-80.0,-80.0), (0.0,150.0)].iter().enumerate() {
+                let name: &str = match i {
+                    0 => "bulk_overhead_center",
+                    1 => "bulk_overhead_east",
+                    2 => "bulk_overhead_west",
+                    3 => "bulk_overhead_south",
+                    4 => "bulk_overhead_north",
+                    5 => "bulk_overhead_se",
+                    6 => "bulk_overhead_nw",
+                    7 => "bulk_overhead_docks",
+                    _ => "bulk_overhead",
+                };
+                bulk_shots.push((name, [x, 60.0, z - 40.0], [x, 0.0, z], 10.0));
+            }
+
+            // Street-level walks (16 shots)
+            let street_views: Vec<(&str, [f32;3], [f32;3])> = vec![
+                ("bulk_street_center_n", [0.0, 2.0, -5.0], [0.0, 2.0, 20.0]),
+                ("bulk_street_center_s", [0.0, 2.0, 5.0], [0.0, 2.0, -20.0]),
+                ("bulk_street_center_e", [5.0, 2.0, 0.0], [30.0, 2.0, 0.0]),
+                ("bulk_street_center_w", [-5.0, 2.0, 0.0], [-30.0, 2.0, 0.0]),
+                ("bulk_street_road1", [30.0, 2.0, 10.0], [50.0, 2.0, 10.0]),
+                ("bulk_street_road2", [-30.0, 2.0, -10.0], [-50.0, 2.0, 0.0]),
+                ("bulk_street_road3", [10.0, 2.0, 40.0], [30.0, 2.0, 50.0]),
+                ("bulk_street_alley", [15.0, 2.0, -15.0], [25.0, 2.0, -5.0]),
+                ("bulk_street_suburb1", [-60.0, 2.0, -50.0], [-40.0, 2.0, -40.0]),
+                ("bulk_street_suburb2", [60.0, 2.0, -60.0], [40.0, 2.0, -50.0]),
+                ("bulk_street_docks1", [0.0, 2.0, 180.0], [20.0, 2.0, 200.0]),
+                ("bulk_street_docks2", [-20.0, 2.0, 190.0], [0.0, 2.0, 200.0]),
+                ("bulk_street_bridge1", [10.0, 3.0, 35.0], [20.0, 2.0, 45.0]),
+                ("bulk_street_bridge2", [-10.0, 3.0, 45.0], [-20.0, 2.0, 35.0]),
+                ("bulk_street_river1", [30.0, 2.0, 30.0], [20.0, 1.0, 40.0]),
+                ("bulk_street_river2", [-30.0, 2.0, 50.0], [-20.0, 1.0, 40.0]),
+            ];
+            for (name, pos, look) in &street_views {
+                bulk_shots.push((name, *pos, *look, 10.0));
+            }
+
+            // Mid-level views (12 shots)
+            let mid_views: Vec<(&str, [f32;3], [f32;3])> = vec![
+                ("bulk_mid_downtown", [0.0, 15.0, -30.0], [0.0, 0.0, 0.0]),
+                ("bulk_mid_intersection", [20.0, 12.0, 10.0], [10.0, 0.0, 20.0]),
+                ("bulk_mid_parking_lot", [40.0, 10.0, 15.0], [35.0, 0.0, 25.0]),
+                ("bulk_mid_buildings_e", [60.0, 15.0, 0.0], [40.0, 5.0, 10.0]),
+                ("bulk_mid_buildings_w", [-60.0, 15.0, 0.0], [-40.0, 5.0, 10.0]),
+                ("bulk_mid_river_cross", [0.0, 20.0, 40.0], [0.0, 0.0, 45.0]),
+                ("bulk_mid_bridge_side", [25.0, 8.0, 40.0], [10.0, 2.0, 40.0]),
+                ("bulk_mid_dockyard", [20.0, 20.0, 180.0], [0.0, 5.0, 200.0]),
+                ("bulk_mid_outer_ne", [80.0, 15.0, -80.0], [60.0, 0.0, -60.0]),
+                ("bulk_mid_outer_sw", [-80.0, 15.0, 80.0], [-60.0, 0.0, 60.0]),
+                ("bulk_mid_panorama_n", [0.0, 25.0, -100.0], [0.0, 0.0, 0.0]),
+                ("bulk_mid_panorama_s", [0.0, 25.0, 100.0], [0.0, 0.0, 0.0]),
+            ];
+            for (name, pos, look) in &mid_views {
+                bulk_shots.push((name, *pos, *look, 10.0));
+            }
+
+            // Close-ups of specific features (12 shots)
+            let closeup_views: Vec<(&str, [f32;3], [f32;3])> = vec![
+                ("bulk_closeup_bldg1", [20.0, 5.0, -15.0], [25.0, 4.0, -10.0]),
+                ("bulk_closeup_bldg2", [-20.0, 5.0, 15.0], [-15.0, 4.0, 20.0]),
+                ("bulk_closeup_vehicle1", [15.0, 2.0, -2.0], [15.0, 1.0, 2.0]),
+                ("bulk_closeup_vehicle2", [35.0, 3.0, 8.0], [40.0, 1.0, 12.0]),
+                ("bulk_closeup_tree", [10.0, 3.0, -8.0], [12.0, 3.0, -5.0]),
+                ("bulk_closeup_streetlight", [5.0, 4.0, -3.0], [5.0, 6.0, 0.0]),
+                ("bulk_closeup_npc1", [2.0, 2.0, 3.0], [0.0, 1.5, 5.0]),
+                ("bulk_closeup_npc2", [-5.0, 2.0, -8.0], [-3.0, 1.5, -6.0]),
+                ("bulk_closeup_items", [8.0, 1.5, 6.0], [10.0, 0.5, 8.0]),
+                ("bulk_closeup_bin", [-8.0, 2.0, 4.0], [-6.0, 1.0, 6.0]),
+                ("bulk_closeup_roof", [25.0, 12.0, -20.0], [25.0, 8.0, -18.0]),
+                ("bulk_closeup_ground", [0.0, 1.0, 0.0], [3.0, 0.0, 3.0]),
+            ];
+            for (name, pos, look) in &closeup_views {
+                bulk_shots.push((name, *pos, *look, 10.0));
+            }
+
+            // Time-of-day variations at the same downtown viewpoint (8 shots)
+            let tod_times = [0.0, 3.0, 5.5, 7.0, 12.0, 16.0, 19.0, 21.0];
+            let tod_names = ["bulk_tod_midnight", "bulk_tod_3am", "bulk_tod_predawn",
+                "bulk_tod_sunrise", "bulk_tod_noon", "bulk_tod_afternoon",
+                "bulk_tod_sunset", "bulk_tod_9pm"];
+            for (name, t) in tod_names.iter().zip(tod_times.iter()) {
+                bulk_shots.push((name, [0.0, 20.0, -40.0], [0.0, 0.0, 0.0], *t));
+            }
+
+            // Dramatic angles (8 shots)
+            let dramatic: Vec<(&str, [f32;3], [f32;3], f32)> = vec![
+                ("bulk_dramatic_low_angle", [5.0, 0.5, -10.0], [0.0, 8.0, 0.0], 10.0),
+                ("bulk_dramatic_birds_eye", [0.0, 120.0, 0.0], [0.0, 0.0, 10.0], 10.0),
+                ("bulk_dramatic_sunset_silhouette", [0.0, 5.0, -80.0], [0.0, 5.0, 0.0], 18.5),
+                ("bulk_dramatic_dawn_glow", [-40.0, 3.0, -20.0], [0.0, 5.0, 0.0], 6.0),
+                ("bulk_dramatic_night_street", [10.0, 2.5, -5.0], [20.0, 2.0, 10.0], 22.0),
+                ("bulk_dramatic_dusk_river", [0.0, 5.0, 35.0], [0.0, 1.0, 45.0], 19.5),
+                ("bulk_dramatic_long_road", [0.0, 3.0, -50.0], [0.0, 2.0, 50.0], 14.0),
+                ("bulk_dramatic_horizon", [0.0, 2.0, -120.0], [0.0, 2.0, 0.0], 10.0),
+            ];
+            for (name, pos, look, t) in &dramatic {
+                bulk_shots.push((name, *pos, *look, *t));
+            }
+
+            // Quarter-circle sweeps around center (16 shots)
+            for i in 0..16 {
+                let angle = (i as f32 / 16.0) * std::f32::consts::TAU;
+                let r = 50.0;
+                let pos = [angle.cos() * r, 15.0, angle.sin() * r];
+                let look = [0.0, 2.0, 0.0];
+                // Use leaked string so it lives long enough
+                let name_str = format!("bulk_sweep_{:02}", i);
+                let name_leaked: &'static str = Box::leak(name_str.into_boxed_str());
+                bulk_shots.push((name_leaked, pos, look, 10.0));
+            }
+
+            // Distant fog views (4 shots)
+            let fog_views: Vec<(&str, [f32;3], [f32;3], f32)> = vec![
+                ("bulk_fog_north", [0.0, 10.0, -200.0], [0.0, 5.0, 0.0], 10.0),
+                ("bulk_fog_south", [0.0, 10.0, 200.0], [0.0, 5.0, 0.0], 10.0),
+                ("bulk_fog_east", [200.0, 10.0, 0.0], [0.0, 5.0, 0.0], 10.0),
+                ("bulk_fog_west", [-200.0, 10.0, 0.0], [0.0, 5.0, 0.0], 10.0),
+            ];
+            for (name, pos, look, t) in &fog_views {
+                bulk_shots.push((name, *pos, *look, *t));
+            }
+
+            // High altitude views (4 shots)
+            let high_views: Vec<(&str, [f32;3], [f32;3], f32)> = vec![
+                ("bulk_high_center", [0.0, 150.0, -50.0], [0.0, 0.0, 30.0], 10.0),
+                ("bulk_high_docks", [0.0, 100.0, 100.0], [0.0, 0.0, 180.0], 10.0),
+                ("bulk_high_suburbs", [-60.0, 80.0, -80.0], [-40.0, 0.0, -40.0], 10.0),
+                ("bulk_high_overview", [50.0, 200.0, 50.0], [0.0, 0.0, 50.0], 10.0),
+            ];
+            for (name, pos, look, t) in &high_views {
+                bulk_shots.push((name, *pos, *look, *t));
+            }
+
+            // Night city shots (8 shots)
+            let night_views: Vec<(&str, [f32;3], [f32;3])> = vec![
+                ("bulk_night_overhead", [0.0, 60.0, -30.0], [0.0, 0.0, 0.0]),
+                ("bulk_night_street1", [0.0, 2.0, -5.0], [0.0, 2.0, 20.0]),
+                ("bulk_night_street2", [20.0, 2.0, 5.0], [40.0, 2.0, 15.0]),
+                ("bulk_night_buildings", [30.0, 8.0, -20.0], [20.0, 5.0, -10.0]),
+                ("bulk_night_river", [0.0, 5.0, 35.0], [10.0, 1.0, 45.0]),
+                ("bulk_night_docks", [0.0, 15.0, 180.0], [10.0, 5.0, 200.0]),
+                ("bulk_night_suburb", [-50.0, 10.0, -40.0], [-30.0, 2.0, -30.0]),
+                ("bulk_night_panorama", [0.0, 30.0, -80.0], [0.0, 5.0, 0.0]),
+            ];
+            for (name, pos, look) in &night_views {
+                bulk_shots.push((name, *pos, *look, 1.0));
+            }
+
+            eprintln!("Bulk mode: rendering {} screenshots...", bulk_shots.len());
+            for (idx, (name, pos, look, t)) in bulk_shots.iter().enumerate() {
+                render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
+                ctx.upload_static_vertices(&gpu_static_verts);
+
+                let cam = CameraSpec { pos: *pos, look: *look };
+                render_screenshot(&mut ctx, &game, &cam, *t, &mut fb, &mut dynamic_verts, &mut render_scratch);
+                let path = format!("debug/{}.png", name);
+                save_png(&fb.pixels, W, H, &path);
+                if (idx + 1) % 10 == 0 {
+                    eprintln!("  {}/{} rendered...", idx + 1, bulk_shots.len());
+                }
+            }
+            eprintln!("Saved {} bulk screenshots to debug/bulk_*.png", bulk_shots.len());
         }
         _ => {
             // Default: overhead + street level + closeup
