@@ -722,8 +722,8 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
             let n2 = avg_normal3(vert_normals[i00], vert_normals[i11], vert_normals[i01]);
 
             // CCW winding for Vulkan front-face (VK_FRONT_FACE_COUNTER_CLOCKWISE)
-            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: c1 });
-            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: c2 });
+            mesh::push_tri(tris, v00, v11, v10, n1, c1);
+            mesh::push_tri(tris, v00, v01, v11, n2, c2);
         }
     }
 
@@ -1360,9 +1360,9 @@ fn generate_river(
 
                     // CCW winding for VK_FRONT_FACE_COUNTER_CLOCKWISE
                     let n1 = mesh::tri_normal(v00, v11, v10);
-                    tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
+                    mesh::push_tri(tris, v00, v11, v10, n1, color);
                     let n2 = mesh::tri_normal(v00, v01, v11);
-                    tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
+                    mesh::push_tri(tris, v00, v01, v11, n2, color);
                 }
             }
         }
@@ -1442,14 +1442,14 @@ fn generate_river(
                         // CCW winding depends on side: mirrored grid flips winding
                         if side > 0.0 {
                             let n1 = mesh::tri_normal(v00, v11, v10);
-                            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color });
+                            mesh::push_tri(tris, v00, v11, v10, n1, color);
                             let n2 = mesh::tri_normal(v00, v01, v11);
-                            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color });
+                            mesh::push_tri(tris, v00, v01, v11, n2, color);
                         } else {
                             let n1 = mesh::tri_normal(v00, v10, v11);
-                            tris.push(WorldTri { v: [v00, v10, v11], normal: n1, color });
+                            mesh::push_tri(tris, v00, v10, v11, n1, color);
                             let n2 = mesh::tri_normal(v00, v11, v01);
-                            tris.push(WorldTri { v: [v00, v11, v01], normal: n2, color });
+                            mesh::push_tri(tris, v00, v11, v01, n2, color);
                         }
                     }
                 }
@@ -1475,26 +1475,10 @@ fn generate_river(
                     let pa = peb_next(&mut ph) * std::f32::consts::TAU;
                     let (ps, pc) = (pa.sin(), pa.cos());
                     let pn = [0.0_f32, 1.0, 0.0];
-                    tris.push(WorldTri { v: [
-                        [px, py, pz],
-                        [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
-                        [px + pc * pr, py, pz + ps * pr],
-                    ], normal: pn, color: peb_color });
-                    tris.push(WorldTri { v: [
-                        [px, py, pz],
-                        [px - pc * pr, py, pz - ps * pr],
-                        [px - ps * pr * 0.6, py, pz + pc * pr * 0.6],
-                    ], normal: pn, color: peb_color });
-                    tris.push(WorldTri { v: [
-                        [px, py, pz],
-                        [px + ps * pr * 0.6, py, pz - pc * pr * 0.6],
-                        [px - pc * pr, py, pz - ps * pr],
-                    ], normal: pn, color: peb_color });
-                    tris.push(WorldTri { v: [
-                        [px, py, pz],
-                        [px + pc * pr, py, pz + ps * pr],
-                        [px + ps * pr * 0.6, py, pz - pc * pr * 0.6],
-                    ], normal: pn, color: peb_color });
+                    mesh::push_tri(tris, [px, py, pz], [px - ps * pr * 0.6, py, pz + pc * pr * 0.6], [px + pc * pr, py, pz + ps * pr], pn, peb_color);
+                    mesh::push_tri(tris, [px, py, pz], [px - pc * pr, py, pz - ps * pr], [px - ps * pr * 0.6, py, pz + pc * pr * 0.6], pn, peb_color);
+                    mesh::push_tri(tris, [px, py, pz], [px + ps * pr * 0.6, py, pz - pc * pr * 0.6], [px - pc * pr, py, pz - ps * pr], pn, peb_color);
+                    mesh::push_tri(tris, [px, py, pz], [px + pc * pr, py, pz + ps * pr], [px + ps * pr * 0.6, py, pz - pc * pr * 0.6], pn, peb_color);
                 }
             }
         }
@@ -1789,12 +1773,7 @@ fn generate_parking_lots(
         for pi in 0..8u32 {
             let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
             let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
-            tris.push(WorldTri {
-                v: [[lx, lbase_y, lz],
-                    [lx + a1.cos() * 0.25, lbase_y, lz + a1.sin() * 0.25],
-                    [lx + a0.cos() * 0.25, lbase_y, lz + a0.sin() * 0.25]],
-                normal: [0.0, 1.0, 0.0], color: LAMP_BASE_COLOR,
-            });
+            mesh::push_tri(tris, [lx, lbase_y, lz], [lx + a1.cos() * 0.25, lbase_y, lz + a1.sin() * 0.25], [lx + a0.cos() * 0.25, lbase_y, lz + a0.sin() * 0.25], [0.0, 1.0, 0.0], LAMP_BASE_COLOR);
         }
         // Wider base section
         mesh::cylinder_tris(tris, lx, lgy + 0.2, lz, 0.12, 0.4, 6, LAMP_BASE_COLOR);
@@ -1808,12 +1787,7 @@ fn generate_parking_lots(
         for pi in 0..8u32 {
             let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
             let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
-            tris.push(WorldTri {
-                v: [[lx, pool_y, lz],
-                    [lx + a1.cos() * 3.0, pool_y, lz + a1.sin() * 3.0],
-                    [lx + a0.cos() * 3.0, pool_y, lz + a0.sin() * 3.0]],
-                normal: [0.0, 1.0, 0.0], color: pool_color,
-            });
+            mesh::push_tri(tris, [lx, pool_y, lz], [lx + a1.cos() * 3.0, pool_y, lz + a1.sin() * 3.0], [lx + a0.cos() * 3.0, pool_y, lz + a0.sin() * 3.0], [0.0, 1.0, 0.0], pool_color);
         }
         street_lights.push(StreetLight { x: lx, z: lz });
     }
@@ -3154,12 +3128,7 @@ pub fn generate_world(game: &mut GameState) {
         for pi in 0..8u32 {
             let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
             let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
-            tris.push(WorldTri {
-                v: [[x, base_y, z],
-                    [x + a1.cos() * 0.25, base_y, z + a1.sin() * 0.25],
-                    [x + a0.cos() * 0.25, base_y, z + a0.sin() * 0.25]],
-                normal: [0.0, 1.0, 0.0], color: LAMP_BASE_COLOR,
-            });
+            mesh::push_tri(&mut tris, [x, base_y, z], [x + a1.cos() * 0.25, base_y, z + a1.sin() * 0.25], [x + a0.cos() * 0.25, base_y, z + a0.sin() * 0.25], [0.0, 1.0, 0.0], LAMP_BASE_COLOR);
         }
         // Wider base section — tapered cylinder at bottom of pole
         mesh::cylinder_tris(&mut tris, x, ground_y + 0.2, z, 0.12, 0.4, 6, LAMP_BASE_COLOR);
@@ -3188,12 +3157,7 @@ pub fn generate_world(game: &mut GameState) {
         for pi in 0..8u32 {
             let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
             let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
-            tris.push(WorldTri {
-                v: [[pool_x, pool_y, pool_z],
-                    [pool_x + a1.cos() * pool_r, pool_y, pool_z + a1.sin() * pool_r],
-                    [pool_x + a0.cos() * pool_r, pool_y, pool_z + a0.sin() * pool_r]],
-                normal: [0.0, 1.0, 0.0], color: pool_color,
-            });
+            mesh::push_tri(&mut tris, [pool_x, pool_y, pool_z], [pool_x + a1.cos() * pool_r, pool_y, pool_z + a1.sin() * pool_r], [pool_x + a0.cos() * pool_r, pool_y, pool_z + a0.sin() * pool_r], [0.0, 1.0, 0.0], pool_color);
         }
 
         game.world.street_lights.push(StreetLight { x, z });

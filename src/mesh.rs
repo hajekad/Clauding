@@ -24,7 +24,7 @@ fn quality_segments(base: usize) -> usize {
     base * SEGMENT_MULTIPLIER.with(|c| c.get()) as usize
 }
 
-/// Compute normalized cross product of triangle edges (CCW winding)
+/// Compute normalized cross product of triangle edges
 pub fn tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
     let e1 = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
     let e2 = [c[0]-a[0], c[1]-a[1], c[2]-a[2]];
@@ -33,14 +33,20 @@ pub fn tri_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
     if l < 1e-10 { [0.0, 1.0, 0.0] } else { [n[0]/l, n[1]/l, n[2]/l] }
 }
 
-/// Push a quad as 2 tris (a→b→c, a→c→d with outward normal from cross(b-a, c-a))
+/// Push a single triangle. Central function for all triangle emission.
+#[inline(always)]
+pub fn push_tri(tris: &mut Vec<WorldTri>, a: [f32;3], b: [f32;3], c: [f32;3], normal: [f32;3], color: u32) {
+    tris.push(WorldTri { v: [a, b, c], normal, color });
+}
+
+/// Push a quad as 2 tris (a,b,c) + (a,c,d). Normal derived from first triangle.
 pub fn push_quad(tris: &mut Vec<WorldTri>, a: [f32;3], b: [f32;3], c: [f32;3], d: [f32;3], color: u32) {
     let normal = tri_normal(a, b, c);
     tris.push(WorldTri { v: [a, b, c], normal, color });
     tris.push(WorldTri { v: [a, c, d], normal, color });
 }
 
-/// Push a quad with an explicit normal (winding: a→b→c, a→c→d)
+/// Push a quad with an explicit normal: (a,b,c) + (a,c,d)
 pub fn push_quad_n(tris: &mut Vec<WorldTri>, a: [f32;3], b: [f32;3], c: [f32;3], d: [f32;3], normal: [f32;3], color: u32) {
     tris.push(WorldTri { v: [a, b, c], normal, color });
     tris.push(WorldTri { v: [a, c, d], normal, color });
@@ -76,13 +82,10 @@ pub fn cylinder_tris(
         // Side quad (2 tris) — go up first, then around for outward normals
         push_quad(tris, bt0, tp0, tp1, bt1, color);
 
-        // Top fan tri (CCW from above)
-        let n_top = [0.0, 1.0, 0.0];
-        tris.push(WorldTri { v: [top_center, tp1, tp0], normal: n_top, color });
-
-        // Bottom fan tri (CCW from below)
-        let n_bot = [0.0, -1.0, 0.0];
-        tris.push(WorldTri { v: [bot_center, bt0, bt1], normal: n_bot, color });
+        // Top fan tri
+        push_tri(tris, top_center, tp1, tp0, [0.0, 1.0, 0.0], color);
+        // Bottom fan tri
+        push_tri(tris, bot_center, bt0, bt1, [0.0, -1.0, 0.0], color);
     }
 }
 
@@ -128,11 +131,9 @@ pub fn cylinder_between(
         // Side quad — go along axis first, then around for outward normals
         push_quad(tris, b0, t0, t1, b1, color);
 
-        // End caps (CCW from outside)
-        let n_cap0 = [-dir[0], -dir[1], -dir[2]];
-        tris.push(WorldTri { v: [center0, b0, b1], normal: n_cap0, color });
-        let n_cap1 = dir;
-        tris.push(WorldTri { v: [center1, t1, t0], normal: n_cap1, color });
+        // End caps
+        push_tri(tris, center0, b0, b1, [-dir[0], -dir[1], -dir[2]], color);
+        push_tri(tris, center1, t1, t0, dir, color);
     }
 }
 
@@ -160,13 +161,11 @@ pub fn cone_tris(
         let b0 = [cx + r*c0, cy - hh, cz + r*s0];
         let b1 = [cx + r*c1, cy - hh, cz + r*s1];
 
-        // Side tri (CCW from outside)
+        // Side tri
         let normal = tri_normal(b0, apex, b1);
-        tris.push(WorldTri { v: [b0, apex, b1], normal, color });
-
-        // Base tri (CCW from below)
-        let n_bot = [0.0, -1.0, 0.0];
-        tris.push(WorldTri { v: [bot_center, b0, b1], normal: n_bot, color });
+        push_tri(tris, b0, apex, b1, normal, color);
+        // Base tri
+        push_tri(tris, bot_center, b0, b1, [0.0, -1.0, 0.0], color);
     }
 }
 
@@ -250,7 +249,7 @@ pub fn sphere_tris(
         let v1 = [cx + verts[f[1]][0]*r, cy + verts[f[1]][1]*r, cz + verts[f[1]][2]*r];
         let v2 = [cx + verts[f[2]][0]*r, cy + verts[f[2]][1]*r, cz + verts[f[2]][2]*r];
         let normal = tri_normal(v0, v1, v2);
-        tris.push(WorldTri { v: [v0, v1, v2], normal, color });
+        push_tri(tris, v0, v1, v2, normal, color);
     }
 }
 
@@ -278,7 +277,7 @@ pub fn perturbed_sphere_tris(
         let v1 = [cx + verts[f[1]][0]*r, cy + verts[f[1]][1]*r, cz + verts[f[1]][2]*r];
         let v2 = [cx + verts[f[2]][0]*r, cy + verts[f[2]][1]*r, cz + verts[f[2]][2]*r];
         let normal = tri_normal(v0, v1, v2);
-        tris.push(WorldTri { v: [v0, v1, v2], normal, color });
+        push_tri(tris, v0, v1, v2, normal, color);
     }
 }
 
@@ -456,55 +455,27 @@ pub fn beveled_box_tris(
         color,
     );
 
-    // 8 corner tris
-    // Top-front-right
-    tris.push(WorldTri {
-        v: [[cx+hw-b, cy+hh-b, cz+hd], [cx+hw, cy+hh-b, cz+hd-b], [cx+hw-b, cy+hh, cz+hd-b]],
-        normal: tri_normal([cx+hw-b, cy+hh-b, cz+hd], [cx+hw, cy+hh-b, cz+hd-b], [cx+hw-b, cy+hh, cz+hd-b]),
-        color,
-    });
-    // Top-front-left
-    tris.push(WorldTri {
-        v: [[cx-hw+b, cy+hh-b, cz+hd], [cx-hw+b, cy+hh, cz+hd-b], [cx-hw, cy+hh-b, cz+hd-b]],
-        normal: tri_normal([cx-hw+b, cy+hh-b, cz+hd], [cx-hw+b, cy+hh, cz+hd-b], [cx-hw, cy+hh-b, cz+hd-b]),
-        color,
-    });
-    // Top-back-right
-    tris.push(WorldTri {
-        v: [[cx+hw-b, cy+hh-b, cz-hd], [cx+hw-b, cy+hh, cz-hd+b], [cx+hw, cy+hh-b, cz-hd+b]],
-        normal: tri_normal([cx+hw-b, cy+hh-b, cz-hd], [cx+hw-b, cy+hh, cz-hd+b], [cx+hw, cy+hh-b, cz-hd+b]),
-        color,
-    });
-    // Top-back-left
-    tris.push(WorldTri {
-        v: [[cx-hw+b, cy+hh-b, cz-hd], [cx-hw, cy+hh-b, cz-hd+b], [cx-hw+b, cy+hh, cz-hd+b]],
-        normal: tri_normal([cx-hw+b, cy+hh-b, cz-hd], [cx-hw, cy+hh-b, cz-hd+b], [cx-hw+b, cy+hh, cz-hd+b]),
-        color,
-    });
-    // Bottom-front-right
-    tris.push(WorldTri {
-        v: [[cx+hw-b, cy-hh+b, cz+hd], [cx+hw-b, cy-hh, cz+hd-b], [cx+hw, cy-hh+b, cz+hd-b]],
-        normal: tri_normal([cx+hw-b, cy-hh+b, cz+hd], [cx+hw-b, cy-hh, cz+hd-b], [cx+hw, cy-hh+b, cz+hd-b]),
-        color,
-    });
-    // Bottom-front-left
-    tris.push(WorldTri {
-        v: [[cx-hw+b, cy-hh+b, cz+hd], [cx-hw, cy-hh+b, cz+hd-b], [cx-hw+b, cy-hh, cz+hd-b]],
-        normal: tri_normal([cx-hw+b, cy-hh+b, cz+hd], [cx-hw, cy-hh+b, cz+hd-b], [cx-hw+b, cy-hh, cz+hd-b]),
-        color,
-    });
-    // Bottom-back-right
-    tris.push(WorldTri {
-        v: [[cx+hw-b, cy-hh+b, cz-hd], [cx+hw, cy-hh+b, cz-hd+b], [cx+hw-b, cy-hh, cz-hd+b]],
-        normal: tri_normal([cx+hw-b, cy-hh+b, cz-hd], [cx+hw, cy-hh+b, cz-hd+b], [cx+hw-b, cy-hh, cz-hd+b]),
-        color,
-    });
-    // Bottom-back-left
-    tris.push(WorldTri {
-        v: [[cx-hw+b, cy-hh+b, cz-hd], [cx-hw+b, cy-hh, cz-hd+b], [cx-hw, cy-hh+b, cz-hd+b]],
-        normal: tri_normal([cx-hw+b, cy-hh+b, cz-hd], [cx-hw+b, cy-hh, cz-hd+b], [cx-hw, cy-hh+b, cz-hd+b]),
-        color,
-    });
+    // 8 corner tris — each corner's normal points diagonally outward.
+    // push_tri auto-corrects winding to match the outward normal.
+    let corner = |tris: &mut Vec<WorldTri>, a: [f32;3], b: [f32;3], c: [f32;3]| {
+        // Normal = average of the 3 face normals meeting at this corner (≈ outward diagonal)
+        let n = [(a[0]-cx).signum() + (b[0]-cx).signum() + (c[0]-cx).signum(),
+                 (a[1]-cy).signum() + (b[1]-cy).signum() + (c[1]-cy).signum(),
+                 (a[2]-cz).signum() + (b[2]-cz).signum() + (c[2]-cz).signum()];
+        let l = (n[0]*n[0]+n[1]*n[1]+n[2]*n[2]).sqrt();
+        let outward = if l > 0.01 { [n[0]/l, n[1]/l, n[2]/l] } else { tri_normal(a, b, c) };
+        push_tri(tris, a, b, c, outward, color);
+    };
+    // Top corners
+    corner(tris, [cx+hw-b,cy+hh-b,cz+hd], [cx+hw,cy+hh-b,cz+hd-b], [cx+hw-b,cy+hh,cz+hd-b]);
+    corner(tris, [cx-hw+b,cy+hh-b,cz+hd], [cx-hw+b,cy+hh,cz+hd-b], [cx-hw,cy+hh-b,cz+hd-b]);
+    corner(tris, [cx+hw-b,cy+hh-b,cz-hd], [cx+hw-b,cy+hh,cz-hd+b], [cx+hw,cy+hh-b,cz-hd+b]);
+    corner(tris, [cx-hw+b,cy+hh-b,cz-hd], [cx-hw,cy+hh-b,cz-hd+b], [cx-hw+b,cy+hh,cz-hd+b]);
+    // Bottom corners
+    corner(tris, [cx+hw-b,cy-hh+b,cz+hd], [cx+hw-b,cy-hh,cz+hd-b], [cx+hw,cy-hh+b,cz+hd-b]);
+    corner(tris, [cx-hw+b,cy-hh+b,cz+hd], [cx-hw,cy-hh+b,cz+hd-b], [cx-hw+b,cy-hh,cz+hd-b]);
+    corner(tris, [cx+hw-b,cy-hh+b,cz-hd], [cx+hw,cy-hh+b,cz-hd+b], [cx+hw-b,cy-hh,cz-hd+b]);
+    corner(tris, [cx-hw+b,cy-hh+b,cz-hd], [cx-hw+b,cy-hh,cz-hd+b], [cx-hw,cy-hh+b,cz-hd+b]);
 }
 
 // ── Wall with Holes (recessed windows/doors) ────────────────────────────────
@@ -796,9 +767,9 @@ pub fn wave_surface_tris(
             let c = (color & 0xFF000000) | (r << 16) | (g << 8) | b;
 
             let n1 = tri_normal(v00, v11, v10);
-            tris.push(WorldTri { v: [v00, v11, v10], normal: n1, color: c });
+            push_tri(tris, v00, v11, v10, n1, c);
             let n2 = tri_normal(v00, v01, v11);
-            tris.push(WorldTri { v: [v00, v01, v11], normal: n2, color: c });
+            push_tri(tris, v00, v01, v11, n2, c);
         }
     }
 }
@@ -910,8 +881,8 @@ pub fn box_tris(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, w: f32, h: 
         ([3,2,6,7], [0.0, 1.0, 0.0]), ([4,5,1,0], [0.0,-1.0, 0.0]),
     ];
     for (idx, normal) in faces {
-        tris.push(WorldTri { v: [c[idx[0]], c[idx[1]], c[idx[2]]], normal, color });
-        tris.push(WorldTri { v: [c[idx[0]], c[idx[2]], c[idx[3]]], normal, color });
+        push_tri(tris, c[idx[0]], c[idx[1]], c[idx[2]], normal, color);
+        push_tri(tris, c[idx[0]], c[idx[2]], c[idx[3]], normal, color);
     }
 }
 
@@ -943,8 +914,8 @@ pub fn rotated_box_tris(
     ];
     for idx in faces {
         let normal = tri_normal(c[idx[0]], c[idx[1]], c[idx[2]]);
-        tris.push(WorldTri { v: [c[idx[0]], c[idx[1]], c[idx[2]]], normal, color });
-        tris.push(WorldTri { v: [c[idx[0]], c[idx[2]], c[idx[3]]], normal, color });
+        push_tri(tris, c[idx[0]], c[idx[1]], c[idx[2]], normal, color);
+        push_tri(tris, c[idx[0]], c[idx[2]], c[idx[3]], normal, color);
     }
 }
 
@@ -975,9 +946,9 @@ pub fn pitched_roof_tris(
 
     // Gable ends (triangles, CCW from outside)
     let n_left = tri_normal(e_bl, e_fl, r0);
-    tris.push(WorldTri { v: [e_bl, e_fl, r0], normal: n_left, color });
+    push_tri(tris, e_bl, e_fl, r0, n_left, color);
     let n_right = tri_normal(e_fr, e_br, r1);
-    tris.push(WorldTri { v: [e_fr, e_br, r1], normal: n_right, color });
+    push_tri(tris, e_fr, e_br, r1, n_right, color);
 }
 
 /// Hip roof: all four sides slope up to a shortened ridge.
@@ -1003,10 +974,10 @@ pub fn hip_roof_tris(
     push_quad(tris, e_br, e_bl, r0, r1, color);
     // Left hip (triangle)
     let n_left = tri_normal(e_bl, e_fl, r0);
-    tris.push(WorldTri { v: [e_bl, e_fl, r0], normal: n_left, color });
+    push_tri(tris, e_bl, e_fl, r0, n_left, color);
     // Right hip (triangle)
     let n_right = tri_normal(e_fr, e_br, r1);
-    tris.push(WorldTri { v: [e_fr, e_br, r1], normal: n_right, color });
+    push_tri(tris, e_fr, e_br, r1, n_right, color);
 }
 
 // ── Cornice / Ledge ─────────────────────────────────────────────────────────
@@ -1039,8 +1010,8 @@ fn leaf_tris(
     let lft = [center[0] - r[0], center[1] - r[1], center[2] - r[2]];
     let rgt = [center[0] + r[0], center[1] + r[1], center[2] + r[2]];
     let normal = tri_normal(lft, tip, rgt);
-    tris.push(WorldTri { v: [lft, tip, rgt], normal, color });
-    tris.push(WorldTri { v: [lft, rgt, bot], normal, color });
+    push_tri(tris, lft, tip, rgt, normal, color);
+    push_tri(tris, lft, rgt, bot, normal, color);
 }
 
 /// Scatter individual leaves on the surface shell of a sphere to form a canopy cluster.
@@ -1135,11 +1106,11 @@ fn grass_blade_tri(
     let tip_color = brighten_color(color, 30);
     // Lower quad: base to mid (2 tris)
     let n1 = tri_normal(base_l, mid_l, base_r);
-    tris.push(WorldTri { v: [base_l, mid_l, base_r], normal: n1, color });
-    tris.push(WorldTri { v: [base_r, mid_l, mid_r], normal: n1, color });
+    push_tri(tris, base_l, mid_l, base_r, n1, color);
+    push_tri(tris, base_r, mid_l, mid_r, n1, color);
     // Upper triangle: mid to tip (1 tri)
     let n2 = tri_normal(mid_l, tip, mid_r);
-    tris.push(WorldTri { v: [mid_l, tip, mid_r], normal: n2, color: tip_color });
+    push_tri(tris, mid_l, tip, mid_r, n2, tip_color);
 }
 
 fn brighten_color(c: u32, delta: i32) -> u32 {
@@ -1226,9 +1197,9 @@ pub fn bark_cylinder_tris(
         push_quad(tris, bt0, tp0, tp1, bt1, col);
 
         let n_top = [0.0, 1.0, 0.0];
-        tris.push(WorldTri { v: [top_center, tp1, tp0], normal: n_top, color: col });
+        push_tri(tris, top_center, tp1, tp0, n_top, col);
         let n_bot = [0.0, -1.0, 0.0];
-        tris.push(WorldTri { v: [bot_center, bt0, bt1], normal: n_bot, color: col });
+        push_tri(tris, bot_center, bt0, bt1, n_bot, col);
     }
 }
 
@@ -1315,9 +1286,9 @@ pub fn tapered_cylinder_tris(
         push_quad(tris, bt0, tp0, tp1, bt1, color);
 
         if r_top > 0.001 {
-            tris.push(WorldTri { v: [top_c, tp1, tp0], normal: [0.0, 1.0, 0.0], color });
+            push_tri(tris, top_c, tp1, tp0, [0.0, 1.0, 0.0], color);
         }
-        tris.push(WorldTri { v: [bot_c, bt0, bt1], normal: [0.0, -1.0, 0.0], color });
+        push_tri(tris, bot_c, bt0, bt1, [0.0, -1.0, 0.0], color);
     }
 }
 
@@ -1380,7 +1351,7 @@ pub fn ellipsoid_tris(
             tv[i] = [cx + v[0]*rx, cy + v[1]*ry, cz + v[2]*rz];
         }
         let normal = tri_normal(tv[0], tv[1], tv[2]);
-        tris.push(WorldTri { v: tv, normal, color });
+        push_tri(tris, tv[0], tv[1], tv[2], normal, color);
     }
 }
 
@@ -1413,10 +1384,10 @@ pub fn tapered_cylinder_between(
         let top1 = [p1[0]+r1*(right[0]*c1+fwd[0]*s1), p1[1]+r1*(right[1]*c1+fwd[1]*s1), p1[2]+r1*(right[2]*c1+fwd[2]*s1)];
         push_quad(tris, bot0, top0, top1, bot1, color);
         if r1 > 0.001 {
-            tris.push(WorldTri { v: [p1, top1, top0], normal: dir, color });
+            push_tri(tris, p1, top1, top0, dir, color);
         }
         let neg_dir = [-dir[0],-dir[1],-dir[2]];
-        tris.push(WorldTri { v: [p0, bot0, bot1], normal: neg_dir, color });
+        push_tri(tris, p0, bot0, bot1, neg_dir, color);
     }
 }
 
@@ -1506,7 +1477,7 @@ pub fn loft_y_tris_caps(
             let pn = (pi + 1) % n;
             let a = [bpts[pi][0], yb, bpts[pi][1]];
             let b = [bpts[pn][0], yb, bpts[pn][1]];
-            tris.push(WorldTri { v: [bc, a, b], normal: [0.0, -1.0, 0.0], color: bcol });
+            push_tri(tris, bc, a, b, [0.0, -1.0, 0.0], bcol);
         }
     }
 
@@ -1522,7 +1493,7 @@ pub fn loft_y_tris_caps(
             let pn = (pi + 1) % n;
             let a = [tpts[pi][0], yt, tpts[pi][1]];
             let b = [tpts[pn][0], yt, tpts[pn][1]];
-            tris.push(WorldTri { v: [tc, b, a], normal: [0.0, 1.0, 0.0], color: tcol });
+            push_tri(tris, tc, b, a, [0.0, 1.0, 0.0], tcol);
         }
     }
 }
@@ -1586,19 +1557,19 @@ fn glow_disc(
         // Core: center to inner_r (full brightness, CCW winding)
         let p0 = pt(a0, inner_r);
         let p1 = pt(a1, inner_r);
-        tris.push(WorldTri { v: [center, p0, p1], normal, color });
+        push_tri(tris, center, p0, p1, normal, color);
 
         // Mid ring: inner_r to mid_r
         let m0 = pt(a0, mid_r);
         let m1 = pt(a1, mid_r);
-        tris.push(WorldTri { v: [p0, m0, m1], normal, color: mid_color });
-        tris.push(WorldTri { v: [p0, m1, p1], normal, color: mid_color });
+        push_tri(tris, p0, m0, m1, normal, mid_color);
+        push_tri(tris, p0, m1, p1, normal, mid_color);
 
         // Outer ring: mid_r to outer_r
         let o0 = pt(a0, outer_r);
         let o1 = pt(a1, outer_r);
-        tris.push(WorldTri { v: [m0, o0, o1], normal, color: out_color });
-        tris.push(WorldTri { v: [m0, o1, m1], normal, color: out_color });
+        push_tri(tris, m0, o0, o1, normal, out_color);
+        push_tri(tris, m0, o1, m1, normal, out_color);
     }
 }
 

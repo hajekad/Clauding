@@ -3049,13 +3049,7 @@ fn gen_vehicle_shadow(v: &Vehicle, s: f32, tris: &mut Vec<WorldTri>) {
         let (bx, bz) = (outline[j].0, outline[j].1);
         let a = p(ax, az);
         let b = p(bx, bz);
-        // Pick winding so fan tri has +Y normal (handles concave notch segments)
-        let cross_y = bz * ax - bx * az; // 2D cross from center(0,0)
-        if cross_y >= 0.0 {
-            tris.push(WorldTri { v: [center, b, a], normal: [0.0, 1.0, 0.0], color: sc });
-        } else {
-            tris.push(WorldTri { v: [center, a, b], normal: [0.0, 1.0, 0.0], color: sc });
-        }
+        mesh::push_tri(tris, center, a, b, [0.0, 1.0, 0.0], sc);
     }
 }
 
@@ -3813,8 +3807,8 @@ fn push_box(tris: &mut Vec<WorldTri>, cx: f32, cy: f32, cz: f32, w: f32, h: f32,
         ([3,2,6,7],[0.0,1.0,0.0]),([4,5,1,0],[0.0,-1.0,0.0]),
     ];
     for (idx, normal) in faces {
-        tris.push(WorldTri { v: [c[idx[0]],c[idx[1]],c[idx[2]]], normal, color });
-        tris.push(WorldTri { v: [c[idx[0]],c[idx[2]],c[idx[3]]], normal, color });
+        mesh::push_tri(tris, c[idx[0]], c[idx[1]], c[idx[2]], normal, color);
+        mesh::push_tri(tris, c[idx[0]], c[idx[2]], c[idx[3]], normal, color);
     }
 }
 
