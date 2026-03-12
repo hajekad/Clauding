@@ -125,3 +125,168 @@ pub fn dist_sq_2d(x1: f32, z1: f32, x2: f32, z2: f32) -> f32 {
     let dz = z1 - z2;
     dx * dx + dz * dz
 }
+
+// ── Quaternion [x, y, z, w] ──────────────────────────────────────────────
+
+pub type Quat = [f32; 4];
+
+pub const QUAT_IDENTITY: Quat = [0.0, 0.0, 0.0, 1.0];
+
+pub fn quat_from_axis_angle(axis: Vec3, angle: f32) -> Quat {
+    let half = angle * 0.5;
+    let (s, c) = half.sin_cos();
+    [axis[0] * s, axis[1] * s, axis[2] * s, c]
+}
+
+pub fn quat_mul(a: Quat, b: Quat) -> Quat {
+    [
+        a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
+        a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
+        a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3],
+        a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2],
+    ]
+}
+
+pub fn quat_conjugate(q: Quat) -> Quat {
+    [-q[0], -q[1], -q[2], q[3]]
+}
+
+pub fn quat_normalize(q: Quat) -> Quat {
+    let len = (q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]).sqrt();
+    if len < 1e-10 { QUAT_IDENTITY } else { [q[0]/len, q[1]/len, q[2]/len, q[3]/len] }
+}
+
+/// Rotate a vector by a quaternion: q * v * q^-1
+pub fn quat_rotate(q: Quat, v: Vec3) -> Vec3 {
+    // Optimized: t = 2 * cross(q.xyz, v), result = v + w*t + cross(q.xyz, t)
+    let qv = [q[0], q[1], q[2]];
+    let t = v3_scale(v3_cross(qv, v), 2.0);
+    v3_add(v3_add(v, v3_scale(t, q[3])), v3_cross(qv, t))
+}
+
+/// Spherical linear interpolation between two quaternions
+pub fn quat_slerp(a: Quat, b: Quat, t: f32) -> Quat {
+    let mut dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
+    let mut b = b;
+    if dot < 0.0 {
+        b = [-b[0], -b[1], -b[2], -b[3]];
+        dot = -dot;
+    }
+    if dot > 0.9995 {
+        // Linear interpolation for very close quaternions
+        return quat_normalize([
+            a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t,
+            a[2] + (b[2]-a[2])*t, a[3] + (b[3]-a[3])*t,
+        ]);
+    }
+    let theta = dot.acos();
+    let sin_theta = theta.sin();
+    let wa = ((1.0 - t) * theta).sin() / sin_theta;
+    let wb = (t * theta).sin() / sin_theta;
+    [
+        a[0]*wa + b[0]*wb, a[1]*wa + b[1]*wb,
+        a[2]*wa + b[2]*wb, a[3]*wa + b[3]*wb,
+    ]
+}
+
+/// Convert quaternion to 3x3 rotation matrix (column-major)
+pub fn quat_to_mat3(q: Quat) -> [f32; 9] {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let x2 = x+x; let y2 = y+y; let z2 = z+z;
+    let xx = x*x2; let xy = x*y2; let xz = x*z2;
+    let yy = y*y2; let yz = y*z2; let zz = z*z2;
+    let wx = w*x2; let wy = w*y2; let wz = w*z2;
+    // Column-major: col0 = right, col1 = up, col2 = forward
+    [
+        1.0-yy-zz,  xy+wz,      xz-wy,
+        xy-wz,       1.0-xx-zz,  yz+wx,
+        xz+wy,       yz-wx,      1.0-xx-yy,
+    ]
+}
+
+/// Build quaternion from rotation matrix (column-major 3x3)
+pub fn quat_from_mat3(m: &[f32; 9]) -> Quat {
+    let trace = m[0] + m[4] + m[8];
+    if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        [
+            (m[5] - m[7]) / s,
+            (m[6] - m[2]) / s,
+            (m[1] - m[3]) / s,
+            0.25 * s,
+        ]
+    } else if m[0] > m[4] && m[0] > m[8] {
+        let s = (1.0 + m[0] - m[4] - m[8]).sqrt() * 2.0;
+        [
+            0.25 * s,
+            (m[1] + m[3]) / s,
+            (m[6] + m[2]) / s,
+            (m[5] - m[7]) / s,
+        ]
+    } else if m[4] > m[8] {
+        let s = (1.0 + m[4] - m[0] - m[8]).sqrt() * 2.0;
+        [
+            (m[1] + m[3]) / s,
+            0.25 * s,
+            (m[5] + m[7]) / s,
+            (m[6] - m[2]) / s,
+        ]
+    } else {
+        let s = (1.0 + m[8] - m[0] - m[4]).sqrt() * 2.0;
+        [
+            (m[6] + m[2]) / s,
+            (m[5] + m[7]) / s,
+            0.25 * s,
+            (m[1] - m[3]) / s,
+        ]
+    }
+}
+
+/// Build quaternion from heading (rot_y) — rotation around Y axis
+pub fn quat_from_rot_y(rot_y: f32) -> Quat {
+    quat_from_axis_angle([0.0, 1.0, 0.0], rot_y)
+}
+
+/// Extract forward direction (-Z in local space) from quaternion
+pub fn quat_forward(q: Quat) -> Vec3 {
+    quat_rotate(q, [0.0, 0.0, -1.0])
+}
+
+/// Extract right direction (+X in local space) from quaternion
+pub fn quat_right(q: Quat) -> Vec3 {
+    quat_rotate(q, [1.0, 0.0, 0.0])
+}
+
+/// Extract up direction (+Y in local space) from quaternion
+pub fn quat_up(q: Quat) -> Vec3 {
+    quat_rotate(q, [0.0, 1.0, 0.0])
+}
+
+// ── 3x3 matrix utilities ─────────────────────────────────────────────────
+
+/// Transpose a column-major 3x3 matrix (also its inverse for rotation matrices)
+pub fn mat3_transpose(m: &[f32; 9]) -> [f32; 9] {
+    [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]
+}
+
+/// Compute the inverse inertia tensor in world space: R * I_inv_local * R^T
+pub fn mat3_rotate_inertia(rot: &[f32; 9], i_inv: &[f32; 9]) -> [f32; 9] {
+    let rt = mat3_transpose(rot);
+    mat3_mul(&mat3_mul(rot, i_inv), &rt)
+}
+
+/// Multiply two column-major 3x3 matrices
+pub fn mat3_mul(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
+    let mut r = [0.0f32; 9];
+    for c in 0..3 {
+        for row in 0..3 {
+            r[c*3 + row] = a[0*3+row]*b[c*3+0] + a[1*3+row]*b[c*3+1] + a[2*3+row]*b[c*3+2];
+        }
+    }
+    r
+}
+
+/// Diagonal 3x3 matrix from three values (for inertia tensors)
+pub fn mat3_diagonal(x: f32, y: f32, z: f32) -> [f32; 9] {
+    [x, 0.0, 0.0, 0.0, y, 0.0, 0.0, 0.0, z]
+}
