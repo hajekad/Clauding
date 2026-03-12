@@ -3435,7 +3435,7 @@ pub fn generate_world(game: &mut GameState) {
             fitness_proximity: 0.0,
             ragdoll_active: false,
             ragdoll_points: [[0.0; 3]; 7],
-            ragdoll_prev: [[0.0; 3]; 7],
+
             ragdoll_timer: 0.0,
             skeleton: crate::skeleton::Skeleton::new_humanoid(),
             body: {

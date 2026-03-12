@@ -647,6 +647,7 @@ fn make_player() -> state::Player {
             let inertia = shape.inertia_diag(80.0);
             clauding::physics::RigidBody::new_dynamic([0.0, 0.0, 0.0], 80.0, inertia)
         },
+        skeleton: clauding::skeleton::Skeleton::new_humanoid(),
     }
 }
 
@@ -728,7 +729,7 @@ fn make_npc(job: state::NpcJob) -> state::Npc {
         fitness_proximity: 0.0,
         ragdoll_active: false,
         ragdoll_points: [[0.0; 3]; 7],
-        ragdoll_prev: [[0.0; 3]; 7],
+
         ragdoll_timer: 0.0,
         skeleton: clauding::skeleton::Skeleton::new_humanoid(),
         body: {

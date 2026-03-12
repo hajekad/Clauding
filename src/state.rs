@@ -62,16 +62,6 @@ pub const SPEED_LIMIT: f32 = 10.0;              // speeding threshold on CarRoad
 
 // Ragdoll constants
 pub const RAGDOLL_DURATION: f32 = 3.0;
-pub const RAGDOLL_POINT_COUNT: usize = 7;
-// (idx_a, idx_b, rest_length): hips=0, chest=1, head=2, l_hand=3, r_hand=4, l_foot=5, r_foot=6
-pub const RAGDOLL_CONSTRAINTS: [(usize, usize, f32); 6] = [
-    (0, 1, 0.7),  // hips-chest
-    (1, 2, 0.45), // chest-head
-    (1, 3, 0.65), // chest-l_hand
-    (1, 4, 0.65), // chest-r_hand
-    (0, 5, 0.65), // hips-l_foot
-    (0, 6, 0.65), // hips-r_foot
-];
 
 // Combat constants
 pub const ATTACK_RANGE: f32 = 2.0;
@@ -641,7 +631,6 @@ pub struct Npc {
     // Ragdoll (legacy — synced from skeleton for rendering)
     pub ragdoll_active: bool,
     pub ragdoll_points: [[f32; 3]; 7],  // hips, chest, head, l_hand, r_hand, l_foot, r_foot
-    pub ragdoll_prev: [[f32; 3]; 7],
     pub ragdoll_timer: f32,
     // Articulated skeleton (new physics-driven)
     pub skeleton: crate::skeleton::Skeleton,
@@ -711,6 +700,8 @@ pub struct Player {
     pub is_female: bool,
     // Physics
     pub body: crate::physics::RigidBody,
+    // Articulated skeleton (procedural animation + IK)
+    pub skeleton: crate::skeleton::Skeleton,
 }
 
 pub struct Camera {
@@ -806,6 +797,7 @@ impl GameState {
                     let inertia = shape.inertia_diag(80.0);
                     crate::physics::RigidBody::new_dynamic([0.0, 0.0, 10.0], 80.0, inertia)
                 },
+                skeleton: crate::skeleton::Skeleton::new_humanoid(),
             },
             camera: Camera {
                 x: 0.0, y: 8.0, z: 18.0,

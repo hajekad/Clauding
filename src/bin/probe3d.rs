@@ -1068,7 +1068,7 @@ fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
         fitness_proximity: 0.0,
         ragdoll_active: false,
         ragdoll_points: [[0.0; 3]; 7],
-        ragdoll_prev: [[0.0; 3]; 7],
+
         ragdoll_timer: 0.0,
         skeleton: clauding::skeleton::Skeleton::new_humanoid(),
         body: {
