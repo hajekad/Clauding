@@ -23,30 +23,27 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, dt: f32) {
         return;
     }
 
-    // Sync rigid body position from legacy fields (during transition period)
-    v.body.pos = [v.x, v.y, v.z];
-    v.body.quat = quat_from_rot_y(v.rot_y);
+    // Deformation damage factors
+    let dmg_engine = v.deformation.engine_factor();
+    let dmg_steer = v.deformation.steering_factor();
+    let dmg_grip = v.deformation.grip_factor();
 
-    // Set linear velocity from legacy speed (along forward direction)
-    let fwd = quat_forward(v.body.quat);
-    v.body.vel = v3_scale(fwd, v.speed);
-
-    // Distribute drivetrain inputs to wheels
-    let steer = v.drivetrain.steer_input * v.drivetrain.max_steer;
+    // Distribute drivetrain inputs to wheels (steering reduced by front-end damage)
+    let steer = v.drivetrain.steer_input * v.drivetrain.max_steer * dmg_steer;
     v.wheels[0].steer_angle = steer; // FL
     v.wheels[1].steer_angle = steer; // FR
     v.wheels[2].steer_angle = 0.0;   // RL
     v.wheels[3].steer_angle = 0.0;   // RR
 
-    // Engine torque to driven wheels (AWD split 50/50 F/R)
-    let engine_torque = v.drivetrain.engine_torque * v.drivetrain.throttle * v.drivetrain.gear_ratio;
+    // Engine torque to driven wheels (reduced by engine bay damage)
+    let engine_torque = v.drivetrain.engine_torque * v.drivetrain.throttle * v.drivetrain.gear_ratio * dmg_engine;
     let per_wheel = engine_torque * 0.25; // 4WD split
     for w in &mut v.wheels {
         w.drive_torque = per_wheel;
     }
 
     // Brake torque
-    let brake_torque = 3000.0 * v.drivetrain.brake; // 3000 Nm max braking
+    let brake_torque = 3000.0 * v.drivetrain.brake;
     for w in &mut v.wheels {
         w.brake_torque = brake_torque;
     }
@@ -62,13 +59,14 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, dt: f32) {
     let mut total_force = [0.0f32; 3];
     let mut total_torque = [0.0f32; 3];
 
-    // Process each wheel: suspension → tire forces
+    // Process each wheel: suspension → tire forces (with deformation damage)
     for i in 0..4 {
         // Wheel attachment point in world space
         let local_attach = v.wheels[i].local_pos;
         let attach_world = v3_add(v.body.pos, quat_rotate(v.body.quat, local_attach));
 
-        // Suspension force
+        // Suspension force (spring rate scaled by structural damage at this corner)
+        let dmg_susp = v.deformation.suspension_factor(i);
         let susp_force = suspension::compute_suspension(
             &mut v.suspension[i],
             &mut v.wheels[i],
@@ -76,7 +74,7 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, dt: f32) {
             body_up,
             terrain,
             dt,
-        );
+        ) * dmg_susp;
 
         // Apply suspension force (upward on body at attachment point)
         let susp_force_vec = v3_scale(body_up, susp_force);
@@ -84,7 +82,7 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, dt: f32) {
         let r = v3_sub(attach_world, v.body.pos);
         total_torque = v3_add(total_torque, v3_cross(r, susp_force_vec));
 
-        // Tire forces (only if wheel is on ground)
+        // Tire forces (only if wheel is on ground, grip reduced by damage)
         if v.wheels[i].on_ground && susp_force > 1.0 {
             let contact_vel = v.body.velocity_at(attach_world);
             let tire_force = tire::compute_tire_forces(
@@ -93,7 +91,7 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, dt: f32) {
                 body_up,
                 body_fwd,
                 body_right,
-                susp_force,
+                susp_force * dmg_grip, // reduced normal load → less grip
                 &surface_mat,
                 dt,
             );
@@ -108,6 +106,16 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, dt: f32) {
 
     // Integrate
     physics::integrate(&mut v.body, dt);
+
+    // Ground contact enforcement — prevent falling through terrain
+    let ground_y = terrain.height_at(v.body.pos[0], v.body.pos[2]);
+    let min_y = ground_y + crate::state::VEHICLE_GROUND_OFFSET;
+    if v.body.pos[1] < min_y {
+        v.body.pos[1] = min_y;
+        if v.body.vel[1] < 0.0 {
+            v.body.vel[1] = 0.0;
+        }
+    }
 
     // Sync back to legacy Vehicle fields
     v.x = v.body.pos[0];
@@ -155,7 +163,5 @@ pub fn ai_drive_input(v: &mut Vehicle) {
         v.drivetrain.brake = 0.0;
     }
 
-    // Steering is already computed by AI as rot_y changes — convert to steer input
-    // This will be refined when AI is fully physics-aware
-    v.drivetrain.steer_input = 0.0; // AI still uses direct rot_y for now
+    // steer_input is set by AI steering logic in ai_drive(), not here
 }

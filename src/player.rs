@@ -53,23 +53,11 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     // Skip walking controls when driving
     if state.player.in_vehicle.is_some() { return; }
 
-    // Gravity + jump physics
+    // Jump: vertical velocity on body
     let jump_now = state.keybinds.is_pressed(Action::Jump, &state.keys);
     let jump_prev = state.keybinds.is_pressed(Action::Jump, &state.prev_keys);
     if jump_now && !jump_prev && state.player.on_ground {
-        state.player.vel_y = JUMP_VELOCITY;
-        state.player.on_ground = false;
-    }
-
-    state.player.vel_y -= GRAVITY * dt;
-    state.player.y += state.player.vel_y * dt;
-
-    let ground_y = state.terrain.height_at(state.player.x, state.player.z);
-    if state.player.y <= ground_y {
-        state.player.y = ground_y;
-        state.player.vel_y = 0.0;
-        state.player.on_ground = true;
-    } else {
+        state.player.body.vel[1] = JUMP_VELOCITY;
         state.player.on_ground = false;
     }
 
@@ -113,62 +101,106 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         let target_rot = (-dx).atan2(-dz);
         smooth_rotate(&mut p.rot_y, target_rot, TURN_RATE, dt);
 
-        p.walk_phase += dt * speed * 2.5;
+        // walk_phase now driven by skeleton.step_animation()
 
-        let new_x = p.x + dx * speed * dt;
-        let new_z = p.z + dz * speed * dt;
-
-        if !check_walk_collision(&state.world, new_x, p.z, PLAYER_RADIUS, None) {
-            p.x = new_x;
-        }
-        if !check_walk_collision(&state.world, p.x, new_z, PLAYER_RADIUS, None) {
-            p.z = new_z;
-        }
+        // Walk force: accelerate toward desired velocity
+        let mass = p.body.mass;
+        p.body.apply_force([
+            mass * (dx * speed - p.body.vel[0]) / 0.1,
+            0.0,
+            mass * (dz * speed - p.body.vel[2]) / 0.1,
+        ]);
     } else {
         // Idle: rotate character to face camera forward direction
         let target_rot = (-fwd_x).atan2(-fwd_z);
         smooth_rotate(&mut p.rot_y, target_rot, IDLE_TURN_RATE, dt);
+
+        // Deceleration force
+        let mass = p.body.mass;
+        p.body.apply_force([
+            mass * -p.body.vel[0] / 0.1,
+            0.0,
+            mass * -p.body.vel[2] / 0.1,
+        ]);
     }
 
-    p.x = p.x.clamp(-WORLD_HALF, WORLD_HALF);
-    p.z = p.z.clamp(-WORLD_HALF, WORLD_HALF);
+    // Slope sliding force
+    if p.on_ground {
+        let raw_n = state.terrain.normal_at(p.body.pos[0], p.body.pos[2]);
+        let slope = (1.0 - raw_n[1]).max(0.0);
+        if slope > 0.15 {
+            let mass = p.body.mass;
+            let slide_mag = slope * slope * 40.0 * mass;
+            p.body.apply_force([-raw_n[0] * slide_mag, 0.0, -raw_n[2] * slide_mag]);
+        }
+    }
+
+    // Save pre-integration position for collision rollback
+    let prev_pos = p.body.pos;
+
+    // Integrate rigid body (gravity + walk force + slope force + damping)
+    crate::physics::integrate(&mut p.body, dt);
+
+    // Ground contact enforcement
+    let ground_y = state.terrain.height_at(p.body.pos[0], p.body.pos[2]);
+    if p.body.pos[1] <= ground_y {
+        p.body.pos[1] = ground_y;
+        if p.body.vel[1] < 0.0 { p.body.vel[1] = 0.0; }
+        p.on_ground = true;
+    } else {
+        p.on_ground = false;
+    }
+
+    // Building collision (axis-separated sliding)
+    if check_walk_collision(&state.world, p.body.pos[0], prev_pos[2], PLAYER_RADIUS, None) {
+        p.body.pos[0] = prev_pos[0];
+        p.body.vel[0] = 0.0;
+    }
+    if check_walk_collision(&state.world, p.body.pos[0], p.body.pos[2], PLAYER_RADIUS, None) {
+        p.body.pos[2] = prev_pos[2];
+        p.body.vel[2] = 0.0;
+    }
+
+    // World bounds
+    p.body.pos[0] = p.body.pos[0].clamp(-WORLD_HALF, WORLD_HALF);
+    p.body.pos[2] = p.body.pos[2].clamp(-WORLD_HALF, WORLD_HALF);
+
+    // Sync body → legacy fields
+    p.x = p.body.pos[0];
+    p.y = p.body.pos[1];
+    p.z = p.body.pos[2];
+    p.vel_y = p.body.vel[1];
 
     // River: current push + drowning damage
     if on_river_not_bridge(p.x, p.z, &state.world.river_segments, &state.world.bridges) {
-        p.x += RIVER_CURRENT * dt;
+        p.body.vel[0] += RIVER_CURRENT * dt;
+        p.body.pos[0] += RIVER_CURRENT * dt;
+        p.x = p.body.pos[0];
         p.health = (p.health - DROWN_DAMAGE * dt).max(0.0);
     }
 
-    // Re-snap to terrain after XZ movement (walking on slopes)
-    if p.on_ground {
-        let new_ground = state.terrain.height_at(p.x, p.z);
-        p.y = new_ground;
-    }
-
-    // Smooth terrain normal for slope tilting (clamped to 25° max visual tilt)
+    // Smooth terrain normal for slope tilting
     let raw_n = state.terrain.normal_at(p.x, p.z);
     let target_n = crate::math::clamp_normal_tilt(raw_n, 25.0);
     let lerp_rate = 8.0 * dt;
     let old_n = p.terrain_normal;
     p.terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(old_n, target_n, lerp_rate.min(1.0)));
 
-    // Slope sliding: steep terrain pushes player downhill (use raw normal)
-    if p.on_ground {
-        let slope = (1.0 - raw_n[1]).max(0.0);
-        if slope > 0.15 {
-            let slide_force = slope * slope * 40.0 * dt;
-            p.x -= raw_n[0] * slide_force;
-            p.z -= raw_n[2] * slide_force;
-        }
-    }
-    let (px, pz) = (p.x, p.z);
-    if p.on_ground { p.y = state.terrain.height_at(px, pz); }
-
     if p.sprinting {
         p.stamina = (p.stamina - 20.0 * dt).max(0.0);
     } else {
         p.stamina = (p.stamina + 10.0 * dt).min(100.0);
     }
+
+    // Procedural animation: skeleton IK + walk cycle from physics velocity
+    let vel = p.body.vel;
+    let pos = p.body.pos;
+    let rot_y = p.rot_y;
+    let on_ground = p.on_ground;
+    p.skeleton.step_animation(vel, pos, rot_y, &state.terrain, on_ground, dt);
+
+    // Sync skeleton walk_phase to legacy walk_phase for renderer
+    p.walk_phase = p.skeleton.walk_phase;
 }
 
 fn smooth_rotate(rot: &mut f32, target: f32, rate: f32, dt: f32) {

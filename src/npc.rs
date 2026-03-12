@@ -51,46 +51,87 @@ pub fn sys_npc(
 }
 
 fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
-    let npc = &mut world.npcs[i];
-    if npc.in_vehicle || npc.state == NpcState::Sleeping || npc.state == NpcState::Interacting { return; }
-
-    npc.vel_y -= GRAVITY * dt;
-    npc.y += npc.vel_y * dt;
-
-    let ground = terrain.height_at(npc.x, npc.z);
-    if npc.y <= ground {
-        npc.y = ground;
-        npc.vel_y = 0.0;
-        npc.on_ground = true;
-    } else {
-        npc.on_ground = false;
+    if world.npcs[i].in_vehicle || world.npcs[i].state == NpcState::Sleeping || world.npcs[i].state == NpcState::Interacting {
+        // Keep body in sync for inactive NPCs
+        world.npcs[i].body.pos = [world.npcs[i].x, world.npcs[i].y, world.npcs[i].z];
+        world.npcs[i].body.quat = crate::math::quat_from_rot_y(world.npcs[i].rot_y);
+        world.npcs[i].body.vel = [0.0; 3];
+        return;
     }
 
-    // Smooth terrain normal for slope tilting (clamped to 25° max visual tilt)
-    let raw_n = terrain.normal_at(npc.x, npc.z);
-    let target_n = crate::math::clamp_normal_tilt(raw_n, 25.0);
-    let lerp_rate = 8.0 * dt;
-    npc.terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(npc.terrain_normal, target_n, lerp_rate.min(1.0)));
-
-    // Slope sliding: if terrain is steep and NPC is on ground, slide downhill
-    if npc.on_ground {
+    // Slope sliding force (physics force, not direct position change)
+    if world.npcs[i].on_ground {
+        let raw_n = terrain.normal_at(world.npcs[i].body.pos[0], world.npcs[i].body.pos[2]);
         let slope = (1.0 - raw_n[1]).max(0.0);
         if slope > 0.12 {
-            let slide_force = slope * slope * 40.0 * dt;
-            let slide_x = npc.x - raw_n[0] * slide_force;
-            let slide_z = npc.z - raw_n[2] * slide_force;
-            if !on_river_not_bridge(slide_x, slide_z, &world.river_segments, &world.bridges) {
-                npc.x = slide_x;
-                npc.z = slide_z;
-                npc.y = terrain.height_at(npc.x, npc.z);
-            }
+            let mass = world.npcs[i].body.mass;
+            let slide_mag = slope * slope * 40.0 * mass;
+            world.npcs[i].body.apply_force([-raw_n[0] * slide_mag, 0.0, -raw_n[2] * slide_mag]);
         }
     }
 
-    // Sync rigid body position from legacy fields
-    npc.body.pos = [npc.x, npc.y, npc.z];
-    npc.body.quat = crate::math::quat_from_rot_y(npc.rot_y);
-    npc.body.vel = [0.0, npc.vel_y, 0.0];
+    // Save pre-integration position for collision rollback
+    let prev_pos = world.npcs[i].body.pos;
+
+    // Integrate rigid body (gravity + walk force + slope force + damping)
+    crate::physics::integrate(&mut world.npcs[i].body, dt);
+
+    // Ground contact enforcement
+    let ground = terrain.height_at(world.npcs[i].body.pos[0], world.npcs[i].body.pos[2]);
+    if world.npcs[i].body.pos[1] <= ground {
+        world.npcs[i].body.pos[1] = ground;
+        if world.npcs[i].body.vel[1] < 0.0 { world.npcs[i].body.vel[1] = 0.0; }
+        world.npcs[i].on_ground = true;
+    } else {
+        world.npcs[i].on_ground = false;
+    }
+
+    // Building collision (axis-separated sliding)
+    let home_idx = world.npcs[i].home_idx;
+    if check_walk_collision(world, world.npcs[i].body.pos[0], prev_pos[2], 0.4, Some(home_idx)) {
+        world.npcs[i].body.pos[0] = prev_pos[0];
+        world.npcs[i].body.vel[0] = 0.0;
+    }
+    if check_walk_collision(world, world.npcs[i].body.pos[0], world.npcs[i].body.pos[2], 0.4, Some(home_idx)) {
+        world.npcs[i].body.pos[2] = prev_pos[2];
+        world.npcs[i].body.vel[2] = 0.0;
+    }
+
+    // World bounds
+    world.npcs[i].body.pos[0] = world.npcs[i].body.pos[0].clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
+    world.npcs[i].body.pos[2] = world.npcs[i].body.pos[2].clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
+
+    // Sync body → legacy fields
+    world.npcs[i].x = world.npcs[i].body.pos[0];
+    world.npcs[i].y = world.npcs[i].body.pos[1];
+    world.npcs[i].z = world.npcs[i].body.pos[2];
+    world.npcs[i].vel_y = world.npcs[i].body.vel[1];
+
+    // Smooth terrain normal for slope tilting
+    let raw_n = terrain.normal_at(world.npcs[i].x, world.npcs[i].z);
+    let target_n = crate::math::clamp_normal_tilt(raw_n, 25.0);
+    let lerp_rate = 8.0 * dt;
+    world.npcs[i].terrain_normal = crate::math::v3_normalize(
+        crate::math::v3_lerp(world.npcs[i].terrain_normal, target_n, lerp_rate.min(1.0))
+    );
+
+    // Keep body quaternion in sync with rendering rotation
+    world.npcs[i].body.quat = crate::math::quat_from_rot_y(world.npcs[i].rot_y);
+
+    // Procedural animation: skeleton IK + walk cycle from physics velocity
+    let vel = world.npcs[i].body.vel;
+    let pos = world.npcs[i].body.pos;
+    let rot_y = world.npcs[i].rot_y;
+    let on_ground = world.npcs[i].on_ground;
+    world.npcs[i].skeleton.step_animation(vel, pos, rot_y, terrain, on_ground, dt);
+
+    // Ragdoll blend recovery (when ragdoll timer expired)
+    if world.npcs[i].skeleton.ragdoll_active {
+        world.npcs[i].skeleton.blend_from_ragdoll(pos, rot_y, dt);
+    }
+
+    // Sync skeleton walk_phase to legacy walk_phase for renderer
+    world.npcs[i].walk_phase = world.npcs[i].skeleton.walk_phase;
 }
 
 /// Walk NPC toward (target_x, target_z) using A* navmesh pathfinding.
@@ -190,31 +231,19 @@ pub fn npc_walk_toward(
         }
     };
 
-    // Move toward waypoint
+    // Apply walk force toward waypoint (physics handles actual movement + collision)
     let rot = npc.rot_y;
-    let new_x = npc.x - rot.sin() * speed * dt;
-    let new_z = npc.z - rot.cos() * speed * dt;
-    let home_idx = npc.home_idx;
+    let desired_vx = -rot.sin() * speed;
+    let desired_vz = -rot.cos() * speed;
+    let mass = npc.body.mass;
+    let response = 0.15; // seconds to reach desired speed
+    npc.body.apply_force([
+        mass * (desired_vx - npc.body.vel[0]) / response,
+        0.0,
+        mass * (desired_vz - npc.body.vel[2]) / response,
+    ]);
 
-    // Axis-separated collision (slide along obstacles)
-    let collides_x = check_walk_collision(world, new_x, world.npcs[i].z, 0.4, Some(home_idx));
-    let collides_z = check_walk_collision(world, world.npcs[i].x, new_z, 0.4, Some(home_idx));
-
-    let old_x = world.npcs[i].x;
-    let old_z = world.npcs[i].z;
-    if !collides_x { world.npcs[i].x = new_x; }
-    if !collides_z { world.npcs[i].z = new_z; }
-
-    // Animate walk
-    let moved = ((world.npcs[i].x - old_x).abs() + (world.npcs[i].z - old_z).abs()) > speed * dt * 0.3;
-    if moved {
-        world.npcs[i].walk_phase += dt * speed * 2.5;
-    }
-
-    // World bounds clamp
-    world.npcs[i].x = world.npcs[i].x.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-    world.npcs[i].z = world.npcs[i].z.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-    world.npcs[i].y = terrain.height_at(world.npcs[i].x, world.npcs[i].z).max(world.npcs[i].y);
+    // walk_phase now driven by skeleton.step_animation() in npc_physics()
 
     let dx2 = tx - world.npcs[i].x;
     let dz2 = tz - world.npcs[i].z;
@@ -278,7 +307,7 @@ fn npc_home_task(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         npc.target_z = (hz + npc.rng.range(-hd, hd)).clamp(hz - hd, hz + hd);
     }
 
-    // Simple walk (no collision check inside building)
+    // Walk toward target using physics forces (same pattern as npc_walk_toward)
     let npc = &mut world.npcs[i];
     let speed = NPC_SPEED * 0.5;
     if dist > 0.5 {
@@ -287,9 +316,15 @@ fn npc_home_task(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         while diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
         while diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
         npc.rot_y += diff.clamp(-4.0 * dt, 4.0 * dt);
-        npc.x -= npc.rot_y.sin() * speed * dt;
-        npc.z -= npc.rot_y.cos() * speed * dt;
-        npc.walk_phase += dt * speed * 2.5;
+        let desired_vx = -npc.rot_y.sin() * speed;
+        let desired_vz = -npc.rot_y.cos() * speed;
+        let mass = npc.body.mass;
+        let response = 0.15;
+        npc.body.apply_force([
+            mass * (desired_vx - npc.body.vel[0]) / response,
+            0.0,
+            mass * (desired_vz - npc.body.vel[2]) / response,
+        ]);
     }
     // Clamp inside building
     npc.x = npc.x.clamp(hx - hw, hx + hw);

@@ -3,7 +3,7 @@
 // Player enters/exits with Interact key, drives with movement keys
 
 use crate::state::*;
-use crate::world::{check_walk_collision, surface_at};
+use crate::world::surface_at;
 use crate::input::Action;
 
 pub fn sys_vehicle(state: &mut GameState, dt: f32) {
@@ -65,7 +65,7 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
         if state.world.vehicles[i].occupied { continue; }
         if !state.world.vehicles[i].ai_active { continue; }
         if state.world.vehicles[i].parked { continue; }
-        ai_drive(i, &mut state.world, &state.road_network, &state.terrain, dt);
+        ai_drive(i, &mut state.world, &state.road_network, dt);
     }
 
     // Snap newly-parked vehicles that ended up off-road to nearest parking/road position
@@ -85,87 +85,33 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
     separate_vehicles(&mut state.world, &state.terrain);
 }
 
-fn drive_vehicle(state: &mut GameState, vi: usize, dt: f32) {
+/// Player driving: converts key input to drivetrain commands.
+/// All position/rotation changes happen via step_vehicle_physics — no direct manipulation.
+fn drive_vehicle(state: &mut GameState, vi: usize, _dt: f32) {
     let fwd = state.keybinds.is_pressed(Action::MoveForward, &state.keys);
     let back = state.keybinds.is_pressed(Action::MoveBack, &state.keys);
     let left = state.keybinds.is_pressed(Action::MoveLeft, &state.keys);
     let right = state.keybinds.is_pressed(Action::MoveRight, &state.keys);
 
-    // Set drivetrain inputs for physics system
     let v = &mut state.world.vehicles[vi];
     let throttle = if fwd { 1.0 } else { 0.0 };
     let brake = if back { 1.0 } else if !fwd && v.speed.abs() > 0.5 { 0.3 } else { 0.0 };
     let steer = if left { -1.0 } else if right { 1.0 } else { 0.0 };
     crate::vehicle_physics::player_drive_input(v, throttle, brake, steer);
 
-    // Legacy movement (still drives position until physics is fully validated)
-    if fwd {
-        v.speed = (v.speed + VEHICLE_ACCEL * dt).min(VEHICLE_SPEED);
-    } else if back {
-        v.speed = (v.speed - VEHICLE_BRAKE * dt).max(-VEHICLE_SPEED * 0.4);
-    } else {
-        if v.speed > 0.0 {
-            v.speed = (v.speed - VEHICLE_BRAKE * 0.5 * dt).max(0.0);
-        } else {
-            v.speed = (v.speed + VEHICLE_BRAKE * 0.5 * dt).min(0.0);
-        }
-    }
-
-    if v.speed.abs() > 0.5 {
-        let turn = VEHICLE_TURN_SPEED * dt * (v.speed / VEHICLE_SPEED).signum();
-        if left { v.rot_y += turn; }
-        if right { v.rot_y -= turn; }
-    }
-
-    let cur_x = v.x;
-    let cur_z = v.z;
-    let spd = v.speed;
-    let rot = v.rot_y;
-    let new_x = cur_x - rot.sin() * spd * dt;
-    let new_z = cur_z - rot.cos() * spd * dt;
-
-    if !check_walk_collision(&state.world, new_x, cur_z, 1.5, None) {
-        state.world.vehicles[vi].x = new_x;
-    } else {
-        state.world.vehicles[vi].speed *= -0.3;
-    }
-    let cur_x = state.world.vehicles[vi].x;
-    if !check_walk_collision(&state.world, cur_x, new_z, 1.5, None) {
-        state.world.vehicles[vi].z = new_z;
-    } else {
-        state.world.vehicles[vi].speed *= -0.3;
-    }
-
-    state.world.vehicles[vi].x = state.world.vehicles[vi].x.clamp(-WORLD_HALF, WORLD_HALF);
-    state.world.vehicles[vi].z = state.world.vehicles[vi].z.clamp(-WORLD_HALF, WORLD_HALF);
-    let vx = state.world.vehicles[vi].x;
-    let vz = state.world.vehicles[vi].z;
-    state.world.vehicles[vi].y = state.terrain.height_at(vx, vz) + VEHICLE_GROUND_OFFSET;
-
-    // Smooth terrain normal for slope tilting (clamped to 30° max visual tilt)
-    let target_n = crate::math::clamp_normal_tilt(state.terrain.normal_at(vx, vz), 30.0);
-    let lerp_rate = 6.0 * dt;
-    let v = &mut state.world.vehicles[vi];
-    v.terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(v.terrain_normal, target_n, lerp_rate.min(1.0)));
-
-    // Slope speed effect: uphill slows, downhill accelerates
-    let (sr, cr) = state.world.vehicles[vi].rot_y.sin_cos();
-    let fwd_dir = [-sr, 0.0, -cr];
-    let slope_dot = target_n[0] * fwd_dir[0] + target_n[2] * fwd_dir[2]; // positive = facing uphill
-    state.world.vehicles[vi].speed -= slope_dot * 15.0 * dt;
-
+    // Sync player position from vehicle (physics updates vehicle position)
     state.player.x = state.world.vehicles[vi].x;
     state.player.y = state.world.vehicles[vi].y;
     state.player.z = state.world.vehicles[vi].z;
     state.player.rot_y = state.world.vehicles[vi].rot_y;
     state.player.terrain_normal = state.world.vehicles[vi].terrain_normal;
 
-    // Speed limit check: player speeding on car road
+    // Speed limit check
     if state.world.vehicles[vi].speed.abs() > SPEED_LIMIT {
         let surf = surface_at(state.world.vehicles[vi].x, state.world.vehicles[vi].z, &state.road_network);
         if surf == Surface::CarRoad {
             state.player.wanted_vehicle_hit = true;
-            state.player.bounty += 5.0 * dt;
+            state.player.bounty += 5.0 * _dt;
         }
     }
 }
@@ -289,7 +235,7 @@ fn angle_diff(a: f32, b: f32) -> f32 {
     d
 }
 
-fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terrain, dt: f32) {
+fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, dt: f32) {
     // 1. If no path → plan_route()
     if world.vehicles[vi].path.is_empty() {
         plan_route(&mut world.vehicles[vi], net);
@@ -511,7 +457,7 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
         steer_target_z = target_node[1];
     }
 
-    // 8. Steer toward target
+    // 8. Compute steering input for physics drivetrain
     {
         let vx = world.vehicles[vi].x;
         let vz = world.vehicles[vi].z;
@@ -519,60 +465,12 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
         let dz = steer_target_z - vz;
         let desired = (-dx).atan2(-dz);
         let diff = angle_diff(desired, world.vehicles[vi].rot_y);
-        world.vehicles[vi].rot_y += diff.clamp(-VEHICLE_TURN_SPEED * dt, VEHICLE_TURN_SPEED * dt);
+        let max_steer = world.vehicles[vi].drivetrain.max_steer;
+        world.vehicles[vi].drivetrain.steer_input = (diff / max_steer).clamp(-1.0, 1.0);
     }
 
-    // 9. Accelerate/brake toward target_speed
-    {
-        let v = &mut world.vehicles[vi];
-        let ts = v.target_speed;
-        if v.speed < ts {
-            v.speed = (v.speed + VEHICLE_ACCEL * 0.5 * dt).min(ts);
-        } else if v.speed > ts {
-            v.speed = (v.speed - VEHICLE_BRAKE * 0.5 * dt).max(ts).max(0.0);
-        }
-    }
-
-    // 10. Move + building/river collision check
-    {
-        let rot = world.vehicles[vi].rot_y;
-        let spd = world.vehicles[vi].speed;
-        let cur_x = world.vehicles[vi].x;
-        let cur_z = world.vehicles[vi].z;
-        let new_x = cur_x - rot.sin() * spd * dt;
-        let new_z = cur_z - rot.cos() * spd * dt;
-
-        let river_x = crate::world::on_river_not_bridge(new_x, cur_z, &world.river_segments, &world.bridges);
-        if !check_walk_collision(world, new_x, cur_z, 1.5, None) && !river_x {
-            world.vehicles[vi].x = new_x;
-        } else {
-            world.vehicles[vi].speed *= -0.3;
-            // Try to recover by adjusting rotation
-            world.vehicles[vi].rot_y += 0.3;
-        }
-        let cur_x = world.vehicles[vi].x;
-        let river_z = crate::world::on_river_not_bridge(cur_x, new_z, &world.river_segments, &world.bridges);
-        if !check_walk_collision(world, cur_x, new_z, 1.5, None) && !river_z {
-            world.vehicles[vi].z = new_z;
-        } else {
-            world.vehicles[vi].speed *= -0.3;
-        }
-    }
-
-    // 11. Clamp + terrain follow
-    world.vehicles[vi].x = world.vehicles[vi].x.clamp(-WORLD_HALF, WORLD_HALF);
-    world.vehicles[vi].z = world.vehicles[vi].z.clamp(-WORLD_HALF, WORLD_HALF);
-    world.vehicles[vi].y = terrain.height_at(world.vehicles[vi].x, world.vehicles[vi].z) + VEHICLE_GROUND_OFFSET;
-
-    // Smooth terrain normal for slope tilting (clamped to 30° max visual tilt)
-    let target_n = crate::math::clamp_normal_tilt(terrain.normal_at(world.vehicles[vi].x, world.vehicles[vi].z), 30.0);
-    let lerp_rate = 6.0 * dt;
-    world.vehicles[vi].terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(world.vehicles[vi].terrain_normal, target_n, lerp_rate.min(1.0)));
-
-    // Slope speed effect: uphill slows, downhill accelerates
-    let (sr, cr) = world.vehicles[vi].rot_y.sin_cos();
-    let slope_dot = target_n[0] * (-sr) + target_n[2] * (-cr);
-    world.vehicles[vi].speed -= slope_dot * 15.0 * dt;
+    // 9. Set drivetrain throttle/brake from target_speed (physics handles movement)
+    crate::vehicle_physics::ai_drive_input(&mut world.vehicles[vi]);
 
     // 12. Gridlock recovery — auto-park vehicles stuck at low speed for too long
     if world.vehicles[vi].speed.abs() < 0.5 {
@@ -588,9 +486,6 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
     } else {
         world.vehicles[vi].idle_timer = 0.0;
     }
-
-    // Set drivetrain inputs for physics system
-    crate::vehicle_physics::ai_drive_input(&mut world.vehicles[vi]);
 
     // Speed limit check for NPC drivers
     if let Some(owner) = world.vehicles[vi].owner_npc {

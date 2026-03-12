@@ -109,16 +109,8 @@ fn init_ragdoll(npc: &mut Npc, impulse_x: f32, impulse_y: f32, impulse_z: f32) {
     npc.skeleton.activate_ragdoll([x, y, z], npc.rot_y, impulse);
     npc.skeleton.ragdoll_timer = RAGDOLL_DURATION;
 
-    // Also init legacy ragdoll points for rendering compatibility
+    // Init legacy ragdoll points for rendering compatibility
     npc.ragdoll_points = npc.skeleton.to_ragdoll_points();
-    for i in 0..RAGDOLL_POINT_COUNT {
-        npc.ragdoll_prev[i] = [
-            npc.ragdoll_points[i][0] - impulse_x * 0.016,
-            npc.ragdoll_points[i][1] - impulse_y * 0.016,
-            npc.ragdoll_points[i][2] - impulse_z * 0.016,
-        ];
-    }
-
     npc.ragdoll_active = true;
     npc.ragdoll_timer = RAGDOLL_DURATION;
 }
@@ -127,16 +119,33 @@ fn push_apart_npcs_safe(world: &mut WorldData, i: usize, j: usize, d: f32, dx: f
     let overlap = min_dist - d;
     let nx = dx / d;
     let nz = dz / d;
-    let push = overlap * 0.5;
-    let new_ix = world.npcs[i].x - nx * push;
-    let new_iz = world.npcs[i].z - nz * push;
-    let new_jx = world.npcs[j].x + nx * push;
-    let new_jz = world.npcs[j].z + nz * push;
+
+    // Mass-based push: lighter NPC moves more
+    let mass_i = world.npcs[i].body.mass;
+    let mass_j = world.npcs[j].body.mass;
+    let inv_sum = 1.0 / mass_i + 1.0 / mass_j;
+    let push_i = overlap * (1.0 / mass_i) / inv_sum;
+    let push_j = overlap * (1.0 / mass_j) / inv_sum;
+
+    // Impulse for separation
+    let sep_impulse = overlap * 50.0; // gentle push force
+    world.npcs[i].body.apply_impulse([-nx * sep_impulse, 0.0, -nz * sep_impulse]);
+    world.npcs[j].body.apply_impulse([nx * sep_impulse, 0.0, nz * sep_impulse]);
+
+    // Positional correction
+    let new_ix = world.npcs[i].body.pos[0] - nx * push_i;
+    let new_iz = world.npcs[i].body.pos[2] - nz * push_i;
+    let new_jx = world.npcs[j].body.pos[0] + nx * push_j;
+    let new_jz = world.npcs[j].body.pos[2] + nz * push_j;
     if !crate::world::on_river_not_bridge(new_ix, new_iz, &world.river_segments, &world.bridges) {
+        world.npcs[i].body.pos[0] = new_ix;
+        world.npcs[i].body.pos[2] = new_iz;
         world.npcs[i].x = new_ix;
         world.npcs[i].z = new_iz;
     }
     if !crate::world::on_river_not_bridge(new_jx, new_jz, &world.river_segments, &world.bridges) {
+        world.npcs[j].body.pos[0] = new_jx;
+        world.npcs[j].body.pos[2] = new_jz;
         world.npcs[j].x = new_jx;
         world.npcs[j].z = new_jz;
     }
@@ -179,17 +188,27 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
                 world.npcs[ni].health -= damage;
                 world.npcs[ni].hit_flash = HIT_FLASH_DURATION;
 
-                // Launch direction: vehicle's forward + up
+                // Mass-based momentum transfer for launch
+                let v_mass = world.vehicles[vi].body.mass;
+                let n_mass = world.npcs[ni].body.mass;
+                let inv_mass_sum = 1.0 / v_mass + 1.0 / n_mass;
+                let restitution = 0.5;
+                let j_mag = (1.0 + restitution) * vspeed / inv_mass_sum;
+
+                // Launch NPC with physics impulse
                 let vrot = world.vehicles[vi].rot_y;
                 let fwd_x = -vrot.sin();
                 let fwd_z = -vrot.cos();
-                let launch_x = fwd_x * vspeed * 0.5 + nx * 3.0;
-                let launch_z = fwd_z * vspeed * 0.5 + nz * 3.0;
-
+                let launch_x = fwd_x * j_mag / n_mass + nx * 3.0;
+                let launch_z = fwd_z * j_mag / n_mass + nz * 3.0;
                 init_ragdoll(&mut world.npcs[ni], launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z);
 
-                // Slow vehicle on impact
-                world.vehicles[vi].speed *= 0.7;
+                // Vehicle slows proportional to mass ratio (barely for car vs person)
+                let v_slow = j_mag / v_mass; // velocity change
+                world.vehicles[vi].body.apply_impulse([-fwd_x * j_mag, 0.0, -fwd_z * j_mag]);
+                let fwd_v = crate::math::quat_forward(world.vehicles[vi].body.quat);
+                world.vehicles[vi].speed = crate::math::v3_dot(world.vehicles[vi].body.vel, fwd_v);
+                let _ = v_slow;
 
                 // Mark driver as wanted (hit-and-run)
                 if let Some(owner) = world.vehicles[vi].owner_npc {
@@ -230,12 +249,22 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
                 player.hit_flash = HIT_FLASH_DURATION;
                 player.damage_shake = CAMERA_SHAKE_INTENSITY;
 
-                // Push player out
-                player.x += nx * (depth + 0.5);
-                player.z += nz * (depth + 0.5);
+                // Mass-based push: player body gets impulse
+                let v_mass = world.vehicles[vi].body.mass;
+                let p_mass = player.body.mass;
+                let inv_mass_sum = 1.0 / v_mass + 1.0 / p_mass;
+                let restitution = 0.4;
+                let j_mag = (1.0 + restitution) * vspeed / inv_mass_sum;
+                player.body.apply_impulse([nx * j_mag, j_mag * 0.2, nz * j_mag]);
+                player.body.pos[0] += nx * (depth + 0.3);
+                player.body.pos[2] += nz * (depth + 0.3);
+                player.x = player.body.pos[0];
+                player.z = player.body.pos[2];
 
-                // Slow vehicle
-                world.vehicles[vi].speed *= 0.7;
+                // Vehicle slows proportional to mass ratio
+                world.vehicles[vi].body.apply_impulse([-nx * j_mag, 0.0, -nz * j_mag]);
+                let fwd_v = crate::math::quat_forward(world.vehicles[vi].body.quat);
+                world.vehicles[vi].speed = crate::math::v3_dot(world.vehicles[vi].body.vel, fwd_v);
 
                 // Mark driver as wanted
                 if let Some(owner) = world.vehicles[vi].owner_npc {
@@ -263,12 +292,21 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
             if overlap_x > 0.0 && overlap_z > 0.0 {
                 if overlap_x < overlap_z {
                     let sign = if dx > 0.0 { 1.0 } else { -1.0 };
-                    world.vehicles[vi].x += sign * overlap_x;
+                    world.vehicles[vi].body.pos[0] += sign * overlap_x;
                 } else {
                     let sign = if dz > 0.0 { 1.0 } else { -1.0 };
-                    world.vehicles[vi].z += sign * overlap_z;
+                    world.vehicles[vi].body.pos[2] += sign * overlap_z;
                 }
-                world.vehicles[vi].speed *= 0.3;
+                let restitution = 0.2;
+                if overlap_x < overlap_z {
+                    world.vehicles[vi].body.vel[0] *= -restitution;
+                } else {
+                    world.vehicles[vi].body.vel[2] *= -restitution;
+                }
+                world.vehicles[vi].x = world.vehicles[vi].body.pos[0];
+                world.vehicles[vi].z = world.vehicles[vi].body.pos[2];
+                let fwd = crate::math::quat_forward(world.vehicles[vi].body.quat);
+                world.vehicles[vi].speed = crate::math::v3_dot(world.vehicles[vi].body.vel, fwd);
             }
         }
         // Vehicle → street light collision
@@ -280,9 +318,20 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
             if d2 < min_r * min_r && d2 > 0.001 {
                 let d = d2.sqrt();
                 let push = min_r - d;
-                world.vehicles[vi].x += (dx / d) * push;
-                world.vehicles[vi].z += (dz / d) * push;
-                world.vehicles[vi].speed *= 0.5;
+                let norm_x = dx / d;
+                let norm_z = dz / d;
+                world.vehicles[vi].body.pos[0] += norm_x * push;
+                world.vehicles[vi].body.pos[2] += norm_z * push;
+                // Reflect velocity component along collision normal
+                let vn = world.vehicles[vi].body.vel[0] * norm_x + world.vehicles[vi].body.vel[2] * norm_z;
+                if vn < 0.0 {
+                    world.vehicles[vi].body.vel[0] -= norm_x * vn * 1.3;
+                    world.vehicles[vi].body.vel[2] -= norm_z * vn * 1.3;
+                }
+                world.vehicles[vi].x = world.vehicles[vi].body.pos[0];
+                world.vehicles[vi].z = world.vehicles[vi].body.pos[2];
+                let fwd = crate::math::quat_forward(world.vehicles[vi].body.quat);
+                world.vehicles[vi].speed = crate::math::v3_dot(world.vehicles[vi].body.vel, fwd);
             }
         }
     }
@@ -299,19 +348,40 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
             let obb_b = Obb2d::from_vehicle(&world.vehicles[j]);
 
             if let Some((nx, nz, depth)) = obb_intersect(&obb_a, &obb_b) {
-                let relative_speed = (world.vehicles[i].speed - world.vehicles[j].speed).abs();
+                // Mass-based collision response
+                let mass_i = world.vehicles[i].body.mass;
+                let mass_j = world.vehicles[j].body.mass;
+                let inv_mass_sum = 1.0 / mass_i + 1.0 / mass_j;
 
-                // Push apart
-                let push = depth * 0.5 + 0.1;
-                world.vehicles[i].x -= nx * push;
-                world.vehicles[i].z -= nz * push;
-                world.vehicles[j].x += nx * push;
-                world.vehicles[j].z += nz * push;
+                // Positional correction (mass-weighted: lighter vehicle moves more)
+                let push = depth + 0.05;
+                let wi = (1.0 / mass_i) / inv_mass_sum;
+                let wj = (1.0 / mass_j) / inv_mass_sum;
+                world.vehicles[i].body.pos[0] -= nx * push * wi;
+                world.vehicles[i].body.pos[2] -= nz * push * wi;
+                world.vehicles[j].body.pos[0] += nx * push * wj;
+                world.vehicles[j].body.pos[2] += nz * push * wj;
 
-                // Bounce speeds
-                let avg = (world.vehicles[i].speed + world.vehicles[j].speed) * 0.5;
-                world.vehicles[i].speed = avg - nx * relative_speed * 0.3;
-                world.vehicles[j].speed = avg + nx * relative_speed * 0.3;
+                // Impulse-based velocity exchange
+                let rel_vn = (world.vehicles[i].body.vel[0] - world.vehicles[j].body.vel[0]) * nx
+                           + (world.vehicles[i].body.vel[2] - world.vehicles[j].body.vel[2]) * nz;
+                let relative_speed = rel_vn.abs();
+                if rel_vn > 0.0 {
+                    let restitution = 0.3;
+                    let j_mag = (1.0 + restitution) * rel_vn / inv_mass_sum;
+                    world.vehicles[i].body.apply_impulse([-nx * j_mag, 0.0, -nz * j_mag]);
+                    world.vehicles[j].body.apply_impulse([nx * j_mag, 0.0, nz * j_mag]);
+                }
+
+                // Sync legacy fields from body
+                world.vehicles[i].x = world.vehicles[i].body.pos[0];
+                world.vehicles[i].z = world.vehicles[i].body.pos[2];
+                let fwd_i = crate::math::quat_forward(world.vehicles[i].body.quat);
+                world.vehicles[i].speed = crate::math::v3_dot(world.vehicles[i].body.vel, fwd_i);
+                world.vehicles[j].x = world.vehicles[j].body.pos[0];
+                world.vehicles[j].z = world.vehicles[j].body.pos[2];
+                let fwd_j = crate::math::quat_forward(world.vehicles[j].body.quat);
+                world.vehicles[j].speed = crate::math::v3_dot(world.vehicles[j].body.vel, fwd_j);
 
                 // Panel deformation from crash energy
                 if relative_speed > 2.0 {
@@ -384,11 +454,20 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
                 let overlap = min_dist - d;
                 let nx = dx / d;
                 let nz = dz / d;
-                // Push NPC more than player (70/30)
-                world.npcs[ni].x += nx * overlap * 0.7;
-                world.npcs[ni].z += nz * overlap * 0.7;
-                player.x -= nx * overlap * 0.3;
-                player.z -= nz * overlap * 0.3;
+                // Mass-based push
+                let p_mass = player.body.mass;
+                let n_mass = world.npcs[ni].body.mass;
+                let inv_sum = 1.0 / p_mass + 1.0 / n_mass;
+                let push_p = overlap * (1.0 / p_mass) / inv_sum;
+                let push_n = overlap * (1.0 / n_mass) / inv_sum;
+                world.npcs[ni].body.pos[0] += nx * push_n;
+                world.npcs[ni].body.pos[2] += nz * push_n;
+                world.npcs[ni].x = world.npcs[ni].body.pos[0];
+                world.npcs[ni].z = world.npcs[ni].body.pos[2];
+                player.body.pos[0] -= nx * push_p;
+                player.body.pos[2] -= nz * push_p;
+                player.x = player.body.pos[0];
+                player.z = player.body.pos[2];
             }
         }
     }
@@ -421,14 +500,21 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
                 let damage = vspeed * VEHICLE_HIT_DAMAGE_MULT;
                 world.npcs[ni].health -= damage;
 
+                // Mass-based launch
+                let v_mass = world.vehicles[vi].body.mass;
+                let n_mass = world.npcs[ni].body.mass;
+                let inv_mass_sum = 1.0 / v_mass + 1.0 / n_mass;
+                let j_mag = 1.5 * vspeed / inv_mass_sum;
                 let vrot = world.vehicles[vi].rot_y;
                 let fwd_x = -vrot.sin();
                 let fwd_z = -vrot.cos();
-                let launch_x = fwd_x * vspeed * 0.5 + nx * 3.0;
-                let launch_z = fwd_z * vspeed * 0.5 + nz * 3.0;
+                let launch_x = fwd_x * j_mag / n_mass + nx * 3.0;
+                let launch_z = fwd_z * j_mag / n_mass + nz * 3.0;
                 init_ragdoll(&mut world.npcs[ni], launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z);
 
-                world.vehicles[vi].speed *= 0.7;
+                world.vehicles[vi].body.apply_impulse([-fwd_x * j_mag, 0.0, -fwd_z * j_mag]);
+                let fwd_v = crate::math::quat_forward(world.vehicles[vi].body.quat);
+                world.vehicles[vi].speed = crate::math::v3_dot(world.vehicles[vi].body.vel, fwd_v);
 
                 if let Some(owner) = world.vehicles[vi].owner_npc {
                     if owner < nn {
@@ -457,12 +543,21 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
             if overlap_x > 0.0 && overlap_z > 0.0 {
                 if overlap_x < overlap_z {
                     let sign = if dx > 0.0 { 1.0 } else { -1.0 };
-                    world.vehicles[vi].x += sign * overlap_x;
+                    world.vehicles[vi].body.pos[0] += sign * overlap_x;
                 } else {
                     let sign = if dz > 0.0 { 1.0 } else { -1.0 };
-                    world.vehicles[vi].z += sign * overlap_z;
+                    world.vehicles[vi].body.pos[2] += sign * overlap_z;
                 }
-                world.vehicles[vi].speed *= 0.3;
+                let restitution = 0.2;
+                if overlap_x < overlap_z {
+                    world.vehicles[vi].body.vel[0] *= -restitution;
+                } else {
+                    world.vehicles[vi].body.vel[2] *= -restitution;
+                }
+                world.vehicles[vi].x = world.vehicles[vi].body.pos[0];
+                world.vehicles[vi].z = world.vehicles[vi].body.pos[2];
+                let fwd = crate::math::quat_forward(world.vehicles[vi].body.quat);
+                world.vehicles[vi].speed = crate::math::v3_dot(world.vehicles[vi].body.vel, fwd);
             }
         }
         for sl in &world.street_lights {
@@ -473,9 +568,20 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
             if d2 < min_r * min_r && d2 > 0.001 {
                 let d = d2.sqrt();
                 let push = min_r - d;
-                world.vehicles[vi].x += (dx / d) * push;
-                world.vehicles[vi].z += (dz / d) * push;
-                world.vehicles[vi].speed *= 0.5;
+                let norm_x = dx / d;
+                let norm_z = dz / d;
+                world.vehicles[vi].body.pos[0] += norm_x * push;
+                world.vehicles[vi].body.pos[2] += norm_z * push;
+                // Reflect velocity component along collision normal
+                let vn = world.vehicles[vi].body.vel[0] * norm_x + world.vehicles[vi].body.vel[2] * norm_z;
+                if vn < 0.0 {
+                    world.vehicles[vi].body.vel[0] -= norm_x * vn * 1.3;
+                    world.vehicles[vi].body.vel[2] -= norm_z * vn * 1.3;
+                }
+                world.vehicles[vi].x = world.vehicles[vi].body.pos[0];
+                world.vehicles[vi].z = world.vehicles[vi].body.pos[2];
+                let fwd = crate::math::quat_forward(world.vehicles[vi].body.quat);
+                world.vehicles[vi].speed = crate::math::v3_dot(world.vehicles[vi].body.vel, fwd);
             }
         }
     }
@@ -491,16 +597,36 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
             let obb_a = Obb2d::from_vehicle(&world.vehicles[i]);
             let obb_b = Obb2d::from_vehicle(&world.vehicles[j]);
             if let Some((nx, nz, depth)) = obb_intersect(&obb_a, &obb_b) {
-                let relative_speed = (world.vehicles[i].speed - world.vehicles[j].speed).abs();
-                let push = depth * 0.5 + 0.1;
-                world.vehicles[i].x -= nx * push;
-                world.vehicles[i].z -= nz * push;
-                world.vehicles[j].x += nx * push;
-                world.vehicles[j].z += nz * push;
+                // Mass-based collision response
+                let mass_i = world.vehicles[i].body.mass;
+                let mass_j = world.vehicles[j].body.mass;
+                let inv_mass_sum = 1.0 / mass_i + 1.0 / mass_j;
 
-                let avg = (world.vehicles[i].speed + world.vehicles[j].speed) * 0.5;
-                world.vehicles[i].speed = avg - nx * relative_speed * 0.3;
-                world.vehicles[j].speed = avg + nx * relative_speed * 0.3;
+                let push = depth + 0.05;
+                let wi = (1.0 / mass_i) / inv_mass_sum;
+                let wj = (1.0 / mass_j) / inv_mass_sum;
+                world.vehicles[i].body.pos[0] -= nx * push * wi;
+                world.vehicles[i].body.pos[2] -= nz * push * wi;
+                world.vehicles[j].body.pos[0] += nx * push * wj;
+                world.vehicles[j].body.pos[2] += nz * push * wj;
+
+                let rel_vn = (world.vehicles[i].body.vel[0] - world.vehicles[j].body.vel[0]) * nx
+                           + (world.vehicles[i].body.vel[2] - world.vehicles[j].body.vel[2]) * nz;
+                let relative_speed = rel_vn.abs();
+                if rel_vn > 0.0 {
+                    let restitution = 0.3;
+                    let j_mag = (1.0 + restitution) * rel_vn / inv_mass_sum;
+                    world.vehicles[i].body.apply_impulse([-nx * j_mag, 0.0, -nz * j_mag]);
+                    world.vehicles[j].body.apply_impulse([nx * j_mag, 0.0, nz * j_mag]);
+                }
+                world.vehicles[i].x = world.vehicles[i].body.pos[0];
+                world.vehicles[i].z = world.vehicles[i].body.pos[2];
+                let fwd_i = crate::math::quat_forward(world.vehicles[i].body.quat);
+                world.vehicles[i].speed = crate::math::v3_dot(world.vehicles[i].body.vel, fwd_i);
+                world.vehicles[j].x = world.vehicles[j].body.pos[0];
+                world.vehicles[j].z = world.vehicles[j].body.pos[2];
+                let fwd_j = crate::math::quat_forward(world.vehicles[j].body.quat);
+                world.vehicles[j].speed = crate::math::v3_dot(world.vehicles[j].body.vel, fwd_j);
 
                 // Panel deformation
                 if relative_speed > 2.0 {
