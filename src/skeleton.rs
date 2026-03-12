@@ -88,6 +88,29 @@ impl Bone {
     }
 }
 
+// ── Per-foot ground contact ──────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+pub struct FootContact {
+    pub grounded: bool,         // foot is planted on surface
+    pub ground_y: f32,          // terrain height under this foot
+    pub target_pos: Vec3,       // IK target in world space
+    pub plant_pos: Vec3,        // position where foot was planted (stays fixed while grounded)
+    pub lift_height: f32,       // current lift above ground during swing phase
+}
+
+impl FootContact {
+    pub fn new() -> Self {
+        FootContact {
+            grounded: true,
+            ground_y: 0.0,
+            target_pos: [0.0; 3],
+            plant_pos: [0.0; 3],
+            lift_height: 0.0,
+        }
+    }
+}
+
 // ── Skeleton ─────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -96,6 +119,13 @@ pub struct Skeleton {
     pub ragdoll_active: bool,
     pub ragdoll_timer: f32,
     pub ragdoll_blend: f32,     // 0 = full ragdoll, 1 = full animation (for blending back)
+    // Procedural animation state
+    pub walk_phase: f32,        // 0..TAU, drives left/right foot alternation
+    pub feet: [FootContact; 2], // [left, right]
+    pub com_offset: Vec3,       // center of mass offset from hips (body sway)
+    pub landing_speed: f32,     // vertical speed at last ground contact (for stumble)
+    pub stumble_timer: f32,     // >0 = stumbling, decrements to 0
+    pub stumble_dir: Vec3,      // stumble lean direction (world space)
 }
 
 impl Skeleton {
@@ -142,6 +172,12 @@ impl Skeleton {
             ragdoll_active: false,
             ragdoll_timer: 0.0,
             ragdoll_blend: 1.0,
+            walk_phase: 0.0,
+            feet: [FootContact::new(); 2],
+            com_offset: [0.0; 3],
+            landing_speed: 0.0,
+            stumble_timer: 0.0,
+            stumble_dir: [0.0; 3],
         }
     }
 
@@ -184,6 +220,226 @@ impl Skeleton {
             self.bone_tip(BoneId::LeftFoot),
             self.bone_tip(BoneId::RightFoot),
         ]
+    }
+
+    // ── Procedural animation ──────────────────────────────────────────
+
+    /// Step procedural animation: walk cycle from velocity, foot IK, CoM sway, stumble.
+    /// Call once per frame for walking/standing characters. Not called during ragdoll.
+    /// `vel` = character horizontal velocity, `pos` = character world position,
+    /// `rot_y` = facing direction, `terrain` = for foot ground queries.
+    pub fn step_animation(&mut self, vel: Vec3, pos: Vec3, rot_y: f32, terrain: &crate::state::Terrain, on_ground: bool, dt: f32) {
+        if self.ragdoll_active { return; }
+
+        let horiz_speed = (vel[0] * vel[0] + vel[2] * vel[2]).sqrt();
+        let pi = std::f32::consts::PI;
+        let tau = std::f32::consts::TAU;
+
+        // ── Walk phase advancement (driven by actual velocity) ──
+        // Stride frequency: ~2 steps/sec at walk speed (~1.4 m/s), scales with speed
+        let stride_freq = if horiz_speed > 0.3 { horiz_speed * 2.0 } else { 0.0 };
+        self.walk_phase = (self.walk_phase + stride_freq * dt) % tau;
+
+        // ── Per-foot ground contact + IK targets ──
+        let fwd = [-rot_y.sin(), 0.0, -rot_y.cos()];
+        let right = [rot_y.cos(), 0.0, -rot_y.sin()];
+
+        // Hip offsets: left foot at -0.10 lateral, right at +0.10
+        let hip_y = pos[1] + 0.95; // hips height
+        let stride_len = (horiz_speed * 0.35).min(0.45); // max stride ~45cm
+
+        for side in 0..2 {
+            let lateral_sign: f32 = if side == 0 { -1.0 } else { 1.0 };
+            // Phase offset: left=0, right=PI (opposite feet)
+            let phase = self.walk_phase + if side == 1 { pi } else { 0.0 };
+            let sin_phase = phase.sin();
+            let cos_phase = phase.cos();
+
+            // Hip position in world space
+            let hip_pos = [
+                pos[0] + right[0] * 0.10 * lateral_sign,
+                hip_y,
+                pos[2] + right[2] * 0.10 * lateral_sign,
+            ];
+
+            if horiz_speed > 0.3 {
+                // Walking: foot traces an arc — forward/backward with sin, up with abs(cos)
+                let foot_fwd_offset = sin_phase * stride_len;
+                let foot_lift = (1.0 - cos_phase.abs()) * 0.08 * (horiz_speed / 1.4).min(1.5);
+
+                let foot_x = pos[0] + right[0] * 0.10 * lateral_sign + fwd[0] * foot_fwd_offset;
+                let foot_z = pos[2] + right[2] * 0.10 * lateral_sign + fwd[2] * foot_fwd_offset;
+                let ground_y = terrain.height_at(foot_x, foot_z);
+
+                // Foot grounded when phase is in second half of cycle (foot behind, on ground)
+                let is_contact = cos_phase > 0.0;
+
+                self.feet[side].grounded = is_contact && on_ground;
+                self.feet[side].ground_y = ground_y;
+                self.feet[side].lift_height = if is_contact { 0.0 } else { foot_lift };
+                self.feet[side].target_pos = [foot_x, ground_y + self.feet[side].lift_height, foot_z];
+
+                if is_contact {
+                    self.feet[side].plant_pos = self.feet[side].target_pos;
+                }
+            } else {
+                // Idle: feet planted at rest positions
+                let foot_x = pos[0] + right[0] * 0.10 * lateral_sign;
+                let foot_z = pos[2] + right[2] * 0.10 * lateral_sign;
+                let ground_y = terrain.height_at(foot_x, foot_z);
+                self.feet[side].grounded = on_ground;
+                self.feet[side].ground_y = ground_y;
+                self.feet[side].lift_height = 0.0;
+                self.feet[side].target_pos = [foot_x, ground_y, foot_z];
+                self.feet[side].plant_pos = self.feet[side].target_pos;
+            }
+
+            // Apply two-bone IK to leg bones
+            let upper_len = 0.42; // upper leg
+            let lower_len = 0.40; // lower leg
+            let pole_dir = fwd; // knees bend forward
+            let (upper_rot, lower_rot) = solve_two_bone_ik(
+                hip_pos,
+                self.feet[side].target_pos,
+                upper_len,
+                lower_len,
+                pole_dir,
+            );
+
+            let upper_bone = if side == 0 { BoneId::LeftUpperLeg } else { BoneId::RightUpperLeg };
+            let lower_bone = if side == 0 { BoneId::LeftLowerLeg } else { BoneId::RightLowerLeg };
+            self.bones[upper_bone as usize].local_rot = upper_rot;
+            self.bones[lower_bone as usize].local_rot = lower_rot;
+        }
+
+        // ── Center of mass sway ──
+        // Lateral sway: shift hips toward planted foot
+        let sway_amount = if horiz_speed > 0.3 {
+            self.walk_phase.cos() * 0.015 * (horiz_speed / 1.4).min(1.0)
+        } else {
+            0.0
+        };
+        self.com_offset = [right[0] * sway_amount, 0.0, right[2] * sway_amount];
+
+        // ── Arm swing (opposite to legs) ──
+        if horiz_speed > 0.3 {
+            let arm_swing = self.walk_phase.sin() * 0.4 * (horiz_speed / 2.0).min(1.0);
+            // Left arm swings opposite to left leg → same sign as walk_phase.sin()
+            self.bones[BoneId::LeftUpperArm as usize].local_rot =
+                quat_from_axis_angle([1.0, 0.0, 0.0], arm_swing);
+            self.bones[BoneId::RightUpperArm as usize].local_rot =
+                quat_from_axis_angle([1.0, 0.0, 0.0], -arm_swing);
+        } else {
+            self.bones[BoneId::LeftUpperArm as usize].local_rot = QUAT_IDENTITY;
+            self.bones[BoneId::RightUpperArm as usize].local_rot = QUAT_IDENTITY;
+        }
+
+        // ── Spine lean into movement ──
+        if horiz_speed > 1.0 {
+            let lean = (horiz_speed * 0.02).min(0.12); // slight forward lean
+            self.bones[BoneId::Spine as usize].local_rot =
+                quat_from_axis_angle([1.0, 0.0, 0.0], lean);
+        } else {
+            self.bones[BoneId::Spine as usize].local_rot = QUAT_IDENTITY;
+        }
+
+        // ── Landing detection → stumble ──
+        if on_ground && self.landing_speed < -4.0 {
+            // Hard landing — trigger stumble proportional to impact
+            let severity = (-self.landing_speed - 4.0) / 8.0; // 0..1 over 4..12 m/s
+            self.stumble_timer = severity.clamp(0.2, 1.5);
+            // Stumble forward (movement direction or facing direction)
+            if horiz_speed > 0.5 {
+                self.stumble_dir = v3_normalize([vel[0], 0.0, vel[2]]);
+            } else {
+                self.stumble_dir = fwd;
+            }
+            self.landing_speed = 0.0; // consumed
+        }
+
+        // Record vertical velocity for next-frame landing detection
+        if !on_ground {
+            self.landing_speed = vel[1];
+        } else {
+            self.landing_speed = 0.0;
+        }
+
+        // ── Stumble animation ──
+        if self.stumble_timer > 0.0 {
+            self.stumble_timer -= dt;
+            let t = self.stumble_timer.max(0.0);
+            // Lean forward + side wobble
+            let lean_fwd = t * 0.5; // decaying forward lean
+            let wobble = (t * 12.0).sin() * t * 0.15; // oscillating side lean
+            self.bones[BoneId::Spine as usize].local_rot =
+                quat_from_axis_angle([1.0, 0.0, 0.0], lean_fwd);
+            self.bones[BoneId::Chest as usize].local_rot =
+                quat_from_axis_angle([0.0, 0.0, 1.0], wobble);
+            // Arms flail outward
+            let flail = t * 0.8;
+            self.bones[BoneId::LeftUpperArm as usize].local_rot =
+                quat_from_axis_angle([0.0, 0.0, 1.0], flail);
+            self.bones[BoneId::RightUpperArm as usize].local_rot =
+                quat_from_axis_angle([0.0, 0.0, -1.0], flail);
+        }
+
+        // ── Update world transforms ──
+        let root_rot = quat_from_rot_y(rot_y);
+        let root_pos = v3_add(pos, self.com_offset);
+        self.compute_world_transforms(root_pos, root_rot);
+    }
+
+    /// Return walk swing angle for the renderer (replaces walk_phase.sin() * 0.4).
+    /// Positive = left leg forward, negative = left leg back.
+    pub fn walk_swing(&self) -> f32 {
+        self.walk_phase.sin() * 0.4
+    }
+
+    /// Should this character enter ragdoll from fall damage?
+    /// Returns true if landing velocity exceeded fatal threshold.
+    pub fn should_ragdoll_from_fall(&self) -> bool {
+        // Triggered externally when landing_speed < -8.0 before it's consumed
+        false // step_animation handles stumble; caller checks landing_speed directly
+    }
+
+    /// Blend from ragdoll back to animation over time.
+    /// Call each frame while ragdoll_blend < 1.0 after ragdoll timer expires.
+    pub fn blend_from_ragdoll(&mut self, pos: Vec3, rot_y: f32, dt: f32) {
+        if !self.ragdoll_active { return; }
+
+        // Start blending when timer expires
+        if self.ragdoll_timer > 0.0 { return; }
+
+        // Increase blend toward animation
+        self.ragdoll_blend += dt * 1.5; // ~0.67s full recovery
+        if self.ragdoll_blend >= 1.0 {
+            self.ragdoll_blend = 1.0;
+            self.ragdoll_active = false;
+            // Reset bone velocities
+            for b in &mut self.bones {
+                b.vel = [0.0; 3];
+                b.ang_vel = [0.0; 3];
+            }
+            return;
+        }
+
+        // Compute animation pose target
+        let root_rot = quat_from_rot_y(rot_y);
+        let anim_bones = {
+            let mut temp = self.clone();
+            temp.ragdoll_active = false;
+            temp.compute_world_transforms(pos, root_rot);
+            temp.bones
+        };
+
+        // Blend each bone: lerp world_pos, slerp world_rot
+        let t = self.ragdoll_blend;
+        for i in 0..BONE_COUNT {
+            self.bones[i].world_pos = v3_lerp(self.bones[i].world_pos, anim_bones[i].world_pos, t);
+            self.bones[i].world_rot = quat_slerp(self.bones[i].world_rot, anim_bones[i].world_rot, t);
+            // Dampen velocities as blend increases
+            self.bones[i].vel = v3_scale(self.bones[i].vel, 1.0 - t);
+        }
     }
 
     /// Initialize skeleton from NPC position for ragdoll activation.

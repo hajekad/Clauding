@@ -465,6 +465,48 @@ pub fn sphere_vs_sphere(
     Some(Contact::new(idx_a, idx_b, point, normal, pen, mat))
 }
 
+// ── Explosion / radial impulse ────────────────────────────────────────────
+
+/// Apply a radial explosion impulse to a rigid body.
+/// `origin`: world-space explosion center
+/// `radius`: maximum effect radius (impulse falls off linearly to zero at edge)
+/// `force`: peak impulse magnitude at the explosion center
+/// Returns the actual impulse magnitude applied (0 if out of range).
+pub fn apply_explosion(body: &mut RigidBody, origin: Vec3, radius: f32, force: f32) -> f32 {
+    if body.is_static || radius < 1e-4 { return 0.0; }
+
+    let d = v3_sub(body.pos, origin);
+    let dist = v3_len(d);
+    if dist >= radius || dist < 1e-4 { return 0.0; }
+
+    // Linear falloff: full impulse at center, zero at edge
+    let falloff = 1.0 - dist / radius;
+    let magnitude = force * falloff;
+    let dir = v3_scale(d, 1.0 / dist);
+    // Add slight upward bias (explosions lift things)
+    let impulse_dir = v3_normalize([dir[0], dir[1] + 0.3, dir[2]]);
+    let impulse = v3_scale(impulse_dir, magnitude);
+    body.apply_impulse(impulse);
+    magnitude
+}
+
+/// Apply explosion to a slice of rigid bodies. Returns indices that were affected.
+pub fn apply_explosion_to_all(
+    bodies: &mut [RigidBody],
+    origin: Vec3,
+    radius: f32,
+    force: f32,
+) -> Vec<(usize, f32)> {
+    let mut affected = Vec::new();
+    for (i, body) in bodies.iter_mut().enumerate() {
+        let mag = apply_explosion(body, origin, radius, force);
+        if mag > 0.0 {
+            affected.push((i, mag));
+        }
+    }
+    affected
+}
+
 // ── Capsule vs ground (character-specific) ───────────────────────────────
 
 /// Character capsule ground contact — returns contact at feet position

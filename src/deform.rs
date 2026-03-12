@@ -67,4 +67,38 @@ impl VehicleDeformation {
     pub fn is_totaled(&self) -> bool {
         self.damage_fraction() > 0.8
     }
+
+    // ── Handling effects from structural damage ──
+
+    /// Engine torque multiplier (front panels damaged → less power).
+    /// Panel indices 1-3 correspond to the front arc of the vehicle.
+    pub fn engine_factor(&self) -> f32 {
+        let front_avg = (self.offsets[1] + self.offsets[2] + self.offsets[3]) / (3.0 * self.max_deform);
+        (1.0 - front_avg * 0.8).max(0.05) // up to 80% torque loss, never fully zero
+    }
+
+    /// Suspension spring rate multiplier for a given wheel.
+    /// Each wheel maps to the nearest panel pair.
+    pub fn suspension_factor(&self, wheel_idx: usize) -> f32 {
+        let panel_avg = match wheel_idx {
+            0 => (self.offsets[1] + self.offsets[2]) * 0.5, // FL — front-left panels
+            1 => (self.offsets[3] + self.offsets[4]) * 0.5, // FR — front-right panels
+            2 => (self.offsets[6] + self.offsets[7]) * 0.5, // RL — rear-left panels
+            3 => (self.offsets[5] + self.offsets[6]) * 0.5, // RR — rear-right panels
+            _ => 0.0,
+        };
+        let damage = panel_avg / self.max_deform;
+        (1.0 - damage * 0.5).max(0.3) // up to 50% spring loss
+    }
+
+    /// Steering angle multiplier (front axle damage → reduced lock).
+    pub fn steering_factor(&self) -> f32 {
+        let front_avg = (self.offsets[1] + self.offsets[2] + self.offsets[3]) / (3.0 * self.max_deform);
+        (1.0 - front_avg * 0.6).max(0.2) // up to 60% lock reduction
+    }
+
+    /// Tire grip multiplier (overall damage → reduced contact patch).
+    pub fn grip_factor(&self) -> f32 {
+        (1.0 - self.damage_fraction() * 0.3).max(0.5) // up to 30% grip loss
+    }
 }
