@@ -1,0 +1,169 @@
+// Pacejka "Magic Formula" tire model + wheel state + drivetrain
+//
+// Computes longitudinal/lateral forces from slip ratios and slip angles.
+// Each wheel tracks angular velocity, steering angle, and produces forces
+// that feed back into the rigid body solver.
+
+use crate::math::*;
+use crate::material::SurfaceMaterial;
+
+// ── Pacejka Magic Formula ────────────────────────────────────────────────
+
+/// Pacejka coefficients for a single axis (longitudinal or lateral)
+#[derive(Clone, Copy)]
+pub struct PacejkaCoeffs {
+    pub b: f32,  // stiffness
+    pub c: f32,  // shape
+    pub d: f32,  // peak (force = d * Fz)
+    pub e: f32,  // curvature
+}
+
+/// Default coefficients for street tires on asphalt
+pub const PACEJKA_LONG: PacejkaCoeffs = PacejkaCoeffs { b: 10.0, c: 1.9, d: 1.0, e: 0.97 };
+pub const PACEJKA_LAT: PacejkaCoeffs = PacejkaCoeffs { b: 12.0, c: 2.3, d: 1.0, e: 0.97 };
+
+/// Evaluate the Magic Formula: F = D * sin(C * atan(B*x - E*(B*x - atan(B*x))))
+fn pacejka(p: &PacejkaCoeffs, slip: f32) -> f32 {
+    let bx = p.b * slip;
+    let inner = bx - p.e * (bx - bx.atan());
+    p.d * (p.c * inner.atan()).sin()
+}
+
+// ── Wheel state ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+pub struct WheelState {
+    pub ang_vel: f32,           // wheel angular velocity (rad/s)
+    pub steer_angle: f32,       // steering angle (rad, 0 for rear wheels)
+    pub radius: f32,            // tire radius (m)
+    pub inertia: f32,           // wheel rotational inertia (kg*m^2)
+    pub brake_torque: f32,      // applied brake torque (N*m)
+    pub drive_torque: f32,      // applied drive torque from engine (N*m)
+    // Suspension attachment point in local vehicle space
+    pub local_pos: Vec3,
+    // Output (computed each frame)
+    pub contact_force: Vec3,    // world-space force from this tire
+    pub on_ground: bool,
+    pub compression: f32,       // current suspension compression (0..1)
+    pub ground_y: f32,          // terrain height at contact
+}
+
+impl WheelState {
+    pub fn new(local_pos: Vec3, radius: f32) -> Self {
+        WheelState {
+            ang_vel: 0.0,
+            steer_angle: 0.0,
+            radius,
+            inertia: 1.2,       // typical car wheel ~1.2 kg*m^2
+            brake_torque: 0.0,
+            drive_torque: 0.0,
+            local_pos,
+            contact_force: [0.0; 3],
+            on_ground: false,
+            compression: 0.0,
+            ground_y: 0.0,
+        }
+    }
+}
+
+// ── Drivetrain ───────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+pub struct Drivetrain {
+    pub engine_torque: f32,     // max engine torque (N*m)
+    pub gear_ratio: f32,        // current gear ratio * final drive
+    pub throttle: f32,          // 0..1
+    pub brake: f32,             // 0..1
+    pub handbrake: bool,
+    pub max_steer: f32,         // max steering angle (rad)
+    pub steer_input: f32,       // -1..1 steering input
+}
+
+impl Drivetrain {
+    pub fn new(engine_torque: f32, max_steer_deg: f32) -> Self {
+        Drivetrain {
+            engine_torque,
+            gear_ratio: 3.5,    // 1st gear * final drive
+            throttle: 0.0,
+            brake: 0.0,
+            handbrake: false,
+            max_steer: max_steer_deg.to_radians(),
+            steer_input: 0.0,
+        }
+    }
+}
+
+// ── Tire force computation ───────────────────────────────────────────────
+
+/// Compute tire forces for one wheel given the vehicle body state.
+/// Returns (world_force, tire_torque_feedback) applied to the rigid body.
+pub fn compute_tire_forces(
+    wheel: &mut WheelState,
+    body_vel_at_contact: Vec3,  // velocity of body at wheel contact point (world space)
+    _body_up: Vec3,             // vehicle up direction (from quat)
+    body_fwd: Vec3,             // vehicle forward direction (from quat)
+    body_right: Vec3,           // vehicle right direction (from quat)
+    normal_load: f32,           // suspension force pushing tire into ground (N)
+    surface: &SurfaceMaterial,
+    dt: f32,
+) -> Vec3 {
+    if normal_load < 1.0 {
+        wheel.on_ground = false;
+        wheel.contact_force = [0.0; 3];
+        // Free-spinning wheel: apply drive/brake torque to spin
+        let net_torque = wheel.drive_torque - wheel.brake_torque * wheel.ang_vel.signum();
+        wheel.ang_vel += net_torque / wheel.inertia * dt;
+        // Decay free-spinning wheel
+        wheel.ang_vel *= 0.99;
+        return [0.0; 3];
+    }
+    wheel.on_ground = true;
+
+    // Local tire coordinate system (respecting steering)
+    let (sin_s, cos_s) = wheel.steer_angle.sin_cos();
+    let tire_fwd = v3_add(v3_scale(body_fwd, cos_s), v3_scale(body_right, sin_s));
+    let tire_right = v3_sub(v3_scale(body_right, cos_s), v3_scale(body_fwd, sin_s));
+
+    // Project contact velocity onto tire axes (ground plane)
+    let vx_tire = v3_dot(body_vel_at_contact, tire_fwd);    // longitudinal
+    let vy_tire = v3_dot(body_vel_at_contact, tire_right);   // lateral
+
+    // Longitudinal slip ratio: (wheel_speed - ground_speed) / max(|ground_speed|, |wheel_speed|, small)
+    let wheel_speed = wheel.ang_vel * wheel.radius;
+    let denom = vx_tire.abs().max(wheel_speed.abs()).max(0.5);
+    let slip_ratio = (wheel_speed - vx_tire) / denom;
+
+    // Lateral slip angle: atan(vy / |vx|)
+    let slip_angle = if vx_tire.abs() > 0.5 {
+        (vy_tire / vx_tire.abs()).atan()
+    } else {
+        vy_tire.signum() * 0.5 // low speed approximation
+    };
+
+    // Pacejka forces (scaled by normal load and surface friction)
+    let fx = pacejka(&PACEJKA_LONG, slip_ratio) * normal_load * surface.dynamic_friction;
+    let fy = -pacejka(&PACEJKA_LAT, slip_angle) * normal_load * surface.dynamic_friction;
+
+    // Rolling resistance
+    let f_roll = -vx_tire.signum() * normal_load * surface.rolling_resistance;
+
+    // World-space force from this tire
+    let force = v3_add(
+        v3_add(v3_scale(tire_fwd, fx + f_roll), v3_scale(tire_right, fy)),
+        [0.0; 3], // no vertical tire force (that's suspension)
+    );
+
+    // Tire angular velocity update: torque balance on wheel
+    let tire_reaction_torque = -fx * wheel.radius; // ground reaction opposes tire rotation
+    let net_torque = wheel.drive_torque + tire_reaction_torque
+        - wheel.brake_torque * wheel.ang_vel.signum();
+    wheel.ang_vel += net_torque / wheel.inertia * dt;
+
+    // Brake can stop wheel completely
+    if wheel.brake_torque > 0.0 && wheel.ang_vel.abs() < 0.5 && wheel.drive_torque.abs() < 1.0 {
+        wheel.ang_vel *= 0.9;
+    }
+
+    wheel.contact_force = force;
+    force
+}
