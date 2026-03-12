@@ -91,8 +91,14 @@ fn drive_vehicle(state: &mut GameState, vi: usize, dt: f32) {
     let left = state.keybinds.is_pressed(Action::MoveLeft, &state.keys);
     let right = state.keybinds.is_pressed(Action::MoveRight, &state.keys);
 
+    // Set drivetrain inputs for physics system
     let v = &mut state.world.vehicles[vi];
+    let throttle = if fwd { 1.0 } else { 0.0 };
+    let brake = if back { 1.0 } else if !fwd && v.speed.abs() > 0.5 { 0.3 } else { 0.0 };
+    let steer = if left { -1.0 } else if right { 1.0 } else { 0.0 };
+    crate::vehicle_physics::player_drive_input(v, throttle, brake, steer);
 
+    // Legacy movement (still drives position until physics is fully validated)
     if fwd {
         v.speed = (v.speed + VEHICLE_ACCEL * dt).min(VEHICLE_SPEED);
     } else if back {
@@ -391,7 +397,7 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
                       else { 0.35 };
     target_speed *= turn_factor;
 
-    // 6. Vehicle-ahead awareness + close-range omnidirectional avoidance
+    // 6. Vehicle-ahead awareness + OBB-based close-range avoidance
     {
         let vx = world.vehicles[vi].x;
         let vz = world.vehicles[vi].z;
@@ -400,6 +406,8 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
         let fwd_x = -sin_r;
         let fwd_z = -cos_r;
 
+        let our_obb = crate::collision::Obb2d::from_vehicle(&world.vehicles[vi]);
+
         let n_veh = world.vehicles.len();
         for j in 0..n_veh {
             if j == vi { continue; }
@@ -407,19 +415,27 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
             let ojz = world.vehicles[j].z - vz;
             let dist_sq = ojx * ojx + ojz * ojz;
 
-            // Close-range omnidirectional brake: any vehicle within collision radius
-            // regardless of heading — prevents intersection pileups
-            let close_dist = VEHICLE_COLLISION_RADIUS * 2.0;
-            if dist_sq < close_dist * close_dist && dist_sq > 0.01 {
-                let dist = dist_sq.sqrt();
-                // Emergency brake when very close, proportional slowdown otherwise
-                if dist < VEHICLE_COLLISION_RADIUS * 1.2 {
-                    target_speed = 0.0;
-                } else {
-                    let factor = ((dist - VEHICLE_COLLISION_RADIUS * 1.2) / (close_dist - VEHICLE_COLLISION_RADIUS * 1.2)).clamp(0.0, 1.0);
-                    let close_speed = cruise_speed * factor;
-                    if close_speed < target_speed {
-                        target_speed = close_speed;
+            // Close-range OBB intersection check — only brake when shapes actually overlap
+            if dist_sq < 100.0 && dist_sq > 0.01 {
+                let other_obb = crate::collision::Obb2d::from_vehicle(&world.vehicles[j]);
+                // Expand OBBs slightly for a 0.5m safety margin
+                let expanded = crate::collision::Obb2d::new(
+                    our_obb.cx, our_obb.cz,
+                    (our_obb.half_w + 0.5) * 2.0, (our_obb.half_d + 0.5) * 2.0,
+                    rot,
+                );
+                if crate::collision::obb_intersect(&expanded, &other_obb).is_some() {
+                    let dist = dist_sq.sqrt();
+                    // The closer, the harder we brake
+                    let min_sep = (our_obb.half_d + other_obb.half_d) * 0.8;
+                    if dist < min_sep {
+                        target_speed = 0.0;
+                    } else {
+                        let factor = ((dist - min_sep) / (min_sep * 0.5 + 1.0)).clamp(0.0, 1.0);
+                        let close_speed = cruise_speed * factor;
+                        if close_speed < target_speed {
+                            target_speed = close_speed;
+                        }
                     }
                 }
             }
@@ -431,9 +447,9 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
             let proj = ojx * fwd_x + ojz * fwd_z;
             if proj < 0.0 || proj > FOLLOW_DISTANCE { continue; }
 
-            // Lateral offset
+            // Lateral offset — only brake for same-lane vehicles (within car width)
             let lateral = (ojx * fwd_z - ojz * fwd_x).abs();
-            if lateral > 2.5 { continue; }
+            if lateral > 1.8 { continue; }
 
             // Same lane ahead — reduce speed
             if proj < MIN_FOLLOW_DISTANCE {
@@ -572,6 +588,9 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, terrain: &Terra
     } else {
         world.vehicles[vi].idle_timer = 0.0;
     }
+
+    // Set drivetrain inputs for physics system
+    crate::vehicle_physics::ai_drive_input(&mut world.vehicles[vi]);
 
     // Speed limit check for NPC drivers
     if let Some(owner) = world.vehicles[vi].owner_npc {
@@ -716,16 +735,11 @@ pub fn snap_to_parking(vi: usize, world: &mut WorldData, net: &mut RoadNetwork, 
     false
 }
 
-/// Push overlapping vehicles apart so they don't interpenetrate at intersections.
-/// Uses a simple radial separation with oriented-box awareness for elongated vehicles.
+/// Push overlapping vehicles apart using OBB intersection (matches visual shape).
 fn separate_vehicles(world: &mut WorldData, terrain: &Terrain) {
     let n = world.vehicles.len();
-    let sep_radius = VEHICLE_COLLISION_RADIUS * 2.0; // diameter for pair check
-    let sep_radius_sq = sep_radius * sep_radius;
 
     for i in 0..n {
-        // Skip parked vehicles that aren't being driven — they don't need separation
-        // (keeps parked cars in their spots undisturbed)
         let i_moving = world.vehicles[i].speed.abs() > 0.1
             || world.vehicles[i].ai_active
             || world.vehicles[i].occupied;
@@ -735,58 +749,55 @@ fn separate_vehicles(world: &mut WorldData, terrain: &Terrain) {
             let j_moving = world.vehicles[j].speed.abs() > 0.1
                 || world.vehicles[j].ai_active
                 || world.vehicles[j].occupied;
-            // At least one vehicle must be moving/active for separation
             if !i_moving && !j_moving { continue; }
 
+            // Broad phase: skip if centers are far apart
             let dx = world.vehicles[j].x - world.vehicles[i].x;
             let dz = world.vehicles[j].z - world.vehicles[i].z;
             let d2 = dx * dx + dz * dz;
-            if d2 >= sep_radius_sq || d2 < 0.001 { continue; }
+            if d2 >= 64.0 || d2 < 0.001 { continue; } // 8m broad phase
 
-            let dist = d2.sqrt();
-            let overlap = sep_radius - dist;
-            if overlap <= 0.0 { continue; }
+            let obb_a = crate::collision::Obb2d::from_vehicle(&world.vehicles[i]);
+            let obb_b = crate::collision::Obb2d::from_vehicle(&world.vehicles[j]);
 
-            // Separation direction (from i toward j)
-            let inv_d = 1.0 / dist;
-            let nx = dx * inv_d;
-            let nz = dz * inv_d;
+            if let Some((nx, nz, depth)) = crate::collision::obb_intersect(&obb_a, &obb_b) {
+                let push = depth * 0.5 + 0.05;
 
-            // Push each vehicle by half the overlap (symmetric)
-            let push = overlap * 0.5 + 0.05; // small extra margin
+                let si = world.vehicles[i].speed.abs();
+                let sj = world.vehicles[j].speed.abs();
+                let total_speed = si + sj + 0.1;
+                let wi = sj / total_speed;
+                let wj = si / total_speed;
 
-            // Determine push weights — faster vehicle yields less, slower yields more
-            let si = world.vehicles[i].speed.abs();
-            let sj = world.vehicles[j].speed.abs();
-            let total_speed = si + sj + 0.1; // avoid div by zero
-            // Higher speed = less push (you have right-of-way if faster)
-            let wi = sj / total_speed; // push weight for vehicle i (pushed more if j is faster)
-            let wj = si / total_speed;
+                let (pi, pj) = if world.vehicles[i].parked {
+                    (0.0, 1.0)
+                } else if world.vehicles[j].parked {
+                    (1.0, 0.0)
+                } else {
+                    (wi, wj)
+                };
 
-            // Don't push parked vehicles
-            let (pi, pj) = if world.vehicles[i].parked {
-                (0.0, 1.0)
-            } else if world.vehicles[j].parked {
-                (1.0, 0.0)
-            } else {
-                (wi, wj)
-            };
+                world.vehicles[i].x -= nx * push * pi;
+                world.vehicles[i].z -= nz * push * pi;
+                world.vehicles[j].x += nx * push * pj;
+                world.vehicles[j].z += nz * push * pj;
 
-            world.vehicles[i].x -= nx * push * pi;
-            world.vehicles[i].z -= nz * push * pi;
-            world.vehicles[j].x += nx * push * pj;
-            world.vehicles[j].z += nz * push * pj;
-
-            // Slow down colliding vehicles
-            if si > 1.0 { world.vehicles[i].speed *= 0.85; }
-            if sj > 1.0 { world.vehicles[j].speed *= 0.85; }
+                if si > 1.0 { world.vehicles[i].speed *= 0.85; }
+                if sj > 1.0 { world.vehicles[j].speed *= 0.85; }
+            }
         }
     }
 
-    // Re-snap Y to terrain after separation pushes
+    // Re-snap all vehicles to terrain (Y + terrain normal for slope tilting)
     for i in 0..n {
         let vx = world.vehicles[i].x;
         let vz = world.vehicles[i].z;
         world.vehicles[i].y = terrain.height_at(vx, vz) + VEHICLE_GROUND_OFFSET;
+        // Update terrain normal so parked/idle vehicles tilt correctly on slopes
+        let target_n = crate::math::clamp_normal_tilt(terrain.normal_at(vx, vz), 30.0);
+        let cur = world.vehicles[i].terrain_normal;
+        // Fast lerp for stationary vehicles, same smooth lerp for moving
+        let rate = if world.vehicles[i].speed.abs() < 0.1 { 0.5 } else { 0.1 };
+        world.vehicles[i].terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(cur, target_n, rate));
     }
 }

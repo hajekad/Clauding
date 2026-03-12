@@ -291,6 +291,61 @@ pub struct Vehicle {
     pub parking_target: Option<usize>,
     pub parked: bool,
     pub idle_timer: f32,          // tracks how long vehicle has been at speed < 0.5
+    // Physics rigid body
+    pub body: crate::physics::RigidBody,
+    pub wheels: [crate::tire::WheelState; 4],        // FL, FR, RL, RR
+    pub suspension: [crate::suspension::SuspensionState; 4],
+    pub drivetrain: crate::tire::Drivetrain,
+    pub deformation: crate::deform::VehicleDeformation,
+}
+
+impl Vehicle {
+    /// Default physics state for a parked vehicle at given position/rotation
+    pub fn default_physics(x: f32, y: f32, z: f32, rot_y: f32, scale: f32) -> (
+        crate::physics::RigidBody,
+        [crate::tire::WheelState; 4],
+        [crate::suspension::SuspensionState; 4],
+        crate::tire::Drivetrain,
+    ) {
+        use crate::physics::{RigidBody, CollisionShape};
+        use crate::tire::{WheelState, Drivetrain};
+        use crate::suspension::{SuspensionState, SuspensionParams};
+
+        // RS5 dimensions from render.rs: wheelbase 2.82m, track 1.60m, wheel radius 0.355m
+        let half_w = 0.93 * scale;
+        let half_h = 0.7 * scale;
+        let half_d = 2.3 * scale;
+        let mass = 1500.0 * scale * scale; // ~1500kg base
+        let shape = CollisionShape::Box { half_extents: [half_w, half_h, half_d] };
+        let inertia = shape.inertia_diag(mass);
+        let mut body = RigidBody::new_dynamic([x, y, z], mass, inertia);
+        body.quat = crate::math::quat_from_rot_y(rot_y);
+        body.update_inertia();
+
+        let fwz = -1.41 * scale; // front axle Z (forward)
+        let rwz = 1.41 * scale;  // rear axle Z (back)
+        let wtrk = 0.80 * scale; // half track width
+        let wr = 0.355 * scale;  // wheel radius
+
+        let wheels = [
+            WheelState::new([-wtrk, -half_h + wr, fwz], wr), // FL
+            WheelState::new([ wtrk, -half_h + wr, fwz], wr), // FR
+            WheelState::new([-wtrk, -half_h + wr, rwz], wr), // RL
+            WheelState::new([ wtrk, -half_h + wr, rwz], wr), // RR
+        ];
+
+        let susp_params = SuspensionParams::default_car();
+        let suspension = [
+            SuspensionState::new(susp_params),
+            SuspensionState::new(susp_params),
+            SuspensionState::new(susp_params),
+            SuspensionState::new(susp_params),
+        ];
+
+        let drivetrain = Drivetrain::new(350.0, 35.0); // 350 Nm, 35° max steer
+
+        (body, wheels, suspension, drivetrain)
+    }
 }
 
 pub const VEHICLE_COLORS: [u32; 14] = [
@@ -583,11 +638,15 @@ pub struct Npc {
     pub fitness_npcs_heard: u32,
     // Proximity tracking (continuous reward for being near items)
     pub fitness_proximity: f32,
-    // Ragdoll
+    // Ragdoll (legacy — synced from skeleton for rendering)
     pub ragdoll_active: bool,
     pub ragdoll_points: [[f32; 3]; 7],  // hips, chest, head, l_hand, r_hand, l_foot, r_foot
     pub ragdoll_prev: [[f32; 3]; 7],
     pub ragdoll_timer: f32,
+    // Articulated skeleton (new physics-driven)
+    pub skeleton: crate::skeleton::Skeleton,
+    // Physics rigid body
+    pub body: crate::physics::RigidBody,
     // Law system
     pub wanted: bool,
     pub bounty: f32,
@@ -650,6 +709,8 @@ pub struct Player {
     pub bounty: f32,
     // Body type
     pub is_female: bool,
+    // Physics
+    pub body: crate::physics::RigidBody,
 }
 
 pub struct Camera {
@@ -740,6 +801,11 @@ impl GameState {
                 wanted_vehicle_hit: false, bounty: 0.0,
                 is_female: false,
                 terrain_normal: [0.0, 1.0, 0.0],
+                body: {
+                    let shape = crate::physics::CollisionShape::Capsule { radius: 0.3, half_height: 0.625 };
+                    let inertia = shape.inertia_diag(80.0);
+                    crate::physics::RigidBody::new_dynamic([0.0, 0.0, 10.0], 80.0, inertia)
+                },
             },
             camera: Camera {
                 x: 0.0, y: 8.0, z: 18.0,
@@ -818,6 +884,22 @@ impl GameState {
 
         // Vehicle AI
         crate::vehicle::sys_vehicle(self, dt);
+
+        // Vehicle rigid body physics
+        for vi in 0..self.world.vehicles.len() {
+            crate::vehicle_physics::step_vehicle_physics(
+                &mut self.world.vehicles[vi], &self.terrain, dt,
+            );
+        }
+
+        // Skeleton ragdoll step
+        for npc in &mut self.world.npcs {
+            npc.skeleton.step_ragdoll(&self.terrain, dt);
+            if npc.skeleton.ragdoll_active {
+                npc.ragdoll_points = npc.skeleton.to_ragdoll_points();
+                npc.ragdoll_active = true;
+            }
+        }
 
         // NPC systems
         crate::npc::sys_npc(

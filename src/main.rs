@@ -1,4 +1,4 @@
-use clauding::{state, npc, vehicle, player, camera, hud, particle, raster, render, menu, input, combat, collision, player_jobs, telemetry, gpu, platform, math};
+use clauding::{state, npc, vehicle, vehicle_physics, player, camera, hud, particle, raster, render, menu, input, combat, collision, player_jobs, telemetry, gpu, platform, math};
 use clauding::gpu::{bytemuck_cast, bytemuck_cast_mut};
 
 use std::time::Instant;
@@ -194,6 +194,24 @@ fn main() {
                 // Game-logic systems at fixed dt
                 player::sys_player(&mut game, FIXED_DT);
                 vehicle::sys_vehicle(&mut game, FIXED_DT);
+
+                // Vehicle rigid body physics (suspension + tire forces)
+                for vi in 0..game.world.vehicles.len() {
+                    vehicle_physics::step_vehicle_physics(
+                        &mut game.world.vehicles[vi], &game.terrain, FIXED_DT,
+                    );
+                }
+
+                // Skeleton ragdoll step (new articulated system)
+                for npc in &mut game.world.npcs {
+                    npc.skeleton.step_ragdoll(&game.terrain, FIXED_DT);
+                    // Sync skeleton → legacy ragdoll points for rendering
+                    if npc.skeleton.ragdoll_active {
+                        npc.ragdoll_points = npc.skeleton.to_ragdoll_points();
+                        npc.ragdoll_active = true;
+                    }
+                }
+
                 npc::sys_npc(
                     &mut game.world, &mut game.road_network, &game.terrain,
                     FIXED_DT, game.time_of_day, &mut game.neat_brains,

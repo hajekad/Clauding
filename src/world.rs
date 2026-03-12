@@ -3291,6 +3291,8 @@ pub fn generate_world(game: &mut GameState) {
         let mut vehicle_rng = rng.fork(1000 + i as u64);
         let cruise_speed = vehicle_rng.range(7.0, 12.0);
         let scale = vehicle_rng.range(0.82, 1.18);
+        let (phys_body, phys_wheels, phys_susp, phys_drive) =
+            Vehicle::default_physics(park_x, park_y, park_z, park_rot, scale);
         game.world.vehicles.push(Vehicle {
             x: park_x, y: park_y, z: park_z,
             rot_y: park_rot, speed: 0.0, color, occupied: false,
@@ -3303,8 +3305,10 @@ pub fn generate_world(game: &mut GameState) {
             cruise_speed, target_speed: 0.0,
             parking_target: spot_idx, parked: true,
             idle_timer: 0.0,
-            terrain_normal: [0.0, 1.0, 0.0],
+            terrain_normal: crate::math::clamp_normal_tilt(game.terrain.normal_at(park_x, park_z), 30.0),
             scale,
+            body: phys_body, wheels: phys_wheels, suspension: phys_susp, drivetrain: phys_drive,
+            deformation: crate::deform::VehicleDeformation::new(),
         });
     }
 
@@ -3433,6 +3437,14 @@ pub fn generate_world(game: &mut GameState) {
             ragdoll_points: [[0.0; 3]; 7],
             ragdoll_prev: [[0.0; 3]; 7],
             ragdoll_timer: 0.0,
+            skeleton: crate::skeleton::Skeleton::new_humanoid(),
+            body: {
+                let shape = crate::physics::CollisionShape::Capsule { radius: 0.3, half_height: 0.625 };
+                let inertia = shape.inertia_diag(75.0);
+                let mut b = crate::physics::RigidBody::new_dynamic([x, y, z], 75.0, inertia);
+                b.quat = crate::math::quat_from_rot_y(rot_y);
+                b
+            },
             wanted: false,
             bounty: 0.0,
             violation_timer: 0.0,

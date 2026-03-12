@@ -73,14 +73,12 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
     npc.terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(npc.terrain_normal, target_n, lerp_rate.min(1.0)));
 
     // Slope sliding: if terrain is steep and NPC is on ground, slide downhill
-    // slope = 1 - cos(angle): 30°→0.13, 40°→0.23, 50°→0.36, 60°→0.50
     if npc.on_ground {
         let slope = (1.0 - raw_n[1]).max(0.0);
-        if slope > 0.12 { // ~28° threshold
+        if slope > 0.12 {
             let slide_force = slope * slope * 40.0 * dt;
             let slide_x = npc.x - raw_n[0] * slide_force;
             let slide_z = npc.z - raw_n[2] * slide_force;
-            // Don't slide into rivers
             if !on_river_not_bridge(slide_x, slide_z, &world.river_segments, &world.bridges) {
                 npc.x = slide_x;
                 npc.z = slide_z;
@@ -89,6 +87,10 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         }
     }
 
+    // Sync rigid body position from legacy fields
+    npc.body.pos = [npc.x, npc.y, npc.z];
+    npc.body.quat = crate::math::quat_from_rot_y(npc.rot_y);
+    npc.body.vel = [0.0, npc.vel_y, 0.0];
 }
 
 /// Walk NPC toward (target_x, target_z) using A* navmesh pathfinding.

@@ -16,7 +16,8 @@ impl Obb2d {
     }
 
     pub fn from_vehicle(v: &Vehicle) -> Self {
-        Self::new(v.x, v.z, 1.8, 3.6, v.rot_y)
+        // Match visual mesh: 1.86m wide x 4.6m long, scaled per vehicle
+        Self::new(v.x, v.z, 1.86 * v.scale, 4.6 * v.scale, v.rot_y)
     }
 
     pub fn from_npc(n: &Npc) -> Self {
@@ -96,24 +97,20 @@ fn project_corners(corners: &[[f32; 2]; 4], axis: &[f32; 2]) -> (f32, f32) {
     (min, max)
 }
 
-/// Initialize ragdoll points from NPC's current position
+/// Initialize ragdoll from NPC's current position using the articulated skeleton.
+/// Falls back to legacy 7-point initialization and also activates the skeleton ragdoll.
 fn init_ragdoll(npc: &mut Npc, impulse_x: f32, impulse_y: f32, impulse_z: f32) {
     let x = npc.x;
     let y = npc.y;
     let z = npc.z;
 
-    // hips=0, chest=1, head=2, l_hand=3, r_hand=4, l_foot=5, r_foot=6
-    npc.ragdoll_points = [
-        [x, y + 0.7, z],           // hips
-        [x, y + 1.4, z],           // chest
-        [x, y + 1.85, z],          // head
-        [x - 0.45, y + 1.1, z],    // l_hand
-        [x + 0.45, y + 1.1, z],    // r_hand
-        [x - 0.15, y + 0.0, z],    // l_foot
-        [x + 0.15, y + 0.0, z],    // r_foot
-    ];
+    // Activate skeleton ragdoll (new system)
+    let impulse = [impulse_x, impulse_y, impulse_z];
+    npc.skeleton.activate_ragdoll([x, y, z], npc.rot_y, impulse);
+    npc.skeleton.ragdoll_timer = RAGDOLL_DURATION;
 
-    // Set previous positions offset by impulse (Verlet: velocity = pos - prev)
+    // Also init legacy ragdoll points for rendering compatibility
+    npc.ragdoll_points = npc.skeleton.to_ragdoll_points();
     for i in 0..RAGDOLL_POINT_COUNT {
         npc.ragdoll_prev[i] = [
             npc.ragdoll_points[i][0] - impulse_x * 0.016,
@@ -316,6 +313,18 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
                 world.vehicles[i].speed = avg - nx * relative_speed * 0.3;
                 world.vehicles[j].speed = avg + nx * relative_speed * 0.3;
 
+                // Panel deformation from crash energy
+                if relative_speed > 2.0 {
+                    let mass_i = world.vehicles[i].body.mass;
+                    let mass_j = world.vehicles[j].body.mass;
+                    let energy = 0.5 * (mass_i * mass_j / (mass_i + mass_j)) * relative_speed * relative_speed;
+                    // Impact point in each vehicle's local space
+                    let impact_i = [nx * obb_a.half_d, 0.0, nz * obb_a.half_d];
+                    let impact_j = [-nx * obb_b.half_d, 0.0, -nz * obb_b.half_d];
+                    world.vehicles[i].deformation.apply_impact(impact_i, energy, obb_a.half_w, obb_a.half_d);
+                    world.vehicles[j].deformation.apply_impact(impact_j, energy, obb_b.half_w, obb_b.half_d);
+                }
+
                 // Occupant damage
                 let occupant_damage = relative_speed * VEHICLE_CRASH_SELF_DAMAGE;
                 if world.vehicles[i].occupied {
@@ -492,6 +501,17 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
                 let avg = (world.vehicles[i].speed + world.vehicles[j].speed) * 0.5;
                 world.vehicles[i].speed = avg - nx * relative_speed * 0.3;
                 world.vehicles[j].speed = avg + nx * relative_speed * 0.3;
+
+                // Panel deformation
+                if relative_speed > 2.0 {
+                    let mass_i = world.vehicles[i].body.mass;
+                    let mass_j = world.vehicles[j].body.mass;
+                    let energy = 0.5 * (mass_i * mass_j / (mass_i + mass_j)) * relative_speed * relative_speed;
+                    let impact_i = [nx * obb_a.half_d, 0.0, nz * obb_a.half_d];
+                    let impact_j = [-nx * obb_b.half_d, 0.0, -nz * obb_b.half_d];
+                    world.vehicles[i].deformation.apply_impact(impact_i, energy, obb_a.half_w, obb_a.half_d);
+                    world.vehicles[j].deformation.apply_impact(impact_j, energy, obb_b.half_w, obb_b.half_d);
+                }
 
                 let occupant_damage = relative_speed * VEHICLE_CRASH_SELF_DAMAGE;
                 if let Some(owner) = world.vehicles[i].owner_npc {

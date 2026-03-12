@@ -1070,6 +1070,12 @@ fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
         ragdoll_points: [[0.0; 3]; 7],
         ragdoll_prev: [[0.0; 3]; 7],
         ragdoll_timer: 0.0,
+        skeleton: clauding::skeleton::Skeleton::new_humanoid(),
+        body: {
+            let shape = clauding::physics::CollisionShape::Capsule { radius: 0.3, half_height: 0.625 };
+            let inertia = shape.inertia_diag(75.0);
+            clauding::physics::RigidBody::new_dynamic([x0, y0, z0], 75.0, inertia)
+        },
         wanted: false,
         bounty: 0.0,
         violation_timer: 0.0,

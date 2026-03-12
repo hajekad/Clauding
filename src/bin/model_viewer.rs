@@ -642,6 +642,11 @@ fn make_player() -> state::Player {
         wanted_vehicle_hit: false, bounty: 0.0,
         is_female: false,
         terrain_normal: [0.0, 1.0, 0.0],
+        body: {
+            let shape = clauding::physics::CollisionShape::Capsule { radius: 0.3, half_height: 0.625 };
+            let inertia = shape.inertia_diag(80.0);
+            clauding::physics::RigidBody::new_dynamic([0.0, 0.0, 0.0], 80.0, inertia)
+        },
     }
 }
 
@@ -666,6 +671,19 @@ fn make_vehicle(color: u32) -> state::Vehicle {
         idle_timer: 0.0,
         terrain_normal: [0.0, 1.0, 0.0],
         scale: 1.0,
+        body: clauding::physics::RigidBody::new_static([0.0, 0.0, 0.0]),
+        wheels: {
+            let w = clauding::tire::WheelState::new([0.0; 3], 0.355);
+            [w, w, w, w]
+        },
+        suspension: {
+            let s = clauding::suspension::SuspensionState::new(
+                clauding::suspension::SuspensionParams::default_car(),
+            );
+            [s, s, s, s]
+        },
+        drivetrain: clauding::tire::Drivetrain::new(350.0, 35.0),
+        deformation: clauding::deform::VehicleDeformation::new(),
     }
 }
 
@@ -712,6 +730,12 @@ fn make_npc(job: state::NpcJob) -> state::Npc {
         ragdoll_points: [[0.0; 3]; 7],
         ragdoll_prev: [[0.0; 3]; 7],
         ragdoll_timer: 0.0,
+        skeleton: clauding::skeleton::Skeleton::new_humanoid(),
+        body: {
+            let shape = clauding::physics::CollisionShape::Capsule { radius: 0.3, half_height: 0.625 };
+            let inertia = shape.inertia_diag(75.0);
+            clauding::physics::RigidBody::new_dynamic([0.0, 0.0, 0.0], 75.0, inertia)
+        },
         wanted: false, bounty: 0.0, violation_timer: 0.0,
         police_target: None,
         terrain_normal: [0.0, 1.0, 0.0],
