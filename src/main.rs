@@ -197,7 +197,7 @@ fn main() {
                 npc::sys_npc(
                     &mut game.world, &mut game.road_network, &game.terrain,
                     FIXED_DT, game.time_of_day, &mut game.neat_brains,
-                    game.player.x, game.player.z,
+                    game.player.x, game.player.z, &game.walk_grid,
                 );
                 npc::sys_night_spawning(
                     &mut game.world, &game.terrain, game.time_of_day,
@@ -215,7 +215,6 @@ fn main() {
                     &game.keybinds, FIXED_DT,
                 );
                 npc::sys_hunger_thirst(&mut game.world, &mut game.player, FIXED_DT);
-                npc::sys_river_escape(&mut game.world, &game.terrain);
                 player_jobs::sys_interactibles_update(&mut game.world, FIXED_DT);
                 player_jobs::sys_player_job(&mut game, FIXED_DT);
 

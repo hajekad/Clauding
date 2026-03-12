@@ -6,100 +6,14 @@ use crate::math::dist_sq_2d;
 use crate::npc::{npc_walk_toward, npc_enter_car};
 use crate::world::on_river_not_bridge;
 
-/// Handle stuck recovery with escalation — called when NPC gives up on a target
-fn stuck_recovery(world: &mut WorldData, i: usize, net: &RoadNetwork) {
+/// Handle path failure — NPC gives up on target, picks a new wander destination
+fn path_failure(world: &mut WorldData, i: usize, net: &RoadNetwork) {
     world.npcs[i].stuck_recoveries += 1;
     world.npcs[i].stuck_timer = 0.0;
-    world.npcs[i].detouring = false;
     world.npcs[i].job_timer = 0.0;
-    world.npcs[i].stuck_count += 1;
-
-    // Escalation level 2: teleport to car or road node
-    if world.npcs[i].stuck_count >= 2 && world.npcs[i].stuck_count < 4 {
-        // Teleport to NPC's car and try to drive away
-        let car_idx = world.npcs[i].car_idx;
-        if car_idx < world.vehicles.len() && !world.vehicles[car_idx].occupied {
-            let cx = world.vehicles[car_idx].x;
-            let cz = world.vehicles[car_idx].z;
-            if !on_river_not_bridge(cx, cz, &world.river_segments, &world.bridges) {
-                world.npcs[i].x = cx;
-                world.npcs[i].z = cz;
-                world.npcs[i].stuck_count = 0;
-                // No wander cooldown — NPC is at car, should immediately find item and drive
-                world.npcs[i].wander_cooldown = 0.0;
-                world.npcs[i].target_item = None;
-                return;
-            }
-        }
-        // Fallback: teleport to a distant road node
-        if !net.nodes.is_empty() {
-            let nx = world.npcs[i].x;
-            let nz = world.npcs[i].z;
-            for _ in 0..10 {
-                let ni = world.npcs[i].rng.next() as usize % net.nodes.len();
-                let node = &net.nodes[ni];
-                let d = dist_sq_2d(node[0], node[1], nx, nz);
-                if d > 2500.0 && d < 40000.0
-                    && !on_river_not_bridge(node[0], node[1], &world.river_segments, &world.bridges)
-                {
-                    world.npcs[i].x = node[0];
-                    world.npcs[i].z = node[1];
-                    world.npcs[i].stuck_count = 0;
-                    world.npcs[i].wander_cooldown = 2.0;
-                    return;
-                }
-            }
-        }
-        // Don't reset stuck_count on failure — let it escalate to level 3
-    }
-
-    // Escalation level 3: teleport to a road node near center (guaranteed items nearby)
-    if world.npcs[i].stuck_count >= 4 {
-        if !net.nodes.is_empty() {
-            let mut best_d = f32::MAX;
-            let mut best_node = None;
-            for (ni, node) in net.nodes.iter().enumerate() {
-                let d = node[0] * node[0] + node[1] * node[1]; // distance from center
-                if d < best_d
-                    && !on_river_not_bridge(node[0], node[1], &world.river_segments, &world.bridges)
-                {
-                    best_d = d;
-                    best_node = Some(ni);
-                }
-            }
-            if let Some(ni) = best_node {
-                world.npcs[i].x = net.nodes[ni][0];
-                world.npcs[i].z = net.nodes[ni][1];
-            }
-        }
-        world.npcs[i].stuck_count = 0;
-        world.npcs[i].wander_cooldown = 3.0;
-        pick_wander(world, i, net);
-        return;
-    }
-
-    // Level 1: try to move to nearest road node to escape current collision trap
-    if !net.nodes.is_empty() {
-        let nx = world.npcs[i].x;
-        let nz = world.npcs[i].z;
-        let mut best_d = f32::MAX;
-        let mut best_node = None;
-        for (ni, node) in net.nodes.iter().enumerate() {
-            let d = dist_sq_2d(node[0], node[1], nx, nz);
-            // Closest road node within 80m, not on river
-            if d < 6400.0 && d < best_d
-                && !on_river_not_bridge(node[0], node[1], &world.river_segments, &world.bridges)
-            {
-                best_d = d;
-                best_node = Some(ni);
-            }
-        }
-        if let Some(ni) = best_node {
-            world.npcs[i].x = net.nodes[ni][0];
-            world.npcs[i].z = net.nodes[ni][1];
-        }
-    }
-    world.npcs[i].wander_cooldown = 2.0;
+    world.npcs[i].target_item = None;
+    world.npcs[i].nav_path.clear();
+    world.npcs[i].nav_path_idx = 0;
     pick_wander(world, i, net);
 }
 
@@ -129,33 +43,29 @@ fn try_drive_to_target(world: &mut WorldData, i: usize, tx: f32, tz: f32, terrai
 }
 
 /// Dispatch NPC work behavior by job type
-pub fn npc_work_dispatch(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
-    // Tick down wander cooldown — prevents re-targeting same unreachable item
-    if world.npcs[i].wander_cooldown > 0.0 {
-        world.npcs[i].wander_cooldown -= dt;
-    }
+pub fn npc_work_dispatch(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     match world.npcs[i].job {
-        NpcJob::Collector => npc_work_collector(world, i, net, terrain, dt),
-        NpcJob::GarbageCollector => npc_work_garbage(world, i, net, terrain, dt),
-        NpcJob::TaxiDriver => npc_work_taxi(world, i, net, terrain, dt),
-        NpcJob::DeliveryCourier => npc_work_delivery(world, i, net, terrain, dt),
-        NpcJob::MailCarrier => npc_work_mail(world, i, net, terrain, dt),
-        NpcJob::Paramedic => npc_work_paramedic(world, i, net, terrain, dt),
-        NpcJob::Firefighter => npc_work_firefighter(world, i, net, terrain, dt),
-        NpcJob::PolicePatrol => npc_work_police(world, i, net, terrain, dt),
-        NpcJob::StreetVendor => npc_work_vendor(world, i, net, terrain, dt),
-        NpcJob::Mechanic => npc_work_mechanic(world, i, net, terrain, dt),
-        NpcJob::ConstructionWorker => npc_work_construction(world, i, net, terrain, dt),
-        NpcJob::Fisherman => npc_work_fisherman(world, i, net, terrain, dt),
-        NpcJob::Farmer => npc_work_farmer(world, i, net, terrain, dt),
-        NpcJob::Lumberjack => npc_work_lumberjack(world, i, net, terrain, dt),
-        NpcJob::Scavenger => npc_work_scavenger(world, i, net, terrain, dt),
+        NpcJob::Collector => npc_work_collector(world, i, net, terrain, dt, walk_grid),
+        NpcJob::GarbageCollector => npc_work_garbage(world, i, net, terrain, dt, walk_grid),
+        NpcJob::TaxiDriver => npc_work_taxi(world, i, net, terrain, dt, walk_grid),
+        NpcJob::DeliveryCourier => npc_work_delivery(world, i, net, terrain, dt, walk_grid),
+        NpcJob::MailCarrier => npc_work_mail(world, i, net, terrain, dt, walk_grid),
+        NpcJob::Paramedic => npc_work_paramedic(world, i, net, terrain, dt, walk_grid),
+        NpcJob::Firefighter => npc_work_firefighter(world, i, net, terrain, dt, walk_grid),
+        NpcJob::PolicePatrol => npc_work_police(world, i, net, terrain, dt, walk_grid),
+        NpcJob::StreetVendor => npc_work_vendor(world, i, net, terrain, dt, walk_grid),
+        NpcJob::Mechanic => npc_work_mechanic(world, i, net, terrain, dt, walk_grid),
+        NpcJob::ConstructionWorker => npc_work_construction(world, i, net, terrain, dt, walk_grid),
+        NpcJob::Fisherman => npc_work_fisherman(world, i, net, terrain, dt, walk_grid),
+        NpcJob::Farmer => npc_work_farmer(world, i, net, terrain, dt, walk_grid),
+        NpcJob::Lumberjack => npc_work_lumberjack(world, i, net, terrain, dt, walk_grid),
+        NpcJob::Scavenger => npc_work_scavenger(world, i, net, terrain, dt, walk_grid),
     }
 }
 
 // ---- Collector (existing behavior, extracted from npc.rs) ----
 
-fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     let npc = &world.npcs[i];
 
     if npc.carrying_item {
@@ -165,31 +75,28 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
             world.npcs[i].target_bin = bin_idx;
             if bin_idx.is_some() {
                 world.npcs[i].stuck_timer = 0.0;
-                world.npcs[i].detouring = false;
                 world.npcs[i].job_timer = 0.0;
             } else {
                 world.npcs[i].find_bin_failures += 1;
             }
         }
         if let Some(bi) = world.npcs[i].target_bin {
-            let was_stuck = world.npcs[i].stuck_timer > 4.0;
             world.npcs[i].job_timer += dt;
             let no_progress = world.npcs[i].job_timer > 15.0;
             let bx = world.trash_bins[bi].x;
             let bz = world.trash_bins[bi].z;
-            let remaining = npc_walk_toward(world, i, bx, bz, net, terrain, dt);
+            let remaining = npc_walk_toward(world, i, bx, bz, net, terrain, dt, walk_grid);
             if remaining < NPC_BIN_DIST {
                 world.npcs[i].carrying_item = false;
                 world.npcs[i].target_bin = None;
                 world.npcs[i].items_deposited_today += 1;
                 world.npcs[i].money += 1.0;
                 world.npcs[i].fitness_money_earned += 1.0;
-                world.npcs[i].stuck_count = 0;
                 world.trash_bins[bi].items_held += 1;
-            } else if was_stuck || no_progress {
+            } else if no_progress {
                 // Can't reach bin — drop item and pick new bin
                 world.npcs[i].target_bin = None;
-                stuck_recovery(world, i, net);
+                path_failure(world, i, net);
             }
         } else {
             // No bin found — wander toward center to find one (pick target ONCE)
@@ -203,15 +110,14 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
             }
             let tx = world.npcs[i].target_x;
             let tz = world.npcs[i].target_z;
-            npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+            npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
         }
     } else if world.npcs[i].carrying_bin.is_some() {
         let tx = world.npcs[i].target_x;
         let tz = world.npcs[i].target_z;
-        let was_stuck = world.npcs[i].stuck_timer > 4.0;
         world.npcs[i].job_timer += dt;
         let no_progress = world.npcs[i].job_timer > 15.0;
-        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
         if remaining < 2.0 {
             if let Some(bi) = world.npcs[i].carrying_bin {
                 world.trash_bins[bi].x = world.npcs[i].x;
@@ -220,9 +126,8 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
                 world.trash_bins[bi].terrain_normal = terrain.normal_at(world.npcs[i].x, world.npcs[i].z);
                 world.trash_bins[bi].carried_by = None;
                 world.npcs[i].carrying_bin = None;
-                world.npcs[i].stuck_count = 0;
             }
-        } else if was_stuck || no_progress {
+        } else if no_progress {
             // Can't reach target — drop bin here and give up
             if let Some(bi) = world.npcs[i].carrying_bin {
                 world.trash_bins[bi].x = world.npcs[i].x;
@@ -232,11 +137,11 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
                 world.trash_bins[bi].carried_by = None;
                 world.npcs[i].carrying_bin = None;
             }
-            stuck_recovery(world, i, net);
+            path_failure(world, i, net);
         }
     } else {
         // Find item to pick up (skip if on cooldown from stuck recovery)
-        if world.npcs[i].target_item.is_none() && world.npcs[i].wander_cooldown <= 0.0 {
+        if world.npcs[i].target_item.is_none() {
             let item_idx = find_best_item(world, i);
             if let Some(idx) = item_idx {
                 world.npcs[i].target_item = Some(idx);
@@ -244,7 +149,6 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
                 world.npcs[i].target_x = world.items[idx].x;
                 world.npcs[i].target_z = world.items[idx].z;
                 world.npcs[i].stuck_timer = 0.0; // fresh start for new target
-                world.npcs[i].detouring = false;
                 world.npcs[i].job_timer = 0.0; // progress timer
 
                 // Check if we should relocate a bin closer
@@ -267,7 +171,6 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
             } else {
                 world.npcs[i].find_item_failures += 1;
                 pick_wander(world, i, net);
-                world.npcs[i].wander_cooldown = 5.0; // walk to wander target before re-searching
             }
         }
 
@@ -278,23 +181,20 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
                 // Try driving if item is far and car is nearby
                 if try_drive_to_target(world, i, ix, iz, terrain, net) { return; }
                 // Check stuck BEFORE walking (walk resets timer on teleport)
-                let was_stuck = world.npcs[i].stuck_timer > 4.0;
-                world.npcs[i].job_timer += dt;
+                    world.npcs[i].job_timer += dt;
                 let no_progress = world.npcs[i].job_timer > 15.0;
-                let remaining = npc_walk_toward(world, i, ix, iz, net, terrain, dt);
+                let remaining = npc_walk_toward(world, i, ix, iz, net, terrain, dt, walk_grid);
                 if remaining < NPC_PICKUP_DIST {
                     world.items[item_idx].active = false;
                     world.items[item_idx].claimed_by = None;
                     world.npcs[i].carrying_item = true;
                     world.npcs[i].target_item = None;
                     world.npcs[i].fitness_items_picked += 1;
-                    world.npcs[i].stuck_count = 0;
-                } else if was_stuck || no_progress {
+                    } else if no_progress {
                     // Can't reach item — give up, mark item suspect
                     world.items[item_idx].claimed_by = None;
-                    world.items[item_idx].skip_until = 60.0;
                     world.npcs[i].target_item = None;
-                    stuck_recovery(world, i, net);
+                    path_failure(world, i, net);
                 }
             } else {
                 if item_idx < world.items.len() {
@@ -307,7 +207,7 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
             let tx = world.npcs[i].target_x;
             let tz = world.npcs[i].target_z;
             world.npcs[i].job_timer += dt;
-            let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+            let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
             if remaining < 2.0 {
                 world.npcs[i].job_timer = 0.0;
                 pick_wander(world, i, net);
@@ -322,7 +222,7 @@ fn npc_work_collector(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
 
 // ---- Service Jobs ----
 
-fn npc_work_garbage(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_garbage(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Similar to collector but targets dumpster interactibles instead of bins
     let npc = &world.npcs[i];
 
@@ -333,28 +233,25 @@ fn npc_work_garbage(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terr
             world.npcs[i].interaction_target = best;
             if best.is_some() {
                 world.npcs[i].stuck_timer = 0.0;
-                world.npcs[i].detouring = false;
                 world.npcs[i].job_timer = 0.0;
             }
         }
         if let Some(di) = world.npcs[i].interaction_target {
-            let was_stuck = world.npcs[i].stuck_timer > 4.0;
             world.npcs[i].job_timer += dt;
             let no_progress = world.npcs[i].job_timer > 15.0;
             let dx = world.interactibles[di].x;
             let dz = world.interactibles[di].z;
-            let remaining = npc_walk_toward(world, i, dx, dz, net, terrain, dt);
+            let remaining = npc_walk_toward(world, i, dx, dz, net, terrain, dt, walk_grid);
             if remaining < NPC_BIN_DIST {
                 world.npcs[i].carrying_item = false;
                 world.npcs[i].interaction_target = None;
                 world.npcs[i].items_deposited_today += 1;
                 world.npcs[i].money += 1.5;
                 world.npcs[i].fitness_money_earned += 1.5;
-                world.npcs[i].stuck_count = 0;
-            } else if was_stuck || no_progress {
+            } else if no_progress {
                 // Can't reach dumpster — drop item and try another
                 world.npcs[i].interaction_target = None;
-                stuck_recovery(world, i, net);
+                path_failure(world, i, net);
             }
         } else {
             // No dumpster found — wander to find one (pick target periodically, not every frame)
@@ -368,11 +265,11 @@ fn npc_work_garbage(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terr
             }
             let tx = world.npcs[i].target_x;
             let tz = world.npcs[i].target_z;
-            npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+            npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
         }
     } else {
         // Find items near roads (skip if on cooldown from stuck recovery)
-        if world.npcs[i].target_item.is_none() && world.npcs[i].wander_cooldown <= 0.0 {
+        if world.npcs[i].target_item.is_none() {
             let item_idx = find_best_item(world, i);
             if let Some(idx) = item_idx {
                 world.npcs[i].target_item = Some(idx);
@@ -380,12 +277,10 @@ fn npc_work_garbage(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terr
                 world.npcs[i].target_x = world.items[idx].x;
                 world.npcs[i].target_z = world.items[idx].z;
                 world.npcs[i].stuck_timer = 0.0; // fresh start for new target
-                world.npcs[i].detouring = false;
                 world.npcs[i].job_timer = 0.0;
             } else {
                 world.npcs[i].find_item_failures += 1;
                 pick_wander(world, i, net);
-                world.npcs[i].wander_cooldown = 5.0; // walk to wander target before re-searching
             }
         }
 
@@ -395,22 +290,19 @@ fn npc_work_garbage(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terr
                 let iz = world.items[item_idx].z;
                 // Try driving if item is far and car is nearby
                 if try_drive_to_target(world, i, ix, iz, terrain, net) { return; }
-                let was_stuck = world.npcs[i].stuck_timer > 4.0;
-                world.npcs[i].job_timer += dt;
+                    world.npcs[i].job_timer += dt;
                 let no_progress = world.npcs[i].job_timer > 15.0;
-                let remaining = npc_walk_toward(world, i, ix, iz, net, terrain, dt);
+                let remaining = npc_walk_toward(world, i, ix, iz, net, terrain, dt, walk_grid);
                 if remaining < NPC_PICKUP_DIST {
                     world.items[item_idx].active = false;
                     world.items[item_idx].claimed_by = None;
                     world.npcs[i].carrying_item = true;
                     world.npcs[i].target_item = None;
                     world.npcs[i].fitness_items_picked += 1;
-                    world.npcs[i].stuck_count = 0;
-                } else if was_stuck || no_progress {
+                    } else if no_progress {
                     world.items[item_idx].claimed_by = None;
-                    world.items[item_idx].skip_until = 60.0;
                     world.npcs[i].target_item = None;
-                    stuck_recovery(world, i, net);
+                    path_failure(world, i, net);
                 }
             } else {
                 if item_idx < world.items.len() { world.items[item_idx].claimed_by = None; }
@@ -421,7 +313,7 @@ fn npc_work_garbage(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terr
             let tx = world.npcs[i].target_x;
             let tz = world.npcs[i].target_z;
             world.npcs[i].job_timer += dt;
-            let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+            let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
             if remaining < 2.0 {
                 world.npcs[i].job_timer = 0.0;
                 pick_wander(world, i, net);
@@ -434,7 +326,7 @@ fn npc_work_garbage(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terr
     }
 }
 
-fn npc_work_taxi(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_taxi(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Drive around road nodes
     world.npcs[i].job_timer += dt;
     let car_idx = world.npcs[i].car_idx;
@@ -458,30 +350,29 @@ fn npc_work_taxi(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain
                 world.vehicles[car_idx].ai_target_x = world.npcs[i].target_x;
                 world.vehicles[car_idx].ai_target_z = world.npcs[i].target_z;
             } else {
-                npc_walk_toward(world, i, world.vehicles[car_idx].x, world.vehicles[car_idx].z, net, terrain, dt);
+                npc_walk_toward(world, i, world.vehicles[car_idx].x, world.vehicles[car_idx].z, net, terrain, dt, walk_grid);
             }
         }
     } else {
         // Wander on foot
         let tx = world.npcs[i].target_x;
         let tz = world.npcs[i].target_z;
-        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
         if remaining < 3.0 { pick_wander(world, i, net); }
     }
 }
 
-fn npc_work_delivery(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_delivery(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     let npc = &world.npcs[i];
 
     if npc.carrying_item {
         // Drive/walk to target building
         let tx = world.npcs[i].job_target_x;
         let tz = world.npcs[i].job_target_z;
-        let was_stuck = world.npcs[i].stuck_timer > 4.0;
         world.npcs[i].job_timer += dt;
         let no_progress = world.npcs[i].job_timer > 15.0;
         // Delivery carrying → can't drive (carrying_item check in try_drive), just walk
-        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
         if remaining < 3.0 {
             world.npcs[i].carrying_item = false;
             world.npcs[i].items_deposited_today += 1;
@@ -490,21 +381,20 @@ fn npc_work_delivery(world: &mut WorldData, i: usize, net: &mut RoadNetwork, ter
             world.npcs[i].job_timer = 0.0;
             // Pick new source
             pick_random_building_target(world, i);
-        } else if was_stuck || no_progress {
+        } else if no_progress {
             // Can't reach destination — pick new one
             world.npcs[i].carrying_item = false;
             pick_random_building_target(world, i);
-            stuck_recovery(world, i, net);
+            path_failure(world, i, net);
         }
     } else {
         // Drive/walk to source building to pick up
         let tx = world.npcs[i].target_x;
         let tz = world.npcs[i].target_z;
         if try_drive_to_target(world, i, tx, tz, terrain, net) { return; }
-        let was_stuck = world.npcs[i].stuck_timer > 4.0;
         world.npcs[i].job_timer += dt;
         let no_progress = world.npcs[i].job_timer > 15.0;
-        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
         if remaining < 3.0 {
             world.npcs[i].carrying_item = true;
             world.npcs[i].fitness_items_picked += 1;
@@ -515,14 +405,14 @@ fn npc_work_delivery(world: &mut WorldData, i: usize, net: &mut RoadNetwork, ter
                 world.npcs[i].job_target_x = world.buildings[dest].x;
                 world.npcs[i].job_target_z = world.buildings[dest].z;
             }
-        } else if was_stuck || no_progress {
+        } else if no_progress {
             pick_random_building_target(world, i);
-            stuck_recovery(world, i, net);
+            path_failure(world, i, net);
         }
     }
 }
 
-fn npc_work_mail(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_mail(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Visit mailbox interactibles in sequence
     world.npcs[i].job_timer += dt;
 
@@ -531,7 +421,7 @@ fn npc_work_mail(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain
         if world.npcs[i].job_timer < 5.0 {
             let tx = world.npcs[i].target_x;
             let tz = world.npcs[i].target_z;
-            npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+            npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
             return;
         }
         let best = find_nearest_interactible(world, world.npcs[i].x, world.npcs[i].z, InteractibleKind::Mailbox, world.npcs[i].home_idx);
@@ -542,9 +432,8 @@ fn npc_work_mail(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain
         let mx = world.interactibles[mi].x;
         let mz = world.interactibles[mi].z;
         if try_drive_to_target(world, i, mx, mz, terrain, net) { return; }
-        let was_stuck = world.npcs[i].stuck_timer > 4.0;
         let no_progress = world.npcs[i].job_timer > 25.0;
-        let remaining = npc_walk_toward(world, i, mx, mz, net, terrain, dt);
+        let remaining = npc_walk_toward(world, i, mx, mz, net, terrain, dt, walk_grid);
         if remaining < 2.0 {
             // "Deliver" to this mailbox
             world.npcs[i].job_timer = 0.0;
@@ -553,21 +442,21 @@ fn npc_work_mail(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain
             world.npcs[i].items_deposited_today += 1;
             world.npcs[i].interaction_target = None;
             pick_wander(world, i, net); // walk away before finding next
-        } else if was_stuck || no_progress {
+        } else if no_progress {
             world.npcs[i].interaction_target = None;
-            stuck_recovery(world, i, net);
+            path_failure(world, i, net);
         }
     } else {
         pick_wander(world, i, net);
         let tx = world.npcs[i].target_x;
         let tz = world.npcs[i].target_z;
-        npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
     }
 }
 
 // ---- Emergency Jobs ----
 
-fn npc_work_paramedic(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_paramedic(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Find NPCs that are stuck (stuck_timer > 5)
     world.npcs[i].job_timer += dt;
 
@@ -602,18 +491,17 @@ fn npc_work_paramedic(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
     let tx = world.npcs[i].target_x;
     let tz = world.npcs[i].target_z;
     if try_drive_to_target(world, i, tx, tz, terrain, net) { return; }
-    let was_stuck = world.npcs[i].stuck_timer > 4.0;
-    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
-    if was_stuck && remaining > 2.0 {
-        stuck_recovery(world, i, net);
+    world.npcs[i].job_timer += dt;
+    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
+    if world.npcs[i].job_timer > 20.0 && remaining > 2.0 {
+        path_failure(world, i, net);
     } else if remaining < 2.0 {
-        // "Treat" nearby stuck NPCs
+        // "Treat" nearby NPCs with high stuck_timer
         let n = world.npcs.len();
         for j in 0..n {
             if j == i { continue; }
             if dist_sq_2d(world.npcs[j].x, world.npcs[j].z, world.npcs[i].x, world.npcs[i].z) < 9.0 && world.npcs[j].stuck_timer > 3.0 {
                 world.npcs[j].stuck_timer = 0.0;
-                world.npcs[j].detouring = false;
                 world.npcs[i].money += 2.0;
                 world.npcs[i].fitness_money_earned += 2.0;
             }
@@ -622,7 +510,7 @@ fn npc_work_paramedic(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
     }
 }
 
-fn npc_work_firefighter(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_firefighter(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Patrol between fire hydrants
     if world.npcs[i].interaction_target.is_none() {
         let best = find_nearest_interactible(world, world.npcs[i].x, world.npcs[i].z, InteractibleKind::FireHydrant, world.npcs[i].home_idx);
@@ -633,12 +521,12 @@ fn npc_work_firefighter(world: &mut WorldData, i: usize, net: &mut RoadNetwork, 
         let hx = world.interactibles[hi].x;
         let hz = world.interactibles[hi].z;
         if try_drive_to_target(world, i, hx, hz, terrain, net) { return; }
-        let was_stuck = world.npcs[i].stuck_timer > 4.0;
-        let remaining = npc_walk_toward(world, i, hx, hz, net, terrain, dt);
-        if was_stuck && remaining > 2.0 {
+        world.npcs[i].job_timer += dt;
+        let remaining = npc_walk_toward(world, i, hx, hz, net, terrain, dt, walk_grid);
+        if world.npcs[i].job_timer > 20.0 && remaining > 2.0 {
             world.npcs[i].interaction_target = None;
             world.npcs[i].job_timer = 0.0;
-            stuck_recovery(world, i, net);
+            path_failure(world, i, net);
         } else if remaining < 2.0 {
             world.npcs[i].job_timer += dt;
             if world.npcs[i].job_timer > 5.0 {
@@ -656,11 +544,11 @@ fn npc_work_firefighter(world: &mut WorldData, i: usize, net: &mut RoadNetwork, 
         pick_wander(world, i, net);
         let tx = world.npcs[i].target_x;
         let tz = world.npcs[i].target_z;
-        npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
     }
 }
 
-fn npc_work_police(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_police(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     world.npcs[i].job_timer += dt;
 
     // Scan for wanted NPCs within 50m (rescan every 2s or when no target)
@@ -692,7 +580,7 @@ fn npc_work_police(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terra
         let tx = world.npcs[target].x;
         let tz = world.npcs[target].z;
         if try_drive_to_target(world, i, tx, tz, terrain, net) { return; }
-        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
 
         if remaining < 2.0 {
             // Catch! Take 50% of money
@@ -708,20 +596,19 @@ fn npc_work_police(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terra
         // Normal patrol: walk between road nodes
         let tx = world.npcs[i].target_x;
         let tz = world.npcs[i].target_z;
-        let was_stuck = world.npcs[i].stuck_timer > 4.0;
-        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
         if remaining < 3.0 {
             pick_wander(world, i, net);
-        } else if was_stuck || world.npcs[i].job_timer > 15.0 {
+        } else if world.npcs[i].job_timer > 15.0 {
             world.npcs[i].job_timer = 0.0;
-            stuck_recovery(world, i, net);
+            path_failure(world, i, net);
         }
     }
 }
 
 // ---- Commerce Jobs ----
 
-fn npc_work_vendor(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_vendor(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Stand at intersection, earn money when NPCs come near
     world.npcs[i].job_timer += dt;
 
@@ -733,7 +620,7 @@ fn npc_work_vendor(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terra
     let dist = (dx * dx + dz * dz).sqrt();
 
     if dist > 3.0 {
-        npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
     } else {
         // Stand still, check for nearby NPCs every few seconds
         world.npcs[i].walk_phase = 0.0;
@@ -757,18 +644,17 @@ fn npc_work_vendor(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terra
     }
 }
 
-fn npc_work_mechanic(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_mechanic(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Walk to parked vehicles, stand near them
     world.npcs[i].job_timer += dt;
 
     let tx = world.npcs[i].target_x;
     let tz = world.npcs[i].target_z;
     if try_drive_to_target(world, i, tx, tz, terrain, net) { return; }
-    let was_stuck = world.npcs[i].stuck_timer > 4.0;
-    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
 
-    if was_stuck && remaining > 2.0 {
-        stuck_recovery(world, i, net);
+    if world.npcs[i].job_timer > 20.0 && remaining > 2.0 {
+        path_failure(world, i, net);
     } else if remaining < 2.0 {
         // "Repair" — stand still for 10 seconds
         world.npcs[i].walk_phase = 0.0;
@@ -795,7 +681,7 @@ fn npc_work_mechanic(world: &mut WorldData, i: usize, net: &mut RoadNetwork, ter
     }
 }
 
-fn npc_work_construction(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_construction(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Walk to dockyard area, do hammering animation
     let tx = world.npcs[i].job_target_x;
     let tz = world.npcs[i].job_target_z;
@@ -809,7 +695,7 @@ fn npc_work_construction(world: &mut WorldData, i: usize, net: &mut RoadNetwork,
     let jtx = world.npcs[i].job_target_x;
     let jtz = world.npcs[i].job_target_z;
     if try_drive_to_target(world, i, jtx, jtz, terrain, net) { return; }
-    let remaining = npc_walk_toward(world, i, jtx, jtz, net, terrain, dt);
+    let remaining = npc_walk_toward(world, i, jtx, jtz, net, terrain, dt, walk_grid);
     if remaining < 3.0 {
         // Hammering animation (rapid walk phase)
         world.npcs[i].walk_phase += dt * 15.0;
@@ -827,7 +713,7 @@ fn npc_work_construction(world: &mut WorldData, i: usize, net: &mut RoadNetwork,
 
 // ---- Outdoor Jobs ----
 
-fn npc_work_fisherman(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_fisherman(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Walk to fishing pier, stand at edge, earn money periodically
     let pier_x = match world.npcs[i].rng.clone().next() % 3 {
         0 => -30.0, 1 => 0.0, _ => 30.0,
@@ -846,7 +732,7 @@ fn npc_work_fisherman(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
     let tx = world.npcs[i].job_target_x;
     let tz = world.npcs[i].job_target_z;
     if try_drive_to_target(world, i, tx, tz, terrain, net) { return; }
-    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
     if remaining < 4.0 {
         // Fishing — stand still
         world.npcs[i].walk_phase = 0.0;
@@ -859,13 +745,13 @@ fn npc_work_fisherman(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
     }
 }
 
-fn npc_work_farmer(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_farmer(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Walk back and forth in rows on terrain
     world.npcs[i].job_timer += dt;
 
     let tx = world.npcs[i].target_x;
     let tz = world.npcs[i].target_z;
-    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
     if remaining < 2.0 {
         // Pick next row point
         let row_offset = if world.npcs[i].job_timer as u32 % 2 == 0 { 8.0 } else { -8.0 };
@@ -882,14 +768,14 @@ fn npc_work_farmer(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terra
     }
 }
 
-fn npc_work_lumberjack(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_lumberjack(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Walk to nearest tree, stand near it for 15s, earn money
     world.npcs[i].job_timer += dt;
 
     let tx = world.npcs[i].target_x;
     let tz = world.npcs[i].target_z;
     if try_drive_to_target(world, i, tx, tz, terrain, net) { return; }
-    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
 
     if remaining < 2.0 {
         // Chopping animation
@@ -916,7 +802,7 @@ fn npc_work_lumberjack(world: &mut WorldData, i: usize, net: &mut RoadNetwork, t
     }
 }
 
-fn npc_work_scavenger(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_work_scavenger(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     // Visit dumpster interactibles, search them for loot
     world.npcs[i].job_timer += dt;
 
@@ -929,7 +815,7 @@ fn npc_work_scavenger(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
         let dx = world.interactibles[di].x;
         let dz = world.interactibles[di].z;
         if try_drive_to_target(world, i, dx, dz, terrain, net) { return; }
-        let remaining = npc_walk_toward(world, i, dx, dz, net, terrain, dt);
+        let remaining = npc_walk_toward(world, i, dx, dz, net, terrain, dt, walk_grid);
         if remaining < 2.0 {
             // Searching...
             world.npcs[i].walk_phase = 0.0;
@@ -945,7 +831,7 @@ fn npc_work_scavenger(world: &mut WorldData, i: usize, net: &mut RoadNetwork, te
         pick_wander(world, i, net);
         let tx = world.npcs[i].target_x;
         let tz = world.npcs[i].target_z;
-        npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
     }
 }
 
@@ -1002,12 +888,10 @@ fn find_best_item(world: &WorldData, npc_idx: usize) -> Option<usize> {
     let mut best_idx = None;
     let mut fallback_dist = f32::MAX;
     let mut fallback_idx = None;
-    // Recently-stuck NPCs focus on closer items to reduce pathfinding failures
-    let max_range = if npc.stuck_count > 0 { 60.0 } else { 120.0 };
+    let max_range = 120.0;
     let max_dist_sq = max_range * max_range;
     for (idx, item) in world.items.iter().enumerate() {
         if !item.active || item.falling { continue; }
-        if item.skip_until > 0.0 { continue; }
         if let Some(claimer) = item.claimed_by {
             if claimer != npc_idx { continue; }
         }

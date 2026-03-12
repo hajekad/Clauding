@@ -3,6 +3,7 @@
 use crate::rng::Rng;
 use crate::input::KeyBinds;
 use crate::menu::MenuData;
+use crate::navmesh::WalkGrid;
 
 pub const DEFAULT_WIDTH: usize = 1920;
 pub const DEFAULT_HEIGHT: usize = 1080;
@@ -533,11 +534,13 @@ pub struct Npc {
     // Driving
     pub in_vehicle: bool,
     pub parked_x: f32, pub parked_z: f32,
-    // Pathfinding
+    // Pathfinding (A* navmesh)
+    pub nav_path: Vec<[f32; 2]>,  // current A* path waypoints
+    pub nav_path_idx: usize,      // next waypoint index
+    pub nav_target_x: f32,        // target these paths were computed for
+    pub nav_target_z: f32,
+    // Legacy stuck detection (kept for stuck_timer metric tracking only)
     pub stuck_timer: f32,
-    pub stuck_count: u8, // consecutive stuck events — escalates recovery
-    pub detour_x: f32, pub detour_z: f32,
-    pub detouring: bool,
     // Job system
     pub job: NpcJob,
     pub job_timer: f32,
@@ -591,8 +594,6 @@ pub struct Npc {
     pub violation_timer: f32,
     // Police
     pub police_target: Option<usize>,
-    // Target cooldown — prevents re-targeting same unreachable item after stuck recovery
-    pub wander_cooldown: f32,
 }
 
 pub const NPC_SHIRT_COLORS: [u32; 6] = [
@@ -709,6 +710,7 @@ pub struct GameState {
     pub neat_population: crate::neat::Population,
     pub neat_brains: Vec<crate::neat::NeatBrain>,
     pub time_speed: u32, // 1, 10, 100, 1000
+    pub walk_grid: WalkGrid,
 }
 
 impl GameState {
@@ -773,6 +775,7 @@ impl GameState {
             neat_population: crate::neat::Population::new(NUM_NPCS, seed.wrapping_add(0xAE47)),
             neat_brains: Vec::new(),
             time_speed: 1,
+            walk_grid: WalkGrid::empty(),
         }
     }
 
@@ -820,7 +823,7 @@ impl GameState {
         crate::npc::sys_npc(
             &mut self.world, &mut self.road_network, &self.terrain,
             dt, self.time_of_day, &mut self.neat_brains,
-            self.player.x, self.player.z,
+            self.player.x, self.player.z, &self.walk_grid,
         );
         crate::npc::sys_night_spawning(
             &mut self.world, &self.terrain, self.time_of_day,
@@ -834,9 +837,6 @@ impl GameState {
         crate::collision::sys_collisions_headless(&mut self.world, &self.terrain, dt);
         crate::combat::sys_ragdoll_update(&mut self.world, &self.terrain, dt);
         crate::combat::sys_combat_headless(&mut self.world, &self.terrain, dt);
-
-        // River escape
-        crate::npc::sys_river_escape(&mut self.world, &self.terrain);
 
         self.frame_counter += 1;
     }

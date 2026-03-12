@@ -209,7 +209,7 @@ fn main() {
             vehicle::sys_vehicle(&mut game, dt);
             npc::sys_npc(
                 &mut game.world, &mut game.road_network, &game.terrain,
-                dt, game.time_of_day, &mut game.neat_brains, 0.0, 0.0,
+                dt, game.time_of_day, &mut game.neat_brains, 0.0, 0.0, &game.walk_grid,
             );
             npc::sys_night_spawning(
                 &mut game.world, &game.terrain, game.time_of_day,

@@ -3392,9 +3392,9 @@ pub fn generate_world(game: &mut GameState) {
             items_deposited_today: 0,
             in_vehicle: false,
             parked_x: x, parked_z: z,
-            stuck_timer: 0.0, stuck_count: 0,
-            detour_x: 0.0, detour_z: 0.0,
-            detouring: false,
+            nav_path: Vec::new(), nav_path_idx: 0,
+            nav_target_x: 0.0, nav_target_z: 0.0,
+            stuck_timer: 0.0,
             job,
             job_timer: 0.0,
             job_target_x: x, job_target_z: z,
@@ -3437,7 +3437,6 @@ pub fn generate_world(game: &mut GameState) {
             bounty: 0.0,
             violation_timer: 0.0,
             police_target: None,
-            wander_cooldown: 0.0,
             terrain_normal: [0.0, 1.0, 0.0],
         });
     }
@@ -3485,6 +3484,14 @@ pub fn generate_world(game: &mut GameState) {
     // Ambient occlusion: darken ground triangles near building bases
     // Creates contact shadow at building-ground interface
     apply_building_base_ao(&mut tris, &game.world.buildings);
+
+    // Build navigation grid for A* pathfinding
+    game.walk_grid = crate::navmesh::build_walk_grid(
+        &game.world.buildings, &game.world.rocks, &game.world.trees,
+        &game.world.walls, &game.world.clutter,
+        &game.world.river_segments, &game.world.bridges, &game.terrain,
+    );
+    eprintln!("Walk grid: {}x{} ({}m cells)", game.walk_grid.grid_w, game.walk_grid.grid_h, game.walk_grid.cell_size);
 
     eprintln!("World: {} tris, {} road segs ({} nodes), {} vehicles ({} NPC-owned), {} npcs, {} items, {} bins, {} interactibles, {} walls, {} river segs, {} parking spots",
         tris.len(), game.road_network.segments.len(), game.road_network.nodes.len(),

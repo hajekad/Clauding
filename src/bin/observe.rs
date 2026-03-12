@@ -118,7 +118,7 @@ fn main() {
         npc::sys_npc(
             &mut game.world, &mut game.road_network, &game.terrain,
             FIXED_DT, game.time_of_day, &mut game.neat_brains,
-            0.0, 0.0, // player at origin
+            0.0, 0.0, &game.walk_grid,
         );
         npc::sys_night_spawning(
             &mut game.world, &game.terrain, game.time_of_day,
@@ -133,8 +133,6 @@ fn main() {
         // Headless NPC-NPC combat
         combat::sys_combat_headless(&mut game.world, &game.terrain, FIXED_DT);
 
-        // Final river escape — catches any NPC pushed into river by collision/knockback
-        npc::sys_river_escape(&mut game.world, &game.terrain);
 
         tick += 1;
         game.frame_counter += 1;

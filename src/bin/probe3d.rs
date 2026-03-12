@@ -1032,9 +1032,9 @@ fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
         items_deposited_today: 0,
         in_vehicle: false,
         parked_x: x0, parked_z: z0,
-        stuck_timer: 0.0, stuck_count: 0,
-        detour_x: 0.0, detour_z: 0.0,
-        detouring: false,
+        stuck_timer: 0.0,
+        nav_path: Vec::new(), nav_path_idx: 0,
+        nav_target_x: 0.0, nav_target_z: 0.0,
         job: state::NpcJob::Collector,
         job_timer: 0.0,
         job_target_x: x1, job_target_z: z1,
@@ -1074,7 +1074,6 @@ fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
         bounty: 0.0,
         violation_timer: 0.0,
         police_target: None,
-        wander_cooldown: 0.0,
         find_item_failures: 0,
         find_bin_failures: 0,
         stuck_recoveries: 0,
@@ -1084,8 +1083,6 @@ fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
     let max_ticks = 10000;
     let mut total_distance = 0.0f32;
     let mut max_stuck = 0.0f32;
-    let mut detour_count = 0u32;
-    let mut was_detouring = false;
     let mut arrived = false;
 
     for tick in 0..max_ticks {
@@ -1095,6 +1092,7 @@ fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
         let remaining = npc::npc_walk_toward(
             &mut game.world, npc_idx, x1, z1,
             &game.road_network, &game.terrain, dt,
+            &game.walk_grid,
         );
 
         let step_dx = game.world.npcs[npc_idx].x - prev_x;
@@ -1103,12 +1101,6 @@ fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
 
         let stuck = game.world.npcs[npc_idx].stuck_timer;
         if stuck > max_stuck { max_stuck = stuck; }
-
-        let currently_detouring = game.world.npcs[npc_idx].detouring;
-        if currently_detouring && !was_detouring {
-            detour_count += 1;
-        }
-        was_detouring = currently_detouring;
 
         if remaining < 1.0 {
             arrived = true;
@@ -1120,8 +1112,8 @@ fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
         if (tick + 1) % 2000 == 0 {
             let npc = &game.world.npcs[npc_idx];
             let dist_to_goal = ((npc.x - x1).powi(2) + (npc.z - z1).powi(2)).sqrt();
-            println!("  tick {:>5}: pos=({:.1},{:.1}) dist_to_goal={:.1}m stuck={:.1} detours={}",
-                tick + 1, npc.x, npc.z, dist_to_goal, npc.stuck_timer, detour_count);
+            println!("  tick {:>5}: pos=({:.1},{:.1}) dist_to_goal={:.1}m stuck={:.1}",
+                tick + 1, npc.x, npc.z, dist_to_goal, npc.stuck_timer);
         }
     }
 
@@ -1139,7 +1131,6 @@ fn analyze_pathfinding(game: &mut state::GameState, args: &[String]) {
     let efficiency = if total_distance > 0.01 { straight_dist / total_distance } else { 0.0 };
     println!("Path efficiency: {:.1}% (straight/actual)", efficiency * 100.0);
     println!("Max stuck score: {:.1}", max_stuck);
-    println!("Number of detours: {}", detour_count);
     println!("Arrived: {}", arrived);
 
     // Remove the temporary NPC

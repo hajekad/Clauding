@@ -945,6 +945,7 @@ fn job_relevant_interactible(job: NpcJob) -> Option<InteractibleKind> {
 pub fn execute_outputs(
     world: &mut WorldData, i: usize, outputs: &[f32],
     net: &RoadNetwork, terrain: &Terrain, dt: f32,
+    walk_grid: &crate::navmesh::WalkGrid,
 ) {
     if outputs.len() < 13 { return; }
 
@@ -1083,7 +1084,7 @@ pub fn execute_outputs(
     if walk_mag > 0.1 {
         let tx = (world.npcs[i].x + walk_dx * 15.0).clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
         let tz = (world.npcs[i].z + walk_dz * 15.0).clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-        npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+        npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
     }
 }
 

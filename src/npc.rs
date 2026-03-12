@@ -2,7 +2,7 @@
 
 use crate::state::*;
 use crate::math::dist_sq_2d;
-use crate::world::{check_walk_collision, surface_at, point_to_segment_dist, on_river_not_bridge, on_any_road};
+use crate::world::{check_walk_collision, surface_at, on_river_not_bridge, on_any_road};
 use crate::rng::Rng;
 
 // Home task duration: 4 game-hours = 4 * 60 = 240 real seconds
@@ -14,6 +14,7 @@ pub fn sys_npc(
     world: &mut WorldData, road_network: &mut RoadNetwork, terrain: &Terrain,
     dt: f32, time_of_day: f32, brains: &mut [crate::neat::NeatBrain],
     player_x: f32, player_z: f32,
+    walk_grid: &crate::navmesh::WalkGrid,
 ) {
     let n = world.npcs.len();
     for i in 0..n {
@@ -25,9 +26,9 @@ pub fn sys_npc(
         match prev_state {
             NpcState::Sleeping => npc_sleeping(world, i, time_of_day),
             NpcState::HomeTask => npc_home_task(world, i, terrain, dt),
-            NpcState::GoingToWork => npc_going_to_work(world, i, road_network, terrain, dt),
-            NpcState::Working => npc_working(world, i, road_network, terrain, dt, brains, time_of_day, player_x, player_z),
-            NpcState::GoingHome => npc_going_home(world, i, road_network, terrain, dt),
+            NpcState::GoingToWork => npc_going_to_work(world, i, road_network, terrain, dt, walk_grid),
+            NpcState::Working => npc_working(world, i, road_network, terrain, dt, brains, time_of_day, player_x, player_z, walk_grid),
+            NpcState::GoingHome => npc_going_home(world, i, road_network, terrain, dt, walk_grid),
             NpcState::Driving => npc_driving(world, i, terrain, road_network, dt),
             NpcState::Interacting => {} // handled by sys_npc_interactions
             NpcState::KnockedOut => {}  // recovery handled by combat.rs
@@ -45,38 +46,6 @@ pub fn sys_npc(
                 world.npcs[i].job_timer = 0.0;
                 world.npcs[i].interaction_target = None;
             }
-        }
-    }
-}
-
-/// Final pass: ensure no NPC is on the river after all systems have run.
-/// Call this AFTER collision, combat, knockback — it's the last line of defense.
-pub fn sys_river_escape(world: &mut WorldData, terrain: &Terrain) {
-    for i in 0..world.npcs.len() {
-        let npc = &world.npcs[i];
-        if npc.in_vehicle || npc.state == NpcState::Sleeping { continue; }
-        if !on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) { continue; }
-
-        // Find nearest bank using 8-direction search at increasing radii
-        let cx = world.npcs[i].x;
-        let cz = world.npcs[i].z;
-        let mut escaped = false;
-        for radius in [5.0, 10.0, 20.0, 40.0] {
-            for angle_i in 0..8 {
-                let a = angle_i as f32 * std::f32::consts::TAU / 8.0;
-                let try_x = cx + a.cos() * radius;
-                let try_z = cz + a.sin() * radius;
-                if !on_river_not_bridge(try_x, try_z, &world.river_segments, &world.bridges) {
-                    world.npcs[i].x = try_x;
-                    world.npcs[i].z = try_z;
-                    world.npcs[i].y = terrain.height_at(try_x, try_z);
-                    world.npcs[i].knockback_vx = 0.0;
-                    world.npcs[i].knockback_vz = 0.0;
-                    escaped = true;
-                    break;
-                }
-            }
-            if escaped { break; }
         }
     }
 }
@@ -120,337 +89,47 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         }
     }
 
-    // River escape: push NPCs off river toward nearest bank (but not on bridges)
-    if on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) {
-        let mut best_dist = f32::MAX;
-        let mut best_half_width = 5.0f32;
-        let mut push_x = 0.0f32;
-        let mut push_z = 0.0f32;
-        for seg in &world.river_segments {
-            let d = crate::world::point_to_segment_dist(npc.x, npc.z, seg.x1, seg.z1, seg.x2, seg.z2);
-            if d < best_dist {
-                best_dist = d;
-                best_half_width = seg.width * 0.5;
-                // Perpendicular direction away from river center
-                let sdx = seg.x2 - seg.x1;
-                let sdz = seg.z2 - seg.z1;
-                let len = (sdx * sdx + sdz * sdz).sqrt().max(0.01);
-                let px = -sdz / len;
-                let pz = sdx / len;
-                // Which side is NPC on?
-                let dot = (npc.x - seg.x1) * px + (npc.z - seg.z1) * pz;
-                let sign = if dot >= 0.0 { 1.0 } else { -1.0 };
-                push_x = px * sign;
-                push_z = pz * sign;
-            }
-        }
-        // Strong push outward — must exceed walking speed
-        npc.x += push_x * 20.0 * dt;
-        npc.z += push_z * 20.0 * dt;
-        // If still on river after push, snap to bank with escalating distance
-        if on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) {
-            // Try increasing snap distances until we're off the river
-            for mult in [1.0, 2.0, 3.0] {
-                let snap_dist = (best_half_width + 2.0) * mult;
-                let try_x = npc.x + push_x * snap_dist;
-                let try_z = npc.z + push_z * snap_dist;
-                if !on_river_not_bridge(try_x, try_z, &world.river_segments, &world.bridges) {
-                    npc.x = try_x;
-                    npc.z = try_z;
-                    break;
-                }
-            }
-            // Last resort: if still on river (junction/bend), try 8 directions at increasing radii
-            if on_river_not_bridge(npc.x, npc.z, &world.river_segments, &world.bridges) {
-                let cx = npc.x;
-                let cz = npc.z;
-                'escape: for radius in [best_half_width + 3.0, best_half_width + 8.0, best_half_width + 15.0] {
-                    for angle_i in 0..8 {
-                        let a = angle_i as f32 * std::f32::consts::TAU / 8.0;
-                        let try_x = cx + a.cos() * radius;
-                        let try_z = cz + a.sin() * radius;
-                        if !on_river_not_bridge(try_x, try_z, &world.river_segments, &world.bridges) {
-                            npc.x = try_x;
-                            npc.z = try_z;
-                            break 'escape;
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
-/// Walk NPC toward (target_x, target_z) with collision avoidance, pathfinding, and surface-aware speed
-pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &RoadNetwork, terrain: &Terrain, dt: f32) -> f32 {
+/// Walk NPC toward (target_x, target_z) using A* navmesh pathfinding.
+/// Computes path on demand, follows waypoints, handles collision sliding.
+pub fn npc_walk_toward(
+    world: &mut WorldData, i: usize, tx: f32, tz: f32,
+    net: &RoadNetwork, terrain: &Terrain, dt: f32,
+    walk_grid: &crate::navmesh::WalkGrid,
+) -> f32 {
     let npc = &world.npcs[i];
     if npc.in_vehicle { return 0.0; }
 
-    let (actual_tx, actual_tz) = if npc.detouring {
-        (npc.detour_x, npc.detour_z)
-    } else {
-        (tx, tz)
+    let dx_to_goal = tx - npc.x;
+    let dz_to_goal = tz - npc.z;
+    let dist_to_goal = (dx_to_goal * dx_to_goal + dz_to_goal * dz_to_goal).sqrt();
+    if dist_to_goal < 0.5 {
+        world.npcs[i].nav_path.clear();
+        world.npcs[i].nav_path_idx = 0;
+        return dist_to_goal;
+    }
+
+    // Recompute path if target changed significantly or path is empty/exhausted
+    let target_changed = {
+        let ntx = world.npcs[i].nav_target_x;
+        let ntz = world.npcs[i].nav_target_z;
+        (tx - ntx) * (tx - ntx) + (tz - ntz) * (tz - ntz) > 4.0 // >2m change
     };
+    let path_exhausted = world.npcs[i].nav_path_idx >= world.npcs[i].nav_path.len();
 
-    let dx = actual_tx - npc.x;
-    let dz = actual_tz - npc.z;
-    let dist = (dx * dx + dz * dz).sqrt();
-    if dist < 0.5 {
-        if world.npcs[i].detouring {
-            world.npcs[i].detouring = false;
-            world.npcs[i].stuck_timer = 0.0;
-        }
-        return dist;
-    }
+    if target_changed || (path_exhausted && dist_to_goal > 2.0) {
+        let path = walk_grid.find_path(world.npcs[i].x, world.npcs[i].z, tx, tz);
+        world.npcs[i].nav_path = path;
+        world.npcs[i].nav_path_idx = 0;
+        world.npcs[i].nav_target_x = tx;
+        world.npcs[i].nav_target_z = tz;
 
-    // Turn toward target
-    let desired = (-dx).atan2(-dz);
-    let npc = &mut world.npcs[i];
-    let mut diff = desired - npc.rot_y;
-    while diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
-    while diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
-    npc.rot_y += diff.clamp(-4.0 * dt, 4.0 * dt);
-
-    // Surface-aware speed
-    let surface = surface_at(npc.x, npc.z, net);
-    let speed = match surface {
-        Surface::Sidewalk => NPC_SPEED_SIDEWALK,
-        Surface::CarRoad => NPC_SPEED_CAR_ROAD,
-        Surface::FieldRoad => NPC_SPEED_FIELD_ROAD,
-        Surface::Terrain => {
-            // Check slope for steep terrain
-            let normal = terrain.normal_at(npc.x, npc.z);
-            let steepness = 1.0 - normal[1]; // 0 = flat, 1 = vertical
-            let t = (steepness * 3.0).clamp(0.0, 1.0);
-            NPC_SPEED_TERRAIN * (1.0 - t) + NPC_SPEED_STEEP * t
-        }
-    };
-
-    // Car road avoidance: if on a car road and not detouring, drift toward nearest sidewalk
-    if surface == Surface::CarRoad && !npc.detouring {
-        // Find nearest CarRoad segment and compute perpendicular drift toward sidewalk
-        let nx = npc.x;
-        let nz = npc.z;
-        let mut best_seg_dist = f32::MAX;
-        let mut best_perp_x = 0.0f32;
-        let mut best_perp_z = 0.0f32;
-        for seg in &net.segments {
-            if seg.tier != RoadTier::CarRoad { continue; }
-            let d = point_to_segment_dist(nx, nz, seg.x0, seg.z0, seg.x1, seg.z1);
-            if d < best_seg_dist {
-                best_seg_dist = d;
-                let sdx = seg.x1 - seg.x0;
-                let sdz = seg.z1 - seg.z0;
-                let len = (sdx * sdx + sdz * sdz).sqrt().max(0.01);
-                // Perpendicular direction
-                let px = -sdz / len;
-                let pz = sdx / len;
-                // Which side is the NPC on? Project position onto perpendicular
-                let sdx2 = seg.x1 - seg.x0;
-                let sdz2 = seg.z1 - seg.z0;
-                let len_sq = sdx2 * sdx2 + sdz2 * sdz2;
-                let t = ((nx - seg.x0) * sdx2 + (nz - seg.z0) * sdz2) / len_sq.max(0.01);
-                let t = t.clamp(0.0, 1.0);
-                let proj_x = seg.x0 + t * sdx2;
-                let proj_z = seg.z0 + t * sdz2;
-                let to_npc_x = nx - proj_x;
-                let to_npc_z = nz - proj_z;
-                let dot = to_npc_x * px + to_npc_z * pz;
-                let sign = if dot >= 0.0 { 1.0 } else { -1.0 };
-                best_perp_x = px * sign;
-                best_perp_z = pz * sign;
-            }
-        }
-        // Drift toward sidewalk edge (but not into river)
-        let drift_x = npc.x + best_perp_x * 0.5 * dt;
-        let drift_z = npc.z + best_perp_z * 0.5 * dt;
-        if !on_river_not_bridge(drift_x, drift_z, &world.river_segments, &world.bridges) {
-            npc.x = drift_x;
-            npc.z = drift_z;
-        }
-    }
-
-    // Try to move forward
-    let rot = npc.rot_y;
-    let new_x = npc.x - rot.sin() * speed * dt;
-    let new_z = npc.z - rot.cos() * speed * dt;
-
-    let home_idx = npc.home_idx;
-
-    // Push NPC out of any overlapping placed bin (collision resolution, not rescue)
-    for bi in 0..world.trash_bins.len() {
-        if world.trash_bins[bi].carried_by.is_some() { continue; }
-        let bx = world.trash_bins[bi].x;
-        let bz = world.trash_bins[bi].z;
-        let nx = world.npcs[i].x;
-        let nz = world.npcs[i].z;
-        let bdx = nx - bx;
-        let bdz = nz - bz;
-        let d2 = bdx * bdx + bdz * bdz;
-        let r = 0.85; // npc radius(0.4) + bin radius(0.4) + margin
-        if d2 < r * r && d2 > 0.001 {
-            let d = d2.sqrt();
-            let push = (r - d) + 0.05;
-            let px = nx + bdx / d * push;
-            let pz = nz + bdz / d * push;
-            if !check_walk_collision(world, px, pz, 0.4, Some(home_idx))
-                && !on_river_not_bridge(px, pz, &world.river_segments, &world.bridges)
-            {
-                world.npcs[i].x = px;
-                world.npcs[i].z = pz;
-            }
-            break;
-        }
-    }
-
-    // Check river with margin (2m wider than actual river) so NPCs don't hug the edge
-    let river_margin = 2.0;
-    let on_river_x = {
-        let mut hit = false;
-        for seg in &world.river_segments {
-            let d = crate::world::point_to_segment_dist(new_x, world.npcs[i].z, seg.x1, seg.z1, seg.x2, seg.z2);
-            if d < seg.width * 0.5 + river_margin { hit = true; break; }
-        }
-        hit
-    };
-    let on_river_z = {
-        let mut hit = false;
-        for seg in &world.river_segments {
-            let d = crate::world::point_to_segment_dist(world.npcs[i].x, new_z, seg.x1, seg.z1, seg.x2, seg.z2);
-            if d < seg.width * 0.5 + river_margin { hit = true; break; }
-        }
-        hit
-    };
-    let collides_x = check_walk_collision(world, new_x, world.npcs[i].z, 0.4, Some(home_idx)) || on_river_x;
-    let collides_z = check_walk_collision(world, world.npcs[i].x, new_z, 0.4, Some(home_idx)) || on_river_z;
-
-    // Apply movement
-    let old_x = world.npcs[i].x;
-    let old_z = world.npcs[i].z;
-    if !collides_x { world.npcs[i].x = new_x; }
-    if !collides_z { world.npcs[i].z = new_z; }
-
-    // Post-movement diagonal river check — axis-separated checks can miss diagonal steps
-    // Only apply if we weren't already on the river (don't trap NPCs at river-edge homes)
-    if !on_river_not_bridge(old_x, old_z, &world.river_segments, &world.bridges)
-        && on_river_not_bridge(world.npcs[i].x, world.npcs[i].z, &world.river_segments, &world.bridges)
-    {
-        world.npcs[i].x = old_x;
-        world.npcs[i].z = old_z;
-    }
-
-    // Animate walk if NPC physically moved (any direction)
-    let any_movement = ((world.npcs[i].x - old_x).abs() + (world.npcs[i].z - old_z).abs()) > speed * dt * 0.3;
-    if any_movement {
-        world.npcs[i].walk_phase += dt * speed * 2.5;
-    }
-
-    // Stuck detection: check progress toward current target (detour or real).
-    // Wall-sliding (perpendicular movement) shouldn't reset stuck_timer.
-    let old_dist = ((actual_tx - old_x) * (actual_tx - old_x) + (actual_tz - old_z) * (actual_tz - old_z)).sqrt();
-    let new_dist = ((actual_tx - world.npcs[i].x) * (actual_tx - world.npcs[i].x)
-                  + (actual_tz - world.npcs[i].z) * (actual_tz - world.npcs[i].z)).sqrt();
-    let progressed = old_dist - new_dist > speed * dt * 0.2;
-
-    if progressed {
-        world.npcs[i].stuck_timer = 0.0;
-    } else {
-        world.npcs[i].stuck_timer += dt;
-
-        if world.npcs[i].stuck_timer > 0.3 && !world.npcs[i].detouring {
-            let perp_x = -dz / dist.max(0.01) * 8.0;
-            let perp_z = dx / dist.max(0.01) * 8.0;
-            let sign = if world.npcs[i].rng.next() % 2 == 0 { 1.0 } else { -1.0 };
-            let det_x = world.npcs[i].x + perp_x * sign;
-            let det_z = world.npcs[i].z + perp_z * sign;
-            // Try other side if first detour hits river
-            if on_river_not_bridge(det_x, det_z, &world.river_segments, &world.bridges) {
-                let det_x2 = world.npcs[i].x - perp_x * sign;
-                let det_z2 = world.npcs[i].z - perp_z * sign;
-                if !on_river_not_bridge(det_x2, det_z2, &world.river_segments, &world.bridges) {
-                    world.npcs[i].detour_x = det_x2;
-                    world.npcs[i].detour_z = det_z2;
-                    world.npcs[i].detouring = true;
-                }
-                // else: don't detour at all — both sides are river
-            } else {
-                world.npcs[i].detour_x = det_x;
-                world.npcs[i].detour_z = det_z;
-                world.npcs[i].detouring = true;
-            }
-        }
-
-        if world.npcs[i].stuck_timer > 0.8 && world.npcs[i].stuck_timer < 1.0 && world.npcs[i].on_ground {
-            world.npcs[i].vel_y = NPC_JUMP_VELOCITY;
-            world.npcs[i].on_ground = false;
-        }
-
-        if world.npcs[i].stuck_timer > 5.0 {
-            // Severely stuck — teleport to a clear position
-            let cur_x = world.npcs[i].x;
-            let cur_z = world.npcs[i].z;
-
-            let toward_x = (tx - cur_x).clamp(-15.0, 15.0);
-            let toward_z = (tz - cur_z).clamp(-15.0, 15.0);
-
-            let mut dest_x = cur_x;
-            let mut dest_z = cur_z;
-            let mut found = false;
-
-            // Try 4 directions, validate no collision + no river
-            let candidates = [
-                (cur_x + toward_x, cur_z + toward_z),
-                (cur_x + toward_z, cur_z - toward_x),
-                (cur_x - toward_z, cur_z + toward_x),
-                (cur_x - toward_x, cur_z - toward_z),
-            ];
-            for (cx, cz) in candidates {
-                let cx = cx.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-                let cz = cz.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-                if !on_river_not_bridge(cx, cz, &world.river_segments, &world.bridges)
-                    && !check_walk_collision(world, cx, cz, 0.4, Some(home_idx))
-                {
-                    dest_x = cx;
-                    dest_z = cz;
-                    found = true;
-                    break;
-                }
-            }
-            // All 4 directions blocked — jump to nearest road node (escape trap)
-            if !found && !net.nodes.is_empty() {
-                let mut best_d = f32::MAX;
-                for node in &net.nodes {
-                    let ndx = node[0] - cur_x;
-                    let ndz = node[1] - cur_z;
-                    let d = ndx * ndx + ndz * ndz;
-                    if d < best_d && !on_river_not_bridge(node[0], node[1], &world.river_segments, &world.bridges) {
-                        best_d = d;
-                        dest_x = node[0];
-                        dest_z = node[1];
-                        found = true;
-                    }
-                }
-            }
-            if !found {
-                // Last resort: fallback toward target ignoring collision
-                let fx = (cur_x + toward_x).clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-                let fz = (cur_z + toward_z).clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-                if !on_river_not_bridge(fx, fz, &world.river_segments, &world.bridges) {
-                    dest_x = fx;
-                    dest_z = fz;
-                }
-            }
-
-            world.npcs[i].x = dest_x;
-            world.npcs[i].z = dest_z;
-            world.npcs[i].stuck_timer = 0.0;
-            world.npcs[i].detouring = false;
-
-            // Abandon current target — cooldown so NPC picks a different one.
+        // If path is empty (unreachable), release claimed items
+        if world.npcs[i].nav_path.is_empty() {
             if let Some(item_idx) = world.npcs[i].target_item {
                 if item_idx < world.items.len() {
                     world.items[item_idx].claimed_by = None;
-                    world.items[item_idx].skip_until = 30.0;
                 }
                 world.npcs[i].target_item = None;
             }
@@ -460,36 +139,80 @@ pub fn npc_walk_toward(world: &mut WorldData, i: usize, tx: f32, tz: f32, net: &
                 }
                 world.npcs[i].target_bin = None;
             }
-        } else if world.npcs[i].stuck_timer > 3.0 {
-            let prev = world.npcs[i].stuck_timer - dt;
-            if (world.npcs[i].stuck_timer / 3.0) as u32 != (prev / 3.0) as u32 {
-                let angle = world.npcs[i].rng.range(0.0, std::f32::consts::TAU);
-                let nx = world.npcs[i].x;
-                let nz = world.npcs[i].z;
-                world.npcs[i].detour_x = nx + angle.cos() * 10.0;
-                world.npcs[i].detour_z = nz + angle.sin() * 10.0;
-            }
+            return dist_to_goal;
         }
     }
 
-    // Soft boundary: push NPCs back when they wander too far (>200m from center)
-    {
-        let npc = &mut world.npcs[i];
-        let dist_from_center = (npc.x * npc.x + npc.z * npc.z).sqrt();
-        if dist_from_center > 200.0 {
-            let push_strength = ((dist_from_center - 200.0) / 50.0).min(1.0) * 2.0 * dt;
-            let inv = 1.0 / dist_from_center.max(0.01);
-            let push_x = npc.x - npc.x * inv * push_strength * dist_from_center;
-            let push_z = npc.z - npc.z * inv * push_strength * dist_from_center;
-            if !on_river_not_bridge(push_x, push_z, &world.river_segments, &world.bridges) {
-                npc.x = push_x;
-                npc.z = push_z;
+    // Determine immediate walk target: next path waypoint, or final goal if close
+    let (walk_tx, walk_tz) = if world.npcs[i].nav_path_idx < world.npcs[i].nav_path.len() {
+        let wp = world.npcs[i].nav_path[world.npcs[i].nav_path_idx];
+        // Advance waypoint if we're close enough
+        let wp_dx = wp[0] - world.npcs[i].x;
+        let wp_dz = wp[1] - world.npcs[i].z;
+        if wp_dx * wp_dx + wp_dz * wp_dz < 1.5 * 1.5 {
+            world.npcs[i].nav_path_idx += 1;
+            if world.npcs[i].nav_path_idx < world.npcs[i].nav_path.len() {
+                let next = world.npcs[i].nav_path[world.npcs[i].nav_path_idx];
+                (next[0], next[1])
+            } else {
+                (tx, tz) // path exhausted, walk directly to goal
             }
+        } else {
+            (wp[0], wp[1])
         }
-        npc.x = npc.x.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-        npc.z = npc.z.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-        npc.y = terrain.height_at(npc.x, npc.z).max(npc.y);
+    } else {
+        (tx, tz) // no path, walk directly
+    };
+
+    // Turn toward waypoint
+    let dx = walk_tx - world.npcs[i].x;
+    let dz = walk_tz - world.npcs[i].z;
+    let desired = (-dx).atan2(-dz);
+    let npc = &mut world.npcs[i];
+    let mut diff = desired - npc.rot_y;
+    while diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
+    while diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
+    npc.rot_y += diff.clamp(-6.0 * dt, 6.0 * dt);
+
+    // Surface-aware speed
+    let surface = surface_at(npc.x, npc.z, net);
+    let speed = match surface {
+        Surface::Sidewalk => NPC_SPEED_SIDEWALK,
+        Surface::CarRoad => NPC_SPEED_CAR_ROAD,
+        Surface::FieldRoad => NPC_SPEED_FIELD_ROAD,
+        Surface::Terrain => {
+            let normal = terrain.normal_at(npc.x, npc.z);
+            let steepness = 1.0 - normal[1];
+            let t = (steepness * 3.0).clamp(0.0, 1.0);
+            NPC_SPEED_TERRAIN * (1.0 - t) + NPC_SPEED_STEEP * t
+        }
+    };
+
+    // Move toward waypoint
+    let rot = npc.rot_y;
+    let new_x = npc.x - rot.sin() * speed * dt;
+    let new_z = npc.z - rot.cos() * speed * dt;
+    let home_idx = npc.home_idx;
+
+    // Axis-separated collision (slide along obstacles)
+    let collides_x = check_walk_collision(world, new_x, world.npcs[i].z, 0.4, Some(home_idx));
+    let collides_z = check_walk_collision(world, world.npcs[i].x, new_z, 0.4, Some(home_idx));
+
+    let old_x = world.npcs[i].x;
+    let old_z = world.npcs[i].z;
+    if !collides_x { world.npcs[i].x = new_x; }
+    if !collides_z { world.npcs[i].z = new_z; }
+
+    // Animate walk
+    let moved = ((world.npcs[i].x - old_x).abs() + (world.npcs[i].z - old_z).abs()) > speed * dt * 0.3;
+    if moved {
+        world.npcs[i].walk_phase += dt * speed * 2.5;
     }
+
+    // World bounds clamp
+    world.npcs[i].x = world.npcs[i].x.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
+    world.npcs[i].z = world.npcs[i].z.clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
+    world.npcs[i].y = terrain.height_at(world.npcs[i].x, world.npcs[i].z).max(world.npcs[i].y);
 
     let dx2 = tx - world.npcs[i].x;
     let dz2 = tz - world.npcs[i].z;
@@ -574,12 +297,12 @@ fn npc_home_task(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
     if npc.state_timer >= HOME_TASK_DURATION {
         npc.state = NpcState::GoingToWork;
         npc.state_timer = 0.0;
-        npc.detouring = false;
         npc.stuck_timer = 0.0;
+        npc.nav_path.clear();
     }
 }
 
-fn npc_going_to_work(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_going_to_work(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     world.npcs[i].state_timer += dt;
 
     // Timeout: if can't reach item in 60s, just start working where you are
@@ -587,7 +310,6 @@ fn npc_going_to_work(world: &mut WorldData, i: usize, net: &mut RoadNetwork, ter
         world.npcs[i].state = NpcState::Working;
         world.npcs[i].state_timer = 0.0;
         world.npcs[i].target_item = None;
-        world.npcs[i].detouring = false;
         unclaim_item(world, i);
         return;
     }
@@ -625,12 +347,11 @@ fn npc_going_to_work(world: &mut WorldData, i: usize, net: &mut RoadNetwork, ter
 
     let tx = world.npcs[i].target_x; // re-read in case redirected to car
     let tz = world.npcs[i].target_z;
-    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
     if remaining < 3.0 {
         world.npcs[i].state = NpcState::Working;
         world.npcs[i].state_timer = 0.0;
         world.npcs[i].stuck_timer = 0.0;
-        world.npcs[i].detouring = false;
     }
 }
 
@@ -638,6 +359,7 @@ fn npc_working(
     world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain,
     dt: f32, brains: &mut [crate::neat::NeatBrain], time_of_day: f32,
     player_x: f32, player_z: f32,
+    walk_grid: &crate::navmesh::WalkGrid,
 ) {
     world.npcs[i].state_timer += dt;
 
@@ -648,7 +370,6 @@ fn npc_working(
         world.npcs[i].target_item = None;
         world.npcs[i].target_bin = None;
         world.npcs[i].interaction_target = None;
-        world.npcs[i].detouring = false;
         unclaim_item(world, i);
         let home = &world.buildings[world.npcs[i].home_idx];
         world.npcs[i].target_x = home.x;
@@ -675,14 +396,14 @@ fn npc_working(
                 }
             } else {
                 // Walk to vending machine
-                npc_walk_toward(world, i, vm_x, vm_z, net, terrain, dt);
+                npc_walk_toward(world, i, vm_x, vm_z, net, terrain, dt, walk_grid);
             }
             return;
         }
     }
 
     // Job AI handles work behavior and money earning (mut net for vehicle parking)
-    crate::jobs::npc_work_dispatch(world, i, net, terrain, dt);
+    crate::jobs::npc_work_dispatch(world, i, net, terrain, dt, walk_grid);
 
     // NN observation: fitness tracking + combat/sound outputs only
     let bi = world.npcs[i].brain_idx;
@@ -716,7 +437,7 @@ fn npc_working(
     }
 }
 
-fn npc_going_home(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32) {
+fn npc_going_home(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrain: &Terrain, dt: f32, walk_grid: &crate::navmesh::WalkGrid) {
     let npc = &world.npcs[i];
     let home = &world.buildings[npc.home_idx];
     let hx = home.x;
@@ -737,7 +458,7 @@ fn npc_going_home(world: &mut WorldData, i: usize, net: &mut RoadNetwork, terrai
     // Walk toward home (or toward car if redirected)
     let tx = world.npcs[i].target_x;
     let tz = world.npcs[i].target_z;
-    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt);
+    let remaining = npc_walk_toward(world, i, tx, tz, net, terrain, dt, walk_grid);
     // Check if at home OR at car (to re-attempt driving next frame)
     let to_home = ((hx - world.npcs[i].x).powi(2) + (hz - world.npcs[i].z).powi(2)).sqrt();
     if to_home < 3.0 {
@@ -898,7 +619,7 @@ pub fn npc_exit_car(world: &mut WorldData, i: usize, terrain: &Terrain, net: &mu
     } else {
         world.npcs[i].state = NpcState::GoingHome;
     }
-    world.npcs[i].detouring = false;
+    world.npcs[i].nav_path.clear();
     world.npcs[i].stuck_timer = 0.0;
 }
 
@@ -1128,9 +849,7 @@ pub fn sys_midnight_reset(
         for npc in &mut world.npcs {
             npc.items_deposited_today = 0;
             npc.stuck_timer = 0.0;
-            npc.stuck_count = 0;
-            npc.detouring = false;
-            npc.wander_cooldown = 0.0;
+            npc.nav_path.clear();
         }
         return true; // day changed
     }
