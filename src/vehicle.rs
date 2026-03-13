@@ -106,8 +106,30 @@ fn drive_vehicle(state: &mut GameState, vi: usize, _dt: f32) {
     let handbrake = state.keybinds.is_pressed(Action::Jump, &state.keys);
 
     let v = &mut state.world.vehicles[vi];
-    let throttle = if fwd { 1.0 } else { 0.0 };
-    let brake = if back { 1.0 } else if !fwd && v.speed.abs() > 0.5 { 0.3 } else { 0.0 };
+    let speed = v.speed;
+
+    // W/S with brake-to-reverse transition:
+    // W while moving forward = throttle, W while reversing = brake
+    // S while moving forward = brake, S while stopped = reverse
+    let (throttle, brake) = if fwd && !back {
+        if speed < -1.0 {
+            (0.0, 1.0)   // W while reversing: brake to stop
+        } else {
+            (1.0, 0.0)   // W: forward throttle
+        }
+    } else if back && !fwd {
+        if speed > 1.0 {
+            (0.0, 1.0)   // S while moving forward: full brake
+        } else if speed > 0.3 {
+            (0.0, 0.5)   // S near stop: moderate brake (smooth stop)
+        } else {
+            (-0.5, 0.0)  // S while stopped/slow: reverse gear
+        }
+    } else {
+        // Neither or both: coast (engine braking handles decel)
+        (0.0, 0.0)
+    };
+
     let steer = if left { -1.0 } else if right { 1.0 } else { 0.0 };
     v.drivetrain.handbrake = handbrake;
     crate::vehicle_physics::player_drive_input(v, throttle, brake, steer);
