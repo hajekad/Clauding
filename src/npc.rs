@@ -132,7 +132,7 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, road_network:
         && world.npcs[i].skeleton.should_ragdoll_from_fall()
     {
         let impulse = [vel[0] * 0.5, 0.0, vel[2] * 0.5];
-        crate::collision::init_ragdoll_pub(&mut world.npcs[i], impulse[0], impulse[1], impulse[2]);
+        crate::collision::init_ragdoll(&mut world.npcs[i], impulse[0], impulse[1], impulse[2]);
     }
 
     // Procedural animation: skeleton IK + walk cycle from physics velocity

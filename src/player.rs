@@ -66,8 +66,7 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         p.z = hips[2];
         // Blend recovery when timer expired
         p.skeleton.blend_from_ragdoll(p.body.pos, p.rot_y, dt);
-        // Update ragdoll timer
-        p.skeleton.ragdoll_timer -= dt;
+        // Timer is decremented by step_ragdoll() — no double-decrement here
         return;
     }
 
@@ -127,32 +126,28 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         }
     }
     if p.skeleton.jump_phase >= 1.0 && p.skeleton.jump_phase < 2.0 {
-        // Extension phase: legs push against ground, applying upward force over ~0.05s
+        // Extension phase: single impulse at transition, then visual unwind
         let extend_speed = 20.0; // phase units/sec (1→2 in 0.05s)
-        let prev_phase = p.skeleton.jump_phase;
-        p.skeleton.jump_phase += extend_speed * dt;
-        p.skeleton.jump_crouch = (2.0 - p.skeleton.jump_phase.min(2.0)) * 0.08;
 
-        // Apply ground reaction force progressively (not instant velocity set)
-        // Total impulse = mass × JUMP_VELOCITY, spread over extension duration
-        if p.on_ground {
+        // Apply single impulse exactly once at extension start (timestep-independent)
+        // Use < 1.01 instead of == 1.0 to avoid float equality fragility
+        if p.skeleton.jump_phase < 1.01 && p.on_ground {
             let ground_n = state.terrain.normal_at(p.body.pos[0], p.body.pos[2]);
             let launch_dir = crate::math::v3_normalize([
                 ground_n[0] * 0.3,
                 ground_n[1].max(0.7),
                 ground_n[2] * 0.3,
             ]);
-            // Force = impulse / extension_duration, applied each frame
-            // Total impulse over extension phase = mass * JUMP_VELOCITY
-            let phase_fraction = (p.skeleton.jump_phase - prev_phase).min(1.0);
-            let force_mag = JUMP_VELOCITY * p.body.mass / (1.0 / extend_speed); // force = impulse / duration
-            let frame_force = force_mag * phase_fraction;
-            p.body.apply_force([
-                launch_dir[0] * frame_force,
-                launch_dir[1] * frame_force,
-                launch_dir[2] * frame_force,
+            let impulse_mag = JUMP_VELOCITY * p.body.mass;
+            p.body.apply_impulse([
+                launch_dir[0] * impulse_mag,
+                launch_dir[1] * impulse_mag,
+                launch_dir[2] * impulse_mag,
             ]);
         }
+
+        p.skeleton.jump_phase += extend_speed * dt;
+        p.skeleton.jump_crouch = (2.0 - p.skeleton.jump_phase.min(2.0)) * 0.08;
 
         if p.skeleton.jump_phase >= 2.0 {
             p.skeleton.jump_phase = 0.0;

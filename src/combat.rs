@@ -112,28 +112,10 @@ pub fn sys_combat(
         }
     }
 
-    // Apply knockback friction + knockout recovery + passive health regen
+    // Knockout recovery + passive health regen
+    // (knockback movement is handled by body.apply_impulse() → npc_physics() integration)
     for i in 0..n {
         let npc = &mut world.npcs[i];
-
-        // Knockback movement (river-safe: check before applying)
-        if npc.knockback_vx.abs() > 0.01 || npc.knockback_vz.abs() > 0.01 {
-            let kb_x = npc.x + npc.knockback_vx * dt;
-            let kb_z = npc.z + npc.knockback_vz * dt;
-            if !crate::world::on_river_not_bridge(kb_x, kb_z, &world.river_segments, &world.bridges) {
-                npc.x = kb_x;
-                npc.z = kb_z;
-            } else {
-                npc.knockback_vx = 0.0;
-                npc.knockback_vz = 0.0;
-            }
-            npc.x = npc.x.clamp(-WORLD_HALF, WORLD_HALF);
-            npc.z = npc.z.clamp(-WORLD_HALF, WORLD_HALF);
-            // Friction
-            let friction = (-KNOCKBACK_FRICTION * dt).exp();
-            npc.knockback_vx *= friction;
-            npc.knockback_vz *= friction;
-        }
 
         // Knockout recovery (skip for starving_dead — they stay down until midnight)
         if npc.state == NpcState::KnockedOut && !npc.starving_dead {
@@ -227,26 +209,10 @@ pub fn sys_combat_headless(world: &mut WorldData, terrain: &Terrain, dt: f32) {
         // intent == 1 (attack player) is ignored in headless mode
     }
 
-    // Knockback friction + knockout recovery + health regen
+    // Knockout recovery + health regen
+    // (knockback movement is handled by body.apply_impulse() → npc_physics() integration)
     for i in 0..n {
         let npc = &mut world.npcs[i];
-
-        if npc.knockback_vx.abs() > 0.01 || npc.knockback_vz.abs() > 0.01 {
-            let kb_x = npc.x + npc.knockback_vx * dt;
-            let kb_z = npc.z + npc.knockback_vz * dt;
-            if !crate::world::on_river_not_bridge(kb_x, kb_z, &world.river_segments, &world.bridges) {
-                npc.x = kb_x;
-                npc.z = kb_z;
-            } else {
-                npc.knockback_vx = 0.0;
-                npc.knockback_vz = 0.0;
-            }
-            npc.x = npc.x.clamp(-WORLD_HALF, WORLD_HALF);
-            npc.z = npc.z.clamp(-WORLD_HALF, WORLD_HALF);
-            let friction = (-KNOCKBACK_FRICTION * dt).exp();
-            npc.knockback_vx *= friction;
-            npc.knockback_vz *= friction;
-        }
 
         if npc.state == NpcState::KnockedOut && !npc.starving_dead {
             npc.knockout_timer -= dt;
@@ -328,6 +294,14 @@ fn npc_attack_player(nx: f32, nz: f32, nrot: f32, player: &mut Player, particles
     player.health = (player.health - NPC_ATTACK_DAMAGE).max(0.0);
     player.hit_flash = HIT_FLASH_DURATION;
     player.damage_shake = CAMERA_SHAKE_INTENSITY;
+
+    // Knockback impulse to player body (mass-based, directed away from attacker)
+    let punch_impulse = KNOCKBACK_FORCE * player.body.mass;
+    player.body.apply_impulse([
+        dx / dist * punch_impulse,
+        KNOCKBACK_UP * player.body.mass,
+        dz / dist * punch_impulse,
+    ]);
 
     emit_hit_particles(particles, player.x, player.y + 1.0, player.z);
     true
