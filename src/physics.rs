@@ -231,9 +231,14 @@ const SOLVER_ITERATIONS: usize = 4;
 const BAUMGARTE_FACTOR: f32 = 0.2;
 const SLOP: f32 = 0.005; // penetration tolerance before correction
 
-/// Solve all contacts for this frame.
+/// Solve all contacts for this frame (sequential impulse with Baumgarte stabilization).
 /// `bodies` is the mutable slice of all rigid bodies.
 /// Contacts reference bodies by index; usize::MAX means the world (infinite mass).
+///
+/// Currently: ground contact for characters/vehicles is handled by direct enforcement
+/// (simpler, stable). This solver is infrastructure for inter-body contact resolution
+/// (e.g., stacking objects, character standing on vehicle) — not yet wired in.
+#[allow(dead_code)]
 pub fn solve_contacts(bodies: &mut [RigidBody], contacts: &mut [Contact], dt: f32) {
     if contacts.is_empty() || dt < 1e-8 { return; }
 
@@ -246,6 +251,7 @@ pub fn solve_contacts(bodies: &mut [RigidBody], contacts: &mut [Contact], dt: f3
     }
 }
 
+#[allow(dead_code)]
 fn solve_one(bodies: &mut [RigidBody], c: &mut Contact, inv_dt: f32) {
     let n = c.normal;
 
@@ -328,6 +334,8 @@ fn solve_one(bodies: &mut [RigidBody], c: &mut Contact, inv_dt: f32) {
 
 /// Generate a contact between a rigid body and the terrain ground plane.
 /// Returns Some(Contact) if the body's lowest point is below terrain.
+/// Used with solve_contacts() for full contact pipeline (not yet wired for characters).
+#[allow(dead_code)]
 pub fn ground_contact(
     body_idx: usize,
     body: &RigidBody,
@@ -373,6 +381,8 @@ pub fn ground_contact(
 // ── Box vs Box collision (SAT) ───────────────────────────────────────────
 
 /// Test two oriented boxes for overlap. Returns contact if overlapping.
+/// Infrastructure for full 3D contact pipeline (vehicle-vehicle currently uses 2D OBB in collision.rs).
+#[allow(dead_code)]
 pub fn box_vs_box(
     idx_a: usize, body_a: &RigidBody, half_a: Vec3,
     idx_b: usize, body_b: &RigidBody, half_b: Vec3,
@@ -425,6 +435,7 @@ pub fn box_vs_box(
     Some(Contact::new(idx_a, idx_b, contact_point, best_axis, min_pen, mat))
 }
 
+#[allow(dead_code)]
 fn test_sat_axis(
     axis: Vec3, d: Vec3,
     axes_a: &[Vec3; 3], halfs_a: &[f32; 3],
@@ -448,6 +459,7 @@ fn test_sat_axis(
 
 // ── Sphere vs Sphere ─────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub fn sphere_vs_sphere(
     idx_a: usize, body_a: &RigidBody, radius_a: f32,
     idx_b: usize, body_b: &RigidBody, radius_b: f32,
@@ -491,6 +503,7 @@ pub fn apply_explosion(body: &mut RigidBody, origin: Vec3, radius: f32, force: f
 }
 
 /// Apply explosion to a slice of rigid bodies. Returns indices that were affected.
+#[allow(dead_code)]
 pub fn apply_explosion_to_all(
     bodies: &mut [RigidBody],
     origin: Vec3,
@@ -509,7 +522,9 @@ pub fn apply_explosion_to_all(
 
 // ── Capsule vs ground (character-specific) ───────────────────────────────
 
-/// Character capsule ground contact — returns contact at feet position
+/// Character capsule ground contact — returns contact at feet position.
+/// Infrastructure for character-on-vehicle stacking (not yet wired).
+#[allow(dead_code)]
 pub fn capsule_ground_contact(
     body_idx: usize,
     body: &RigidBody,

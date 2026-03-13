@@ -107,7 +107,6 @@ pub const SOUND_CHANNELS: usize = 3;
 
 // NPC life simulation constants
 pub const NUM_TRASH_BINS: usize = 60;
-pub const NPC_JUMP_VELOCITY: f32 = 6.0;
 pub const NPC_DRIVE_THRESHOLD: f32 = 15.0;
 pub const NPC_PICKUP_DIST: f32 = 4.0;  // generous range for 500m world
 pub const NPC_BIN_DIST: f32 = 1.5;

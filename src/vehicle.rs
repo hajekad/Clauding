@@ -81,8 +81,8 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
         snap_to_parking(i, &mut state.world, &mut state.road_network, &state.terrain);
     }
 
-    // Vehicle-vehicle collision separation — push overlapping vehicles apart
-    separate_vehicles(&mut state.world, &state.terrain);
+    // Sync terrain height/normal for parked vehicles (collision handled by sys_collisions)
+    sync_vehicle_terrain(&mut state.world, &state.terrain);
 }
 
 /// Player driving: converts key input to drivetrain commands.
@@ -636,69 +636,20 @@ pub fn snap_to_parking(vi: usize, world: &mut WorldData, net: &mut RoadNetwork, 
     false
 }
 
-/// Push overlapping vehicles apart using OBB intersection (matches visual shape).
-fn separate_vehicles(world: &mut WorldData, terrain: &Terrain) {
+/// Sync parked/idle vehicle Y + terrain normal. Active vehicles are handled by step_vehicle_physics.
+/// Vehicle-vehicle collision separation is handled by sys_collisions (impulse-based).
+fn sync_vehicle_terrain(world: &mut WorldData, terrain: &Terrain) {
     let n = world.vehicles.len();
-
     for i in 0..n {
-        let i_moving = world.vehicles[i].speed.abs() > 0.1
-            || world.vehicles[i].ai_active
-            || world.vehicles[i].occupied;
-        if !i_moving && world.vehicles[i].parked { continue; }
-
-        for j in (i + 1)..n {
-            let j_moving = world.vehicles[j].speed.abs() > 0.1
-                || world.vehicles[j].ai_active
-                || world.vehicles[j].occupied;
-            if !i_moving && !j_moving { continue; }
-
-            // Broad phase: skip if centers are far apart
-            let dx = world.vehicles[j].x - world.vehicles[i].x;
-            let dz = world.vehicles[j].z - world.vehicles[i].z;
-            let d2 = dx * dx + dz * dz;
-            if d2 >= 64.0 || d2 < 0.001 { continue; } // 8m broad phase
-
-            let obb_a = crate::collision::Obb2d::from_vehicle(&world.vehicles[i]);
-            let obb_b = crate::collision::Obb2d::from_vehicle(&world.vehicles[j]);
-
-            if let Some((nx, nz, depth)) = crate::collision::obb_intersect(&obb_a, &obb_b) {
-                let push = depth * 0.5 + 0.05;
-
-                let si = world.vehicles[i].speed.abs();
-                let sj = world.vehicles[j].speed.abs();
-                let total_speed = si + sj + 0.1;
-                let wi = sj / total_speed;
-                let wj = si / total_speed;
-
-                let (pi, pj) = if world.vehicles[i].parked {
-                    (0.0, 1.0)
-                } else if world.vehicles[j].parked {
-                    (1.0, 0.0)
-                } else {
-                    (wi, wj)
-                };
-
-                world.vehicles[i].x -= nx * push * pi;
-                world.vehicles[i].z -= nz * push * pi;
-                world.vehicles[j].x += nx * push * pj;
-                world.vehicles[j].z += nz * push * pj;
-
-                if si > 1.0 { world.vehicles[i].speed *= 0.85; }
-                if sj > 1.0 { world.vehicles[j].speed *= 0.85; }
-            }
+        // Active vehicles get terrain sync from step_vehicle_physics; only sync idle/parked here
+        if world.vehicles[i].ai_active || world.vehicles[i].occupied {
+            continue;
         }
-    }
-
-    // Re-snap all vehicles to terrain (Y + terrain normal for slope tilting)
-    for i in 0..n {
         let vx = world.vehicles[i].x;
         let vz = world.vehicles[i].z;
         world.vehicles[i].y = terrain.height_at(vx, vz) + VEHICLE_GROUND_OFFSET;
-        // Update terrain normal so parked/idle vehicles tilt correctly on slopes
         let target_n = crate::math::clamp_normal_tilt(terrain.normal_at(vx, vz), 30.0);
         let cur = world.vehicles[i].terrain_normal;
-        // Fast lerp for stationary vehicles, same smooth lerp for moving
-        let rate = if world.vehicles[i].speed.abs() < 0.1 { 0.5 } else { 0.1 };
-        world.vehicles[i].terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(cur, target_n, rate));
+        world.vehicles[i].terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(cur, target_n, 0.5));
     }
 }
