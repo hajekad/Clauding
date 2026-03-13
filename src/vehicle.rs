@@ -99,10 +99,16 @@ fn drive_vehicle(state: &mut GameState, vi: usize, _dt: f32) {
     let steer = if left { -1.0 } else if right { 1.0 } else { 0.0 };
     crate::vehicle_physics::player_drive_input(v, throttle, brake, steer);
 
-    // Sync player position from vehicle (physics updates vehicle position)
+    // Sync player position from vehicle — driver bounces with suspension
     state.player.x = state.world.vehicles[vi].x;
-    state.player.y = state.world.vehicles[vi].y;
     state.player.z = state.world.vehicles[vi].z;
+    // Cabin Y offset from average suspension compression
+    let avg_comp = state.world.vehicles[vi].suspension.iter()
+        .map(|s| s.compression)
+        .sum::<f32>() * 0.25;
+    let rest = state.world.vehicles[vi].suspension[0].params.rest_length;
+    let seat_offset = (avg_comp - rest * 0.5) * 0.3;
+    state.player.y = state.world.vehicles[vi].y + seat_offset;
     state.player.rot_y = state.world.vehicles[vi].rot_y;
     state.player.terrain_normal = state.world.vehicles[vi].terrain_normal;
 

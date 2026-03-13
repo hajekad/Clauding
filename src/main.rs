@@ -198,7 +198,7 @@ fn main() {
                 // Vehicle rigid body physics (suspension + tire forces)
                 for vi in 0..game.world.vehicles.len() {
                     vehicle_physics::step_vehicle_physics(
-                        &mut game.world.vehicles[vi], &game.terrain, FIXED_DT,
+                        &mut game.world.vehicles[vi], &game.terrain, &game.road_network, FIXED_DT,
                     );
                 }
 

@@ -4,7 +4,7 @@
 // Each frame: compute suspension forces → tire forces → integrate body → sync back to Vehicle fields.
 
 use crate::math::*;
-use crate::state::{Vehicle, Terrain};
+use crate::state::{Vehicle, Terrain, RoadNetwork};
 use crate::physics;
 use crate::tire;
 use crate::suspension;
@@ -12,7 +12,7 @@ use crate::material;
 
 /// Step physics for a single vehicle. Called once per fixed timestep.
 /// This replaces the old direct position/speed manipulation with force-based movement.
-pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, dt: f32) {
+pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &RoadNetwork, dt: f32) {
     // Skip physics for parked vehicles with no driver
     if v.parked && !v.occupied && !v.ai_active {
         // Just sync body position from legacy fields
@@ -53,8 +53,9 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, dt: f32) {
     let body_fwd = quat_forward(v.body.quat);
     let body_right = quat_right(v.body.quat);
 
-    // Get surface material at vehicle position
-    let surface_mat = material::MAT_ASPHALT; // TODO: query actual surface
+    // Query actual surface material at vehicle position
+    let surface = crate::world::surface_at(v.body.pos[0], v.body.pos[2], road_network);
+    let surface_mat = *material::material_for_surface(surface);
 
     let mut total_force = [0.0f32; 3];
     let mut total_torque = [0.0f32; 3];

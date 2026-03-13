@@ -880,7 +880,7 @@ impl GameState {
         // Vehicle rigid body physics
         for vi in 0..self.world.vehicles.len() {
             crate::vehicle_physics::step_vehicle_physics(
-                &mut self.world.vehicles[vi], &self.terrain, dt,
+                &mut self.world.vehicles[vi], &self.terrain, &self.road_network, dt,
             );
         }
 
