@@ -144,9 +144,9 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
     let body_fwd = quat_forward(v.body.quat);
     let body_right = quat_right(v.body.quat);
 
-    // Query actual surface material at vehicle position
-    let surface = crate::world::surface_at(v.body.pos[0], v.body.pos[2], road_network);
-    let surface_mat = *material::material_for_surface(surface);
+    // Base surface at vehicle center (used as fallback / reference)
+    let center_surface = v.surface_override
+        .unwrap_or_else(|| crate::world::surface_at(v.body.pos[0], v.body.pos[2], road_network));
 
     let mut total_force = [0.0f32; 3];
     let mut total_torque = [0.0f32; 3];
@@ -176,6 +176,19 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
 
         // Tire forces (only if wheel is on ground, grip reduced by damage)
         if v.wheels[i].on_ground && susp_force > 1.0 {
+            // Per-wheel surface: sample at tire contact XZ, blend with center surface
+            // At road edges, one side of the car may be on asphalt while the other is on grass
+            let wheel_surface = v.surface_override
+                .unwrap_or_else(|| crate::world::surface_at(attach_world[0], attach_world[2], road_network));
+            let wheel_mat = if wheel_surface == center_surface {
+                *material::material_for_surface(wheel_surface)
+            } else {
+                // Wheel straddles a surface boundary — blend materials for smooth transition
+                material::combine_materials(
+                    material::material_for_surface(center_surface),
+                    material::material_for_surface(wheel_surface),
+                )
+            };
             let contact_vel = v.body.velocity_at(attach_world);
             let tire_force = tire::compute_tire_forces(
                 &mut v.wheels[i],
@@ -184,7 +197,7 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
                 body_fwd,
                 body_right,
                 susp_force * dmg_grip, // reduced normal load → less grip
-                &surface_mat,
+                &wheel_mat,
                 dt,
             );
             total_force = v3_add(total_force, tire_force);
