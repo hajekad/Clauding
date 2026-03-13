@@ -39,6 +39,7 @@ pub struct WheelState {
     pub inertia: f32,           // wheel rotational inertia (kg*m^2)
     pub brake_torque: f32,      // applied brake torque (N*m)
     pub drive_torque: f32,      // applied drive torque from engine (N*m)
+    pub punctured: bool,        // punctured tire: reduced friction, no grip recovery
     // Suspension attachment point in local vehicle space
     pub local_pos: Vec3,
     // Output (computed each frame)
@@ -57,6 +58,7 @@ impl WheelState {
             inertia: 1.2,       // typical car wheel ~1.2 kg*m^2
             brake_torque: 0.0,
             drive_torque: 0.0,
+            punctured: false,
             local_pos,
             contact_force: [0.0; 3],
             on_ground: false,
@@ -140,9 +142,13 @@ pub fn compute_tire_forces(
         vy_tire.signum() * 0.5 // low speed approximation
     };
 
+    // Punctured tire: drastically reduced friction (riding on rim)
+    let puncture_mult = if wheel.punctured { 0.3 } else { 1.0 };
+    let effective_friction = surface.dynamic_friction * puncture_mult;
+
     // Pacejka forces (scaled by normal load and surface friction)
-    let fx = pacejka(&PACEJKA_LONG, slip_ratio) * normal_load * surface.dynamic_friction;
-    let fy = -pacejka(&PACEJKA_LAT, slip_angle) * normal_load * surface.dynamic_friction;
+    let fx = pacejka(&PACEJKA_LONG, slip_ratio) * normal_load * effective_friction;
+    let fy = -pacejka(&PACEJKA_LAT, slip_angle) * normal_load * effective_friction;
 
     // Rolling resistance
     let f_roll = -vx_tire.signum() * normal_load * surface.rolling_resistance;

@@ -182,6 +182,17 @@ impl Gait {
         }
     }
 
+    /// CoM lean threshold before stumble triggers (meters).
+    /// Faster gaits have wider stance → higher tolerance before losing balance.
+    pub fn balance_threshold(self) -> f32 {
+        match self {
+            Gait::Idle => 0.20,   // standing still — tips easily
+            Gait::Walk => 0.30,
+            Gait::Run => 0.40,    // wider dynamic stance
+            Gait::Sprint => 0.50, // momentum carries through mild lean
+        }
+    }
+
     /// Speed thresholds with hysteresis for transition
     /// Returns (enter_speed, exit_speed) — enter > exit prevents flickering
     pub fn speed_range(self) -> (f32, f32) {
@@ -269,6 +280,7 @@ pub struct Skeleton {
     pub landing_speed: f32,     // vertical speed at last ground contact (for stumble)
     pub stumble_timer: f32,     // >0 = stumbling, decrements to 0
     pub stumble_dir: Vec3,      // stumble lean direction (world space)
+    pub stumble_brake: f32,     // 0..1 locomotion force multiplier during stumble (0 = full brake)
     pub total_push_force: Vec3, // accumulated ground reaction force from both feet
     pub gait: Gait,             // current locomotion state (idle/walk/run/sprint)
     pub gait_blend: f32,        // 0..1 blend progress during gait transition
@@ -276,7 +288,29 @@ pub struct Skeleton {
     // Jump compression phase
     pub jump_phase: f32,        // 0 = none, 0→1 = compressing, 1→2 = extending (launch)
     pub jump_crouch: f32,       // current crouch depth (meters, for visual + force timing)
+    // Euphoria-style active ragdoll
+    pub bone_active: [bool; BONE_COUNT],    // per-bone: true = PD motor active, false = passive ragdoll
+    pub bone_target_rot: [Quat; BONE_COUNT], // PD target rotation per bone (world-space)
+    pub vehicle_contact: Option<VehicleContact>, // continuous body-on-vehicle contact
+    pub anticipation_timer: f32,             // >0 = NPC is bracing/dodging before impact
+    pub anticipation_dir: Vec3,              // direction of incoming threat
 }
+
+/// Continuous contact state: body resting on/sliding along a vehicle surface.
+/// Contact position is stored in vehicle local space so it tracks the vehicle's movement.
+#[derive(Clone, Copy)]
+pub struct VehicleContact {
+    pub vehicle_idx: usize,         // index of vehicle in world.vehicles
+    pub bone_contacts: [bool; BONE_COUNT], // per-bone: true if in contact with vehicle
+    pub surface_normal: Vec3,       // vehicle surface normal at contact (world space, updated each frame)
+    pub local_offset: Vec3,         // contact offset in vehicle local space (tracks with vehicle)
+    pub friction: f32,              // contact friction (0.3 for painted metal)
+    pub time: f32,                  // how long contact has been active
+}
+
+// PD controller gains for active ragdoll motors
+const RAGDOLL_KP: f32 = 200.0;     // proportional gain (stiffness, N·m/rad)
+const RAGDOLL_KD: f32 = 20.0;      // derivative gain (damping, N·m·s/rad)
 
 impl Skeleton {
     /// Create default humanoid skeleton with anatomical proportions.
@@ -330,12 +364,18 @@ impl Skeleton {
             landing_speed: 0.0,
             stumble_timer: 0.0,
             stumble_dir: [0.0; 3],
+            stumble_brake: 1.0,
             total_push_force: [0.0; 3],
             gait: Gait::Idle,
             gait_blend: 1.0,
             prev_gait_params: Gait::Idle.params(),
             jump_phase: 0.0,
             jump_crouch: 0.0,
+            bone_active: [true; BONE_COUNT],
+            bone_target_rot: [QUAT_IDENTITY; BONE_COUNT],
+            vehicle_contact: None,
+            anticipation_timer: 0.0,
+            anticipation_dir: [0.0; 3],
         }
     }
 
@@ -573,16 +613,58 @@ impl Skeleton {
         };
         self.com_offset = [right[0] * sway_amount, 0.0, right[2] * sway_amount];
 
-        // ── Arm swing (gait-specific amplitude) ──
-        if self.gait != Gait::Idle {
-            let arm_swing = self.walk_phase.sin() * arm_swing_amp;
-            self.bones[BoneId::LeftUpperArm as usize].local_rot =
-                quat_from_axis_angle([1.0, 0.0, 0.0], arm_swing);
-            self.bones[BoneId::RightUpperArm as usize].local_rot =
-                quat_from_axis_angle([1.0, 0.0, 0.0], -arm_swing);
-        } else {
-            self.bones[BoneId::LeftUpperArm as usize].local_rot = QUAT_IDENTITY;
-            self.bones[BoneId::RightUpperArm as usize].local_rot = QUAT_IDENTITY;
+        // ── Arm IK (two-bone solver, same as legs) ──
+        // Arms swing forward/backward during locomotion using IK targets.
+        // At idle, arms hang at rest alongside the body.
+        // Derive bone lengths from skeleton definition (not hardcoded)
+        let upper_arm_len = self.bones[BoneId::LeftUpperArm as usize].length;  // 0.28
+        let forearm_len = self.bones[BoneId::LeftForearm as usize].length;     // 0.25
+        let elbow_pole = v3_scale(fwd, -1.0); // elbows bend backward
+
+        // Shoulder height: sum up the chain hips→spine→chest + chest attachment Y
+        // Uses actual bone local_pos values so it stays correct if proportions change
+        let shoulder_y = pos[1]
+            + self.bones[BoneId::Hips as usize].local_pos[1]      // hips offset from root
+            + self.bones[BoneId::Spine as usize].local_pos[1]     // spine above hips
+            + self.bones[BoneId::Chest as usize].local_pos[1]     // chest above spine
+            + self.bones[BoneId::LeftUpperArm as usize].local_pos[1]; // arm attachment on chest
+
+        for arm_side in 0..2 {
+            let upper_bone = if arm_side == 0 { BoneId::LeftUpperArm } else { BoneId::RightUpperArm };
+            let lower_bone = if arm_side == 0 { BoneId::LeftForearm } else { BoneId::RightForearm };
+
+            // Shoulder lateral offset from skeleton definition
+            let arm_local_x = self.bones[upper_bone as usize].local_pos[0]; // ±0.22
+            let shoulder_pos = v3_add(
+                [pos[0], shoulder_y, pos[2]],
+                v3_scale(right, arm_local_x),
+            );
+
+            // Arm swing: left arm swings opposite to left leg (counter-rotation)
+            let phase_offset = if arm_side == 0 { std::f32::consts::PI } else { 0.0 };
+            let swing_angle = (self.walk_phase + phase_offset).sin() * arm_swing_amp;
+
+            // IK target: hand position at end of swing arc
+            let arm_reach = (upper_arm_len + forearm_len) * 0.6;
+            let hand_fwd_offset = [fwd[0] * swing_angle * arm_reach, 0.0, fwd[2] * swing_angle * arm_reach];
+            // At rest (idle), hands hang below shoulder
+            let rest_drop = upper_arm_len + forearm_len - 0.02;
+            let hand_target = [
+                shoulder_pos[0] + hand_fwd_offset[0],
+                shoulder_pos[1] - rest_drop + swing_angle.abs() * 0.05,
+                shoulder_pos[2] + hand_fwd_offset[2],
+            ];
+
+            let (upper_rot, lower_rot) = solve_two_bone_ik(
+                shoulder_pos,
+                hand_target,
+                upper_arm_len,
+                forearm_len,
+                elbow_pole,
+            );
+
+            self.bones[upper_bone as usize].local_rot = upper_rot;
+            self.bones[lower_bone as usize].local_rot = lower_rot;
         }
 
         // ── Spine lean (gait-specific, forward lean increases with speed) ──
@@ -593,11 +675,46 @@ impl Skeleton {
             self.bones[BoneId::Spine as usize].local_rot = QUAT_IDENTITY;
         }
 
-        // ── Stumble triggers ──
+        // ── Anticipation: flinch/brace before incoming vehicle impact ──
+        if self.anticipation_timer > 0.0 {
+            self.anticipation_timer -= dt;
+            let brace_t = (1.0 - self.anticipation_timer).clamp(0.0, 1.0);
+
+            // Turn head toward threat (proper angle wrapping)
+            let head_yaw = self.anticipation_dir[0].atan2(self.anticipation_dir[2]);
+            let mut rel_yaw = head_yaw - rot_y;
+            // Wrap to [-π, π]
+            while rel_yaw > std::f32::consts::PI { rel_yaw -= std::f32::consts::TAU; }
+            while rel_yaw < -std::f32::consts::PI { rel_yaw += std::f32::consts::TAU; }
+            self.bones[BoneId::Head as usize].local_rot = quat_mul(
+                self.bones[BoneId::Head as usize].local_rot,
+                quat_from_axis_angle([0.0, 1.0, 0.0], rel_yaw.clamp(-0.5, 0.5) * brace_t),
+            );
+
+            // Raise arms defensively (flinch: arms cross in front of face/chest)
+            let flinch_angle = brace_t * 1.5;
+            self.bones[BoneId::LeftUpperArm as usize].local_rot =
+                quat_from_axis_angle([1.0, 0.0, 0.3], flinch_angle);
+            self.bones[BoneId::RightUpperArm as usize].local_rot =
+                quat_from_axis_angle([1.0, 0.0, -0.3], flinch_angle);
+            // Forearms fold inward
+            self.bones[BoneId::LeftForearm as usize].local_rot =
+                quat_from_axis_angle([1.0, 0.0, 0.0], -flinch_angle * 0.8);
+            self.bones[BoneId::RightForearm as usize].local_rot =
+                quat_from_axis_angle([1.0, 0.0, 0.0], -flinch_angle * 0.8);
+
+            // Slight crouch (spine bend)
+            self.bones[BoneId::Spine as usize].local_rot =
+                quat_from_axis_angle([1.0, 0.0, 0.0], brace_t * 0.15);
+        }
+
+        // ── Stumble triggers (affect BOTH animation AND rigid body) ──
         // 1. Hard landing (vertical impact velocity)
         if on_ground && self.landing_speed < -4.0 {
             let severity = (-self.landing_speed - 4.0) / 8.0;
             self.stumble_timer = severity.clamp(0.2, 1.5);
+            // Harder landing = more braking (0.0 = full stop, 0.5 = half speed)
+            self.stumble_brake = (1.0 - severity).clamp(0.0, 0.5);
             if horiz_speed > 0.5 {
                 self.stumble_dir = v3_normalize([vel[0], 0.0, vel[2]]);
             } else {
@@ -605,9 +722,11 @@ impl Skeleton {
             }
             self.landing_speed = 0.0;
         }
-        // 2. CoM lean exceeding balance threshold (off-balance stumble)
-        if on_ground && self.stumble_timer <= 0.0 && lean_mag > 0.35 {
-            self.stumble_timer = (lean_mag - 0.35).clamp(0.2, 1.0);
+        // 2. CoM lean exceeding per-gait balance threshold (off-balance stumble)
+        let threshold = self.gait.balance_threshold();
+        if on_ground && self.stumble_timer <= 0.0 && lean_mag > threshold {
+            self.stumble_timer = (lean_mag - threshold).clamp(0.2, 1.0);
+            self.stumble_brake = 0.3; // significant braking when off-balance
             self.stumble_dir = if lean_mag > 0.01 {
                 v3_normalize(self.com_lean)
             } else {
@@ -622,9 +741,17 @@ impl Skeleton {
             self.landing_speed = 0.0;
         }
 
-        // ── Stumble animation ──
+        // ── Stumble animation + physics effect ──
         if self.stumble_timer > 0.0 {
             self.stumble_timer -= dt;
+            // Gradually recover locomotion control as stumble fades
+            if self.stumble_timer <= 0.0 {
+                self.stumble_brake = 1.0; // fully recovered
+            } else {
+                // Ramp brake back toward 1.0 as timer decreases
+                let recovery = 1.0 - (self.stumble_timer / 1.5).min(1.0);
+                self.stumble_brake = self.stumble_brake + (1.0 - self.stumble_brake) * recovery * 0.5;
+            }
             let t = self.stumble_timer.max(0.0);
             let lean_fwd = t * 0.5;
             let wobble = (t * 12.0).sin() * t * 0.15;
@@ -749,7 +876,9 @@ impl Skeleton {
             0.3 // no foot pushing: reduced force (between stride pushes)
         };
 
-        v3_scale(surface_dir, clamped_force * push_scale)
+        // Stumble reduces locomotion force — character loses traction while off-balance
+        let stumble_mult = self.stumble_brake;
+        v3_scale(surface_dir, clamped_force * push_scale * stumble_mult)
     }
 
     /// Return walk swing angle for the renderer (gait-appropriate amplitude).
@@ -803,11 +932,14 @@ impl Skeleton {
         }
     }
 
-    /// Initialize skeleton from NPC position for ragdoll activation.
-    /// Sets bone positions to default T-pose at the character's location.
+    /// Initialize full ragdoll from NPC position.
+    /// All bones go passive (no motors) — full limp ragdoll.
     pub fn activate_ragdoll(&mut self, pos: Vec3, rot_y: f32, impulse: Vec3) {
         let root_rot = quat_from_rot_y(rot_y);
         self.compute_world_transforms(pos, root_rot);
+
+        // Full ragdoll: ALL bones passive (no PD motors fighting physics)
+        self.bone_active = [false; BONE_COUNT];
 
         // Set initial velocities from impulse (distributed across bones, more to extremities)
         let base_vel = v3_scale(impulse, 0.5);
@@ -822,21 +954,76 @@ impl Skeleton {
 
         self.ragdoll_active = true;
         self.ragdoll_blend = 0.0;
+        self.vehicle_contact = None;
+        self.anticipation_timer = 0.0;
     }
 
-    /// Step ragdoll physics: gravity, bone velocities, constraint enforcement.
+    /// Step ragdoll physics: gravity, active motors, per-bone collision, constraints.
+    /// Euphoria-style: bones with `bone_active[i] == true` have PD motors driving them
+    /// toward `bone_target_rot[i]`, giving "keep head up" / "brace arms" behaviors.
     pub fn step_ragdoll(&mut self, terrain: &crate::state::Terrain, dt: f32) {
         if !self.ragdoll_active { return; }
 
         let gravity = [0.0f32, -9.81, 0.0];
 
+        // ── Active ragdoll motors (PD controllers on active bones) ──
+        // Compute animation pose targets for active bones
+        // Head tries to stay upright, arms brace toward ground on falling
+        self.update_active_targets();
+
         // Integrate each bone independently
         for i in 0..BONE_COUNT {
+            // Active ragdoll motor: PD controller applies angular correction.
+            // Computes a torque from orientation error, converts to tangential velocity
+            // change at the bone's position (v = ω × r, where r is parent→bone vector).
+            let motor_vel_change = if self.bone_active[i] && i > 0 {
+                let parent_idx = self.bones[i].parent.unwrap_or(0) as usize;
+                let parent_pos = self.bones[parent_idx].world_pos;
+                let target = self.bone_target_rot[i];
+                let current = self.bones[i].world_rot;
+
+                // Quaternion error: how far current orientation is from target
+                let q_err = quat_mul(target, quat_conjugate(current));
+                let (axis, angle) = quat_to_axis_angle(q_err);
+                // Clamp angle to avoid huge corrections from quaternion wraparound
+                let angle = if angle > std::f32::consts::PI { angle - std::f32::consts::TAU } else { angle };
+
+                // PD torque: τ = Kp * θ_error - Kd * ω (angular velocity damping)
+                let ang_vel_along_axis = v3_dot(self.bones[i].ang_vel, axis);
+                let torque_mag = RAGDOLL_KP * angle - RAGDOLL_KD * ang_vel_along_axis;
+
+                // Angular acceleration: α = τ / I (moment of inertia ≈ m * r²)
+                let lever = v3_len(self.bones[i].local_pos).max(0.05);
+                let inertia = self.bones[i].mass * lever * lever;
+                let ang_accel = torque_mag / inertia.max(0.1);
+
+                // Update angular velocity: ω += α * dt
+                self.bones[i].ang_vel = v3_add(
+                    self.bones[i].ang_vel,
+                    v3_scale(axis, ang_accel * dt),
+                );
+
+                // Convert angular velocity to tangential linear velocity: v = ω × r
+                let r = v3_sub(self.bones[i].world_pos, parent_pos);
+                let r_len = v3_len(r);
+                if r_len > 0.001 {
+                    // Tangential velocity from the angular correction
+                    let omega = v3_scale(axis, ang_accel * dt);
+                    v3_cross(omega, r)
+                } else {
+                    [0.0; 3]
+                }
+            } else {
+                [0.0; 3]
+            };
+
             let b = &mut self.bones[i];
-            // Apply gravity
             b.vel = v3_add(b.vel, v3_scale(gravity, dt));
-            // Damping
-            b.vel = v3_scale(b.vel, 0.98);
+            b.vel = v3_add(b.vel, motor_vel_change);
+
+            // Damping (slightly higher for active bones to prevent oscillation)
+            let damp = if self.bone_active[i] { 0.95 } else { 0.98 };
+            b.vel = v3_scale(b.vel, damp);
             // Integrate position
             b.world_pos = v3_add(b.world_pos, v3_scale(b.vel, dt));
 
@@ -844,17 +1031,48 @@ impl Skeleton {
             let ground_y = terrain.height_at(b.world_pos[0], b.world_pos[2]);
             if b.world_pos[1] < ground_y {
                 b.world_pos[1] = ground_y;
-                // Bounce + friction
                 if b.vel[1] < 0.0 {
-                    b.vel[1] *= -0.2; // low bounce
+                    b.vel[1] *= -0.2;
                 }
-                b.vel[0] *= 0.7; // ground friction
+                b.vel[0] *= 0.7;
                 b.vel[2] *= 0.7;
             }
 
             // World bounds
             b.world_pos[0] = b.world_pos[0].clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
             b.world_pos[2] = b.world_pos[2].clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
+        }
+
+        // ── Continuous vehicle contact ──
+        // Process all bones in contact with a vehicle surface.
+        // Contact normal and position are updated each frame by the collision system.
+        if let Some(vc) = self.vehicle_contact {
+            let normal = vc.surface_normal;
+            let friction = vc.friction;
+            let mut any_contact = false;
+
+            for bi in 0..BONE_COUNT {
+                if !vc.bone_contacts[bi] { continue; }
+
+                // Apply surface constraint: prevent penetration, apply friction
+                let vn = v3_dot(self.bones[bi].vel, normal);
+                if vn < 0.0 {
+                    // Remove penetrating velocity
+                    self.bones[bi].vel = v3_sub(self.bones[bi].vel, v3_scale(normal, vn));
+                    // Apply friction to tangential velocity
+                    let v_tangent = v3_sub(self.bones[bi].vel, v3_scale(normal, v3_dot(self.bones[bi].vel, normal)));
+                    self.bones[bi].vel = v3_add(
+                        v3_scale(normal, v3_dot(self.bones[bi].vel, normal)),
+                        v3_scale(v_tangent, 1.0 - friction),
+                    );
+                    any_contact = true;
+                }
+            }
+
+            if !any_contact {
+                // No bones are actively contacting — clear contact state
+                self.vehicle_contact = None;
+            }
         }
 
         // Enforce distance + joint angle constraints
@@ -868,7 +1086,6 @@ impl Skeleton {
                 let dist = v3_len(delta);
                 if dist < 0.001 { continue; }
 
-                // Distance constraint: keep bones at correct length
                 let diff = (dist - target_dist) / dist;
                 let correction = v3_scale(delta, diff * 0.5);
 
@@ -881,12 +1098,10 @@ impl Skeleton {
                 self.bones[i].world_pos = v3_sub(self.bones[i].world_pos, v3_scale(correction, wi));
                 self.bones[parent_idx].world_pos = v3_add(self.bones[parent_idx].world_pos, v3_scale(correction, wp));
 
-                // Cone constraint: limit angle between child direction and parent's axis
+                // Cone constraint
                 let cone_limit = self.bones[i].constraint.cone_angle;
                 if cone_limit < std::f32::consts::PI - 0.01 {
-                    // Parent's "down" direction (default bone axis)
                     let parent_axis = quat_rotate(self.bones[parent_idx].world_rot, [0.0, -1.0, 0.0]);
-                    // Direction from parent to child
                     let child_dir = v3_sub(self.bones[i].world_pos, self.bones[parent_idx].world_pos);
                     let child_dist = v3_len(child_dir);
                     if child_dist > 0.001 {
@@ -895,22 +1110,18 @@ impl Skeleton {
                         let angle = dot.acos();
 
                         if angle > cone_limit {
-                            // Clamp: rotate child direction back to cone boundary
                             let cross = v3_cross(parent_axis, child_dir_n);
                             let cross_len = v3_len(cross);
                             if cross_len > 0.001 {
                                 let axis = v3_scale(cross, 1.0 / cross_len);
-                                // New direction at the cone limit
                                 let clamped_q = quat_from_axis_angle(axis, cone_limit);
                                 let clamped_dir = quat_rotate(clamped_q, parent_axis);
                                 let new_pos = v3_add(
                                     self.bones[parent_idx].world_pos,
                                     v3_scale(clamped_dir, child_dist),
                                 );
-                                // Apply with mass weighting
                                 let move_vec = v3_sub(new_pos, self.bones[i].world_pos);
                                 self.bones[i].world_pos = v3_add(self.bones[i].world_pos, v3_scale(move_vec, wi));
-                                // Dampen velocity component along the constraint violation
                                 let vel_along = v3_dot(self.bones[i].vel, v3_normalize(move_vec));
                                 if vel_along < 0.0 {
                                     let dampened = v3_scale(v3_normalize(move_vec), vel_along * 0.5);
@@ -925,6 +1136,211 @@ impl Skeleton {
 
         // Timer
         self.ragdoll_timer -= dt;
+    }
+
+    /// Update active ragdoll motor targets based on behavioral rules.
+    /// Head: try to stay upright. Arms: brace toward ground when falling.
+    /// Spine: resist extreme bending. Legs: passive unless partial ragdoll.
+    fn update_active_targets(&mut self) {
+        // Head: always try to stay upright (look forward/up)
+        self.bone_target_rot[BoneId::Head as usize] = quat_from_axis_angle([1.0, 0.0, 0.0], -0.1);
+        self.bone_target_rot[BoneId::Neck as usize] = QUAT_IDENTITY;
+
+        // Spine: resist extreme bending, try to stay roughly aligned
+        self.bone_target_rot[BoneId::Spine as usize] = QUAT_IDENTITY;
+        self.bone_target_rot[BoneId::Chest as usize] = QUAT_IDENTITY;
+
+        // Arms: brace toward ground when falling (extend arms downward/forward)
+        let hips_vel_y = self.bones[BoneId::Hips as usize].vel[1];
+        if hips_vel_y < -2.0 {
+            // Falling: extend arms forward and down to brace for impact
+            let brace_angle = ((-hips_vel_y - 2.0) / 8.0).clamp(0.0, 1.0) * 1.2;
+            self.bone_target_rot[BoneId::LeftUpperArm as usize] =
+                quat_from_axis_angle([1.0, 0.0, 0.0], brace_angle);
+            self.bone_target_rot[BoneId::RightUpperArm as usize] =
+                quat_from_axis_angle([1.0, 0.0, 0.0], brace_angle);
+            // Forearms extend (reduce bend)
+            self.bone_target_rot[BoneId::LeftForearm as usize] =
+                quat_from_axis_angle([1.0, 0.0, 0.0], -brace_angle * 0.3);
+            self.bone_target_rot[BoneId::RightForearm as usize] =
+                quat_from_axis_angle([1.0, 0.0, 0.0], -brace_angle * 0.3);
+        } else {
+            // Not falling: arms relax to default
+            self.bone_target_rot[BoneId::LeftUpperArm as usize] = QUAT_IDENTITY;
+            self.bone_target_rot[BoneId::RightUpperArm as usize] = QUAT_IDENTITY;
+            self.bone_target_rot[BoneId::LeftForearm as usize] = QUAT_IDENTITY;
+            self.bone_target_rot[BoneId::RightForearm as usize] = QUAT_IDENTITY;
+        }
+    }
+
+    /// Activate partial ragdoll: only specified body region goes limp,
+    /// rest stays motor-controlled. Used for localized hits (e.g., knee hit → legs limp).
+    pub fn activate_partial_ragdoll(&mut self, pos: Vec3, rot_y: f32, impulse: Vec3, impact_bone: BoneId) {
+        if self.ragdoll_active { return; }
+
+        let root_rot = quat_from_rot_y(rot_y);
+        self.compute_world_transforms(pos, root_rot);
+
+        // All bones start with motor active
+        self.bone_active = [true; BONE_COUNT];
+
+        // Disable motors on the impact bone and its descendants
+        let impact_idx = impact_bone as usize;
+        self.bone_active[impact_idx] = false;
+        // Flood-fill: disable all children of the impact bone
+        for i in 0..BONE_COUNT {
+            if let Some(parent) = self.bones[i].parent {
+                if !self.bone_active[parent as usize] {
+                    self.bone_active[i] = false;
+                }
+            }
+        }
+
+        // Apply impulse only to passive (limp) bones
+        for i in 0..BONE_COUNT {
+            if self.bone_active[i] {
+                self.bones[i].vel = [0.0; 3];
+            } else {
+                self.bones[i].vel = v3_scale(impulse, 1.0 / self.bones[i].mass.max(1.0));
+            }
+        }
+
+        self.ragdoll_active = true;
+        self.ragdoll_blend = 0.0;
+    }
+
+    /// Per-bone vehicle collision: test each bone capsule against a vehicle OBB.
+    /// Each bone is treated as a capsule (line segment from root to tip with radius).
+    /// Returns the bone index and collision normal for the deepest penetrating bone.
+    pub fn collide_bones_vs_vehicle(
+        &mut self,
+        veh_pos: Vec3,
+        veh_rot_y: f32,
+        veh_half_w: f32,
+        veh_half_d: f32,
+        veh_height: f32,    // vehicle hood height
+        veh_vel: Vec3,
+        bone_radius: f32,
+    ) -> Option<(BoneId, Vec3, f32)> {
+        // Vehicle local frame
+        let (sin_r, cos_r) = veh_rot_y.sin_cos();
+
+        let mut best_pen = 0.0f32;
+        let mut best_bone = None;
+        let mut best_normal = [0.0f32; 3];
+
+        for i in 0..BONE_COUNT {
+            // Capsule collision: test 3 points along the bone (root, midpoint, tip)
+            let bone_root = self.bones[i].world_pos;
+            let bone_dir = quat_rotate(self.bones[i].world_rot, [0.0, -self.bones[i].length, 0.0]);
+            let bone_tip = v3_add(bone_root, bone_dir);
+            let bone_mid = v3_add(bone_root, v3_scale(bone_dir, 0.5));
+
+            let sample_points = [bone_root, bone_mid, bone_tip];
+
+            for sp in &sample_points {
+                let dx = sp[0] - veh_pos[0];
+                let dz = sp[2] - veh_pos[2];
+                let local_x = dx * cos_r + dz * sin_r;
+                let local_z = -dx * sin_r + dz * cos_r;
+                let local_y = sp[1] - veh_pos[1];
+
+                let pen_x = (veh_half_w + bone_radius) - local_x.abs();
+                let pen_z = (veh_half_d + bone_radius) - local_z.abs();
+                let pen_y = (veh_height + bone_radius) - local_y;
+
+                if pen_x > 0.0 && pen_z > 0.0 && pen_y > 0.0 && local_y > -bone_radius {
+                    let min_pen = pen_x.min(pen_z).min(pen_y);
+                    if min_pen > best_pen {
+                        best_pen = min_pen;
+                        best_bone = Some(i);
+
+                        let local_normal = if pen_y <= pen_x && pen_y <= pen_z {
+                            [0.0, 1.0, 0.0] // pushed up (on hood)
+                        } else if pen_x <= pen_z {
+                            [local_x.signum(), 0.0, 0.0] // pushed sideways
+                        } else {
+                            [0.0, 0.0, local_z.signum()] // pushed forward/back
+                        };
+                        best_normal = [
+                            local_normal[0] * cos_r - local_normal[2] * sin_r,
+                            local_normal[1],
+                            local_normal[0] * sin_r + local_normal[2] * cos_r,
+                        ];
+                    }
+                }
+            }
+        }
+
+        if let Some(bi) = best_bone {
+            // Determine bone ID
+            let bone_id = match bi {
+                0 => BoneId::Hips, 1 => BoneId::Spine, 2 => BoneId::Chest,
+                3 => BoneId::Neck, 4 => BoneId::Head,
+                5 => BoneId::LeftUpperArm, 6 => BoneId::LeftForearm,
+                7 => BoneId::RightUpperArm, 8 => BoneId::RightForearm,
+                9 => BoneId::LeftUpperLeg, 10 => BoneId::LeftLowerLeg,
+                11 => BoneId::LeftFoot, 12 => BoneId::RightUpperLeg,
+                13 => BoneId::RightLowerLeg, _ => BoneId::RightFoot,
+            };
+
+            // Apply collision response to the hit bone (scoped borrow)
+            self.bones[bi].world_pos = v3_add(self.bones[bi].world_pos, v3_scale(best_normal, best_pen));
+            let rel_vel = v3_sub(self.bones[bi].vel, veh_vel);
+            let rel_vn = v3_dot(rel_vel, best_normal);
+            if rel_vn < 0.0 {
+                self.bones[bi].vel = v3_sub(self.bones[bi].vel, v3_scale(best_normal, rel_vn * 1.3));
+                let veh_vn = v3_dot(veh_vel, best_normal);
+                if veh_vn.abs() > 0.5 {
+                    self.bones[bi].vel = v3_add(self.bones[bi].vel, v3_scale(best_normal, veh_vn * 0.3));
+                }
+            }
+
+            // Per-bone contact flags: mark all bones inside vehicle OBB
+            let mut contacts = [false; BONE_COUNT];
+            for ci in 0..BONE_COUNT {
+                let cp = self.bones[ci].world_pos;
+                let cdx = cp[0] - veh_pos[0];
+                let cdz = cp[2] - veh_pos[2];
+                let clx = cdx * cos_r + cdz * sin_r;
+                let clz = -cdx * sin_r + cdz * cos_r;
+                let cly = cp[1] - veh_pos[1];
+                if clx.abs() < veh_half_w + bone_radius
+                    && clz.abs() < veh_half_d + bone_radius
+                    && cly > -bone_radius && cly < veh_height + bone_radius * 2.0
+                {
+                    contacts[ci] = true;
+                }
+            }
+            // Convert primary bone's position to vehicle local space for tracking
+            let bp = self.bones[bi].world_pos;
+            let bdx = bp[0] - veh_pos[0];
+            let bdz = bp[2] - veh_pos[2];
+            let local_off = [
+                bdx * cos_r + bdz * sin_r,
+                bp[1] - veh_pos[1],
+                -bdx * sin_r + bdz * cos_r,
+            ];
+            self.vehicle_contact = Some(VehicleContact {
+                vehicle_idx: 0, // caller sets this
+                bone_contacts: contacts,
+                surface_normal: best_normal,
+                local_offset: local_off,
+                friction: 0.3,
+                time: 0.0,
+            });
+
+            Some((bone_id, best_normal, best_pen))
+        } else {
+            None
+        }
+    }
+
+    /// Set up anticipation state: NPC braces/flinches before incoming impact.
+    /// Called when a fast-moving vehicle is detected heading toward the NPC.
+    pub fn start_anticipation(&mut self, threat_dir: Vec3, time: f32) {
+        self.anticipation_timer = time;
+        self.anticipation_dir = threat_dir;
     }
 }
 

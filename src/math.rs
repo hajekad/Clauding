@@ -151,6 +151,18 @@ pub fn quat_conjugate(q: Quat) -> Quat {
     [-q[0], -q[1], -q[2], q[3]]
 }
 
+/// Extract axis-angle from a quaternion. Returns (axis, angle_radians).
+/// For identity quaternion, returns ([1,0,0], 0.0).
+pub fn quat_to_axis_angle(q: Quat) -> (Vec3, f32) {
+    let angle = 2.0 * q[3].clamp(-1.0, 1.0).acos();
+    let s = (1.0 - q[3] * q[3]).sqrt();
+    if s < 0.001 {
+        ([1.0, 0.0, 0.0], angle)
+    } else {
+        ([q[0] / s, q[1] / s, q[2] / s], angle)
+    }
+}
+
 pub fn quat_normalize(q: Quat) -> Quat {
     let len = (q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]).sqrt();
     if len < 1e-10 { QUAT_IDENTITY } else { [q[0]/len, q[1]/len, q[2]/len, q[3]/len] }
