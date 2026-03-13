@@ -159,6 +159,63 @@ fn decay_violation_timers(world: &mut WorldData, dt: f32) {
     }
 }
 
+/// Apply a radial explosion at a world position, affecting all nearby entities.
+/// Vehicles, NPCs, and player receive impulses proportional to distance.
+/// NPCs above the force threshold are ragdolled.
+pub fn apply_world_explosion(
+    world: &mut WorldData, player: &mut Player,
+    origin: crate::math::Vec3, radius: f32, force: f32,
+) {
+    // Vehicles
+    for v in &mut world.vehicles {
+        crate::physics::apply_explosion(&mut v.body, origin, radius, force);
+        // Sync legacy fields
+        v.x = v.body.pos[0];
+        v.z = v.body.pos[2];
+        let fwd = crate::math::quat_forward(v.body.quat);
+        v.speed = crate::math::v3_dot(v.body.vel, fwd);
+    }
+
+    // NPCs
+    for ni in 0..world.npcs.len() {
+        if world.npcs[ni].ragdoll_active { continue; }
+        let npc_pos = [world.npcs[ni].x, world.npcs[ni].y + 0.9, world.npcs[ni].z];
+        let d = crate::math::v3_sub(npc_pos, origin);
+        let dist = crate::math::v3_len(d);
+        if dist >= radius || dist < 0.01 { continue; }
+
+        let falloff = 1.0 - dist / radius;
+        let impulse_mag = force * falloff;
+
+        // Apply impulse to NPC body
+        let dir = crate::math::v3_scale(d, 1.0 / dist);
+        let impulse = [
+            dir[0] * impulse_mag,
+            (dir[1] + 0.3) * impulse_mag, // upward bias
+            dir[2] * impulse_mag,
+        ];
+        world.npcs[ni].body.apply_impulse(impulse);
+
+        // Ragdoll if impulse exceeds threshold (force > mass * 5 m/s → ragdoll)
+        let speed_change = impulse_mag / world.npcs[ni].body.mass;
+        if speed_change > 5.0 {
+            init_ragdoll(&mut world.npcs[ni], impulse[0], impulse[1], impulse[2]);
+            world.npcs[ni].health -= impulse_mag * 0.1;
+        }
+    }
+
+    // Player
+    let player_pos = [player.x, player.y + 0.9, player.z];
+    let mag = crate::physics::apply_explosion(&mut player.body, player_pos, radius, force);
+    if mag > 0.0 {
+        player.x = player.body.pos[0];
+        player.z = player.body.pos[2];
+        let damage = mag * 0.1;
+        player.health = (player.health - damage).max(0.0);
+        player.damage_shake = (mag / force * 2.0).min(1.0);
+    }
+}
+
 /// Full collision pass each frame
 pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Terrain, dt: f32) {
     let nv = world.vehicles.len();
@@ -201,14 +258,21 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
                 let fwd_z = -vrot.cos();
                 let launch_x = fwd_x * j_mag / n_mass + nx * 3.0;
                 let launch_z = fwd_z * j_mag / n_mass + nz * 3.0;
-                init_ragdoll(&mut world.npcs[ni], launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z);
+
+                // Apply impulse to NPC body always
+                world.npcs[ni].body.apply_impulse([launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z]);
+
+                // Ragdoll only above force threshold: velocity change > 3 m/s
+                // Low-speed bumps push the NPC but don't ragdoll them
+                let speed_change = j_mag / n_mass;
+                if speed_change > 3.0 {
+                    init_ragdoll(&mut world.npcs[ni], launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z);
+                }
 
                 // Vehicle slows proportional to mass ratio (barely for car vs person)
-                let v_slow = j_mag / v_mass; // velocity change
                 world.vehicles[vi].body.apply_impulse([-fwd_x * j_mag, 0.0, -fwd_z * j_mag]);
                 let fwd_v = crate::math::quat_forward(world.vehicles[vi].body.quat);
                 world.vehicles[vi].speed = crate::math::v3_dot(world.vehicles[vi].body.vel, fwd_v);
-                let _ = v_slow;
 
                 // Mark driver as wanted (hit-and-run)
                 if let Some(owner) = world.vehicles[vi].owner_npc {
@@ -393,6 +457,45 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
                     let impact_j = [-nx * obb_b.half_d, 0.0, -nz * obb_b.half_d];
                     world.vehicles[i].deformation.apply_impact(impact_i, energy, obb_a.half_w, obb_a.half_d);
                     world.vehicles[j].deformation.apply_impact(impact_j, energy, obb_b.half_w, obb_b.half_d);
+
+                    // Explosion when a vehicle becomes totaled from this impact
+                    if world.vehicles[i].deformation.is_totaled() {
+                        let origin = world.vehicles[i].body.pos;
+                        let blast_force = energy.sqrt().min(500.0);
+                        // Apply explosion impulse to all nearby NPCs
+                        for ni in 0..nn {
+                            if world.npcs[ni].ragdoll_active { continue; }
+                            let mag = crate::physics::apply_explosion(&mut world.npcs[ni].body, origin, 10.0, blast_force);
+                            if mag / world.npcs[ni].body.mass > 5.0 {
+                                let imp = crate::math::v3_scale(
+                                    crate::math::v3_sub(world.npcs[ni].body.pos, origin),
+                                    mag / crate::math::v3_len(crate::math::v3_sub(world.npcs[ni].body.pos, origin)).max(0.1),
+                                );
+                                init_ragdoll(&mut world.npcs[ni], imp[0], imp[1] + mag * 0.3, imp[2]);
+                            }
+                        }
+                        // Explosion impulse to player
+                        crate::physics::apply_explosion(&mut player.body, origin, 10.0, blast_force);
+                        // Impulse to the other vehicle
+                        crate::physics::apply_explosion(&mut world.vehicles[j].body, origin, 10.0, blast_force);
+                    }
+                    if world.vehicles[j].deformation.is_totaled() {
+                        let origin = world.vehicles[j].body.pos;
+                        let blast_force = energy.sqrt().min(500.0);
+                        for ni in 0..nn {
+                            if world.npcs[ni].ragdoll_active { continue; }
+                            let mag = crate::physics::apply_explosion(&mut world.npcs[ni].body, origin, 10.0, blast_force);
+                            if mag / world.npcs[ni].body.mass > 5.0 {
+                                let imp = crate::math::v3_scale(
+                                    crate::math::v3_sub(world.npcs[ni].body.pos, origin),
+                                    mag / crate::math::v3_len(crate::math::v3_sub(world.npcs[ni].body.pos, origin)).max(0.1),
+                                );
+                                init_ragdoll(&mut world.npcs[ni], imp[0], imp[1] + mag * 0.3, imp[2]);
+                            }
+                        }
+                        crate::physics::apply_explosion(&mut player.body, origin, 10.0, blast_force);
+                        crate::physics::apply_explosion(&mut world.vehicles[i].body, origin, 10.0, blast_force);
+                    }
                 }
 
                 // Occupant damage
@@ -510,7 +613,13 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
                 let fwd_z = -vrot.cos();
                 let launch_x = fwd_x * j_mag / n_mass + nx * 3.0;
                 let launch_z = fwd_z * j_mag / n_mass + nz * 3.0;
-                init_ragdoll(&mut world.npcs[ni], launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z);
+
+                // Apply impulse always, ragdoll only above force threshold
+                world.npcs[ni].body.apply_impulse([launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z]);
+                let speed_change = j_mag / n_mass;
+                if speed_change > 3.0 {
+                    init_ragdoll(&mut world.npcs[ni], launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z);
+                }
 
                 world.vehicles[vi].body.apply_impulse([-fwd_x * j_mag, 0.0, -fwd_z * j_mag]);
                 let fwd_v = crate::math::quat_forward(world.vehicles[vi].body.quat);

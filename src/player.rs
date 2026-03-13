@@ -3,7 +3,7 @@
 // Character always faces camera forward direction, smooth rotation
 
 use crate::state::*;
-use crate::world::{check_walk_collision, on_river_not_bridge};
+use crate::world::{check_walk_collision, on_river_not_bridge, surface_at};
 use crate::input::Action;
 
 const TURN_RATE: f32 = 10.0; // radians/sec for character rotation toward movement dir
@@ -53,14 +53,6 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     // Skip walking controls when driving
     if state.player.in_vehicle.is_some() { return; }
 
-    // Jump: vertical velocity on body
-    let jump_now = state.keybinds.is_pressed(Action::Jump, &state.keys);
-    let jump_prev = state.keybinds.is_pressed(Action::Jump, &state.prev_keys);
-    if jump_now && !jump_prev && state.player.on_ground {
-        state.player.body.vel[1] = JUMP_VELOCITY;
-        state.player.on_ground = false;
-    }
-
     // Camera forward/right projected to XZ plane
     let cam_yaw = state.camera.yaw;
     let fwd_x = -cam_yaw.sin();
@@ -75,7 +67,6 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         move_x += fwd_x;
         move_z += fwd_z;
     }
-    // S (MoveBack) intentionally does nothing
     if state.keybinds.is_pressed(Action::MoveLeft, &state.keys) {
         move_x -= right_x;
         move_z -= right_z;
@@ -93,6 +84,34 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     p.sprinting = state.keybinds.is_pressed(Action::Sprint, &state.keys) && p.stamina > 0.0 && moving;
     let speed = if p.sprinting { SPRINT_SPEED } else { PLAYER_SPEED };
 
+    // Jump: leg compression then extension launch
+    // On press: compress legs (crouch briefly), then apply upward ground reaction force
+    let jump_now = state.keybinds.is_pressed(Action::Jump, &state.keys);
+    let jump_prev = state.keybinds.is_pressed(Action::Jump, &state.prev_keys);
+    if jump_now && !jump_prev && p.on_ground {
+        // Ground reaction force: legs extend against surface, launching body upward
+        // Force direction biased by surface normal (jumping on a slope launches at an angle)
+        let ground_n = state.terrain.normal_at(p.body.pos[0], p.body.pos[2]);
+        // Blend between pure up and surface normal for launch direction
+        let launch_dir = crate::math::v3_normalize([
+            ground_n[0] * 0.3,
+            ground_n[1].max(0.7),
+            ground_n[2] * 0.3,
+        ]);
+        // Impulse = mass * desired_velocity (conservation of momentum)
+        let impulse_mag = JUMP_VELOCITY * p.body.mass;
+        p.body.apply_impulse([
+            launch_dir[0] * impulse_mag / p.body.mass,
+            launch_dir[1] * impulse_mag / p.body.mass,
+            launch_dir[2] * impulse_mag / p.body.mass,
+        ]);
+        p.on_ground = false;
+    }
+
+    // Query surface material for friction
+    let surface = surface_at(p.body.pos[0], p.body.pos[2], &state.road_network);
+    let surface_friction = crate::material::material_for_surface(surface).dynamic_friction;
+
     if moving {
         let dx = move_x / len;
         let dz = move_z / len;
@@ -101,36 +120,32 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         let target_rot = (-dx).atan2(-dz);
         smooth_rotate(&mut p.rot_y, target_rot, TURN_RATE, dt);
 
-        // walk_phase now driven by skeleton.step_animation()
-
-        // Walk force: accelerate toward desired velocity
-        let mass = p.body.mass;
-        p.body.apply_force([
-            mass * (dx * speed - p.body.vel[0]) / 0.1,
-            0.0,
-            mass * (dz * speed - p.body.vel[2]) / 0.1,
-        ]);
+        // Locomotion: legs push against ground surface via skeleton ground reaction force
+        let desired_dir = [dx, 0.0, dz];
+        let walk_force = p.skeleton.compute_locomotion_force(
+            desired_dir, speed, p.body.vel, p.body.mass, surface_friction,
+        );
+        p.body.apply_force(walk_force);
     } else {
         // Idle: rotate character to face camera forward direction
         let target_rot = (-fwd_x).atan2(-fwd_z);
         smooth_rotate(&mut p.rot_y, target_rot, IDLE_TURN_RATE, dt);
 
-        // Deceleration force
-        let mass = p.body.mass;
-        p.body.apply_force([
-            mass * -p.body.vel[0] / 0.1,
-            0.0,
-            mass * -p.body.vel[2] / 0.1,
-        ]);
+        // Deceleration: legs actively brake by pushing against ground
+        let decel_force = p.skeleton.compute_locomotion_force(
+            [0.0, 0.0, 0.0], 0.0, p.body.vel, p.body.mass, surface_friction,
+        );
+        p.body.apply_force(decel_force);
     }
 
-    // Slope sliding force
+    // Slope sliding force — steeper slope + lower friction = more slide
     if p.on_ground {
         let raw_n = state.terrain.normal_at(p.body.pos[0], p.body.pos[2]);
         let slope = (1.0 - raw_n[1]).max(0.0);
         if slope > 0.15 {
             let mass = p.body.mass;
-            let slide_mag = slope * slope * 40.0 * mass;
+            // Slide force inversely proportional to friction: ice slides hard, asphalt barely
+            let slide_mag = slope * slope * 40.0 * mass * (1.0 - surface_friction).max(0.0);
             p.body.apply_force([-raw_n[0] * slide_mag, 0.0, -raw_n[2] * slide_mag]);
         }
     }
@@ -197,7 +212,8 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     let pos = p.body.pos;
     let rot_y = p.rot_y;
     let on_ground = p.on_ground;
-    p.skeleton.step_animation(vel, pos, rot_y, &state.terrain, on_ground, dt);
+    let mass = p.body.mass;
+    p.skeleton.step_animation(vel, pos, rot_y, &state.terrain, on_ground, mass, dt);
 
     // Sync skeleton walk_phase to legacy walk_phase for renderer
     p.walk_phase = p.skeleton.walk_phase;

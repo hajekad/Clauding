@@ -19,7 +19,7 @@ pub fn sys_npc(
     let n = world.npcs.len();
     for i in 0..n {
         // Physics: gravity + ground snap
-        npc_physics(world, i, terrain, dt);
+        npc_physics(world, i, terrain, road_network, dt);
 
         // State machine
         let prev_state = world.npcs[i].state;
@@ -50,7 +50,7 @@ pub fn sys_npc(
     }
 }
 
-fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
+fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, road_network: &RoadNetwork, dt: f32) {
     if world.npcs[i].in_vehicle || world.npcs[i].state == NpcState::Sleeping || world.npcs[i].state == NpcState::Interacting {
         // Keep body in sync for inactive NPCs
         world.npcs[i].body.pos = [world.npcs[i].x, world.npcs[i].y, world.npcs[i].z];
@@ -59,13 +59,18 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         return;
     }
 
-    // Slope sliding force (physics force, not direct position change)
+    // Slope sliding force — steeper slope + lower friction = more slide
     if world.npcs[i].on_ground {
         let raw_n = terrain.normal_at(world.npcs[i].body.pos[0], world.npcs[i].body.pos[2]);
         let slope = (1.0 - raw_n[1]).max(0.0);
         if slope > 0.12 {
+            let surface = crate::world::surface_at(
+                world.npcs[i].body.pos[0], world.npcs[i].body.pos[2], road_network,
+            );
+            let friction = crate::material::material_for_surface(surface).dynamic_friction;
             let mass = world.npcs[i].body.mass;
-            let slide_mag = slope * slope * 40.0 * mass;
+            // Slide force inversely proportional to friction: ice slides hard, asphalt barely
+            let slide_mag = slope * slope * 40.0 * mass * (1.0 - friction).max(0.0);
             world.npcs[i].body.apply_force([-raw_n[0] * slide_mag, 0.0, -raw_n[2] * slide_mag]);
         }
     }
@@ -123,7 +128,8 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
     let pos = world.npcs[i].body.pos;
     let rot_y = world.npcs[i].rot_y;
     let on_ground = world.npcs[i].on_ground;
-    world.npcs[i].skeleton.step_animation(vel, pos, rot_y, terrain, on_ground, dt);
+    let mass = world.npcs[i].body.mass;
+    world.npcs[i].skeleton.step_animation(vel, pos, rot_y, terrain, on_ground, mass, dt);
 
     // Ragdoll blend recovery (when ragdoll timer expired)
     if world.npcs[i].skeleton.ragdoll_active {
@@ -231,19 +237,13 @@ pub fn npc_walk_toward(
         }
     };
 
-    // Apply walk force toward waypoint (physics handles actual movement + collision)
-    let rot = npc.rot_y;
-    let desired_vx = -rot.sin() * speed;
-    let desired_vz = -rot.cos() * speed;
-    let mass = npc.body.mass;
-    let response = 0.15; // seconds to reach desired speed
-    npc.body.apply_force([
-        mass * (desired_vx - npc.body.vel[0]) / response,
-        0.0,
-        mass * (desired_vz - npc.body.vel[2]) / response,
-    ]);
-
-    // walk_phase now driven by skeleton.step_animation() in npc_physics()
+    // Locomotion: legs push against ground via skeleton ground reaction force
+    let surface_friction = crate::material::material_for_surface(surface).dynamic_friction;
+    let desired_dir = [-npc.rot_y.sin(), 0.0, -npc.rot_y.cos()];
+    let walk_force = npc.skeleton.compute_locomotion_force(
+        desired_dir, speed, npc.body.vel, npc.body.mass, surface_friction,
+    );
+    npc.body.apply_force(walk_force);
 
     let dx2 = tx - world.npcs[i].x;
     let dz2 = tz - world.npcs[i].z;
@@ -316,15 +316,12 @@ fn npc_home_task(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         while diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
         while diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
         npc.rot_y += diff.clamp(-4.0 * dt, 4.0 * dt);
-        let desired_vx = -npc.rot_y.sin() * speed;
-        let desired_vz = -npc.rot_y.cos() * speed;
-        let mass = npc.body.mass;
-        let response = 0.15;
-        npc.body.apply_force([
-            mass * (desired_vx - npc.body.vel[0]) / response,
-            0.0,
-            mass * (desired_vz - npc.body.vel[2]) / response,
-        ]);
+        let desired_dir = [-npc.rot_y.sin(), 0.0, -npc.rot_y.cos()];
+        let walk_force = npc.skeleton.compute_locomotion_force(
+            desired_dir, speed, npc.body.vel, npc.body.mass,
+            crate::material::MAT_CONCRETE.dynamic_friction, // indoor floor
+        );
+        npc.body.apply_force(walk_force);
     }
     // Clamp inside building
     npc.x = npc.x.clamp(hx - hw, hx + hw);
@@ -517,10 +514,18 @@ fn npc_driving(world: &mut WorldData, i: usize, terrain: &Terrain, net: &mut Roa
         return;
     }
 
-    // Sync NPC position to vehicle
+    // Sync NPC position to vehicle — driver bounces with suspension
     world.npcs[i].x = world.vehicles[car_idx].x;
-    world.npcs[i].y = world.vehicles[car_idx].y;
     world.npcs[i].z = world.vehicles[car_idx].z;
+    // Cabin Y offset: average suspension compression shifts driver up/down relative to body
+    let avg_comp = world.vehicles[car_idx].suspension.iter()
+        .map(|s| s.compression)
+        .sum::<f32>() * 0.25;
+    // When suspension compresses positively, body drops → driver drops
+    // rest_length is baseline; deviation from rest = movement
+    let rest = world.vehicles[car_idx].suspension[0].params.rest_length;
+    let seat_offset = (avg_comp - rest * 0.5) * 0.3; // damped fraction of suspension travel
+    world.npcs[i].y = world.vehicles[car_idx].y + seat_offset;
 
     // Check if we've arrived near target
     let tx = world.npcs[i].target_x;
