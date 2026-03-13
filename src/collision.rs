@@ -99,6 +99,10 @@ fn project_corners(corners: &[[f32; 2]; 4], axis: &[f32; 2]) -> (f32, f32) {
 
 /// Initialize ragdoll from NPC's current position using the articulated skeleton.
 /// Falls back to legacy 7-point initialization and also activates the skeleton ragdoll.
+pub fn init_ragdoll_pub(npc: &mut Npc, impulse_x: f32, impulse_y: f32, impulse_z: f32) {
+    init_ragdoll(npc, impulse_x, impulse_y, impulse_z);
+}
+
 fn init_ragdoll(npc: &mut Npc, impulse_x: f32, impulse_y: f32, impulse_z: f32) {
     let x = npc.x;
     let y = npc.y;
@@ -319,11 +323,21 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
                 let inv_mass_sum = 1.0 / v_mass + 1.0 / p_mass;
                 let restitution = 0.4;
                 let j_mag = (1.0 + restitution) * vspeed / inv_mass_sum;
-                player.body.apply_impulse([nx * j_mag, j_mag * 0.2, nz * j_mag]);
+                let launch = [nx * j_mag, j_mag * 0.2, nz * j_mag];
+                player.body.apply_impulse(launch);
                 player.body.pos[0] += nx * (depth + 0.3);
                 player.body.pos[2] += nz * (depth + 0.3);
                 player.x = player.body.pos[0];
                 player.z = player.body.pos[2];
+
+                // Player ragdoll on high-speed vehicle impact (speed_change > 3 m/s)
+                let speed_change = j_mag / p_mass;
+                if speed_change > 3.0 && !player.skeleton.ragdoll_active {
+                    player.skeleton.activate_ragdoll(
+                        [player.x, player.y, player.z], player.rot_y, launch,
+                    );
+                    player.skeleton.ragdoll_timer = RAGDOLL_DURATION;
+                }
 
                 // Vehicle slows proportional to mass ratio
                 world.vehicles[vi].body.apply_impulse([-nx * j_mag, 0.0, -nz * j_mag]);
@@ -426,15 +440,32 @@ pub fn sys_collisions(world: &mut WorldData, player: &mut Player, _terrain: &Ter
                 world.vehicles[j].body.pos[0] += nx * push * wj;
                 world.vehicles[j].body.pos[2] += nz * push * wj;
 
-                // Impulse-based velocity exchange
-                let rel_vn = (world.vehicles[i].body.vel[0] - world.vehicles[j].body.vel[0]) * nx
-                           + (world.vehicles[i].body.vel[2] - world.vehicles[j].body.vel[2]) * nz;
+                // 3D impulse-based velocity exchange with angular component
+                // Full relative velocity (including Y component for flip/launch)
+                let rel_vel = [
+                    world.vehicles[i].body.vel[0] - world.vehicles[j].body.vel[0],
+                    world.vehicles[i].body.vel[1] - world.vehicles[j].body.vel[1],
+                    world.vehicles[i].body.vel[2] - world.vehicles[j].body.vel[2],
+                ];
+                // Normal in 3D (XZ collision normal, Y=0 for ground-plane OBB)
+                let normal_3d = [nx, 0.0, nz];
+                let rel_vn = crate::math::v3_dot(rel_vel, normal_3d);
                 let relative_speed = rel_vn.abs();
                 if rel_vn > 0.0 {
                     let restitution = 0.3;
                     let j_mag = (1.0 + restitution) * rel_vn / inv_mass_sum;
-                    world.vehicles[i].body.apply_impulse([-nx * j_mag, 0.0, -nz * j_mag]);
-                    world.vehicles[j].body.apply_impulse([nx * j_mag, 0.0, nz * j_mag]);
+                    let impulse = [nx * j_mag, 0.0, nz * j_mag];
+
+                    // Apply impulse at contact point (generates angular velocity / spin)
+                    let contact_pt = [
+                        (world.vehicles[i].body.pos[0] + world.vehicles[j].body.pos[0]) * 0.5,
+                        (world.vehicles[i].body.pos[1] + world.vehicles[j].body.pos[1]) * 0.5,
+                        (world.vehicles[i].body.pos[2] + world.vehicles[j].body.pos[2]) * 0.5,
+                    ];
+                    world.vehicles[i].body.apply_impulse_at(
+                        [-impulse[0], -impulse[1], -impulse[2]], contact_pt,
+                    );
+                    world.vehicles[j].body.apply_impulse_at(impulse, contact_pt);
                 }
 
                 // Sync legacy fields from body
@@ -719,14 +750,28 @@ pub fn sys_collisions_headless(world: &mut WorldData, _terrain: &Terrain, dt: f3
                 world.vehicles[j].body.pos[0] += nx * push * wj;
                 world.vehicles[j].body.pos[2] += nz * push * wj;
 
-                let rel_vn = (world.vehicles[i].body.vel[0] - world.vehicles[j].body.vel[0]) * nx
-                           + (world.vehicles[i].body.vel[2] - world.vehicles[j].body.vel[2]) * nz;
+                // 3D impulse with angular component (same as main collision pass)
+                let rel_vel = [
+                    world.vehicles[i].body.vel[0] - world.vehicles[j].body.vel[0],
+                    world.vehicles[i].body.vel[1] - world.vehicles[j].body.vel[1],
+                    world.vehicles[i].body.vel[2] - world.vehicles[j].body.vel[2],
+                ];
+                let normal_3d = [nx, 0.0, nz];
+                let rel_vn = crate::math::v3_dot(rel_vel, normal_3d);
                 let relative_speed = rel_vn.abs();
                 if rel_vn > 0.0 {
                     let restitution = 0.3;
                     let j_mag = (1.0 + restitution) * rel_vn / inv_mass_sum;
-                    world.vehicles[i].body.apply_impulse([-nx * j_mag, 0.0, -nz * j_mag]);
-                    world.vehicles[j].body.apply_impulse([nx * j_mag, 0.0, nz * j_mag]);
+                    let impulse = [nx * j_mag, 0.0, nz * j_mag];
+                    let contact_pt = [
+                        (world.vehicles[i].body.pos[0] + world.vehicles[j].body.pos[0]) * 0.5,
+                        (world.vehicles[i].body.pos[1] + world.vehicles[j].body.pos[1]) * 0.5,
+                        (world.vehicles[i].body.pos[2] + world.vehicles[j].body.pos[2]) * 0.5,
+                    ];
+                    world.vehicles[i].body.apply_impulse_at(
+                        [-impulse[0], -impulse[1], -impulse[2]], contact_pt,
+                    );
+                    world.vehicles[j].body.apply_impulse_at(impulse, contact_pt);
                 }
                 world.vehicles[i].x = world.vehicles[i].body.pos[0];
                 world.vehicles[i].z = world.vehicles[i].body.pos[2];

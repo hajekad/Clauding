@@ -92,13 +92,16 @@ pub fn sys_combat(
                     world.npcs[j].health -= NPC_ATTACK_DAMAGE;
                     world.npcs[j].hit_flash = HIT_FLASH_DURATION;
 
-                    // Knockback (70% force for NPC-vs-NPC)
+                    // Knockback via rigid body impulse (70% force for NPC-vs-NPC, mass-based)
                     let dx = tx - ax;
                     let dz = tz - az;
                     let dist = (dx * dx + dz * dz).sqrt().max(0.01);
-                    world.npcs[j].knockback_vx += dx / dist * KNOCKBACK_FORCE * 0.7;
-                    world.npcs[j].knockback_vz += dz / dist * KNOCKBACK_FORCE * 0.7;
-                    world.npcs[j].vel_y = KNOCKBACK_UP * 0.7;
+                    let punch_impulse = KNOCKBACK_FORCE * 80.0 * 0.7;
+                    world.npcs[j].body.apply_impulse([
+                        dx / dist * punch_impulse,
+                        KNOCKBACK_UP * 80.0 * 0.7,
+                        dz / dist * punch_impulse,
+                    ]);
 
                     // KO check
                     if world.npcs[j].health <= 0.0 {
@@ -209,9 +212,12 @@ pub fn sys_combat_headless(world: &mut WorldData, terrain: &Terrain, dt: f32) {
 
                 world.npcs[j].health -= NPC_ATTACK_DAMAGE;
                 world.npcs[j].hit_flash = HIT_FLASH_DURATION;
-                world.npcs[j].knockback_vx += dx / dist * KNOCKBACK_FORCE * 0.7;
-                world.npcs[j].knockback_vz += dz / dist * KNOCKBACK_FORCE * 0.7;
-                world.npcs[j].vel_y = KNOCKBACK_UP * 0.7;
+                let punch_impulse = KNOCKBACK_FORCE * 80.0 * 0.7;
+                world.npcs[j].body.apply_impulse([
+                    dx / dist * punch_impulse,
+                    KNOCKBACK_UP * 80.0 * 0.7,
+                    dz / dist * punch_impulse,
+                ]);
 
                 if world.npcs[j].health <= 0.0 {
                     knockout_npc(&mut world.npcs[j]);
@@ -285,10 +291,14 @@ fn player_attack_npcs(world: &mut WorldData, player: &mut Player, particles: &mu
         npc.health -= ATTACK_DAMAGE;
         npc.hit_flash = HIT_FLASH_DURATION;
 
-        // Knockback
-        npc.knockback_vx += dx / dist * KNOCKBACK_FORCE;
-        npc.knockback_vz += dz / dist * KNOCKBACK_FORCE;
-        npc.vel_y = KNOCKBACK_UP;
+        // Knockback via rigid body impulse (mass-based: heavier NPCs resist more)
+        // Same punch impulse, lighter NPC gets more velocity change (F = impulse, dv = F/m)
+        let punch_impulse = KNOCKBACK_FORCE * 80.0; // impulse in N·s (calibrated for 80kg NPC)
+        npc.body.apply_impulse([
+            dx / dist * punch_impulse,
+            KNOCKBACK_UP * 80.0,
+            dz / dist * punch_impulse,
+        ]);
 
         emit_hit_particles(particles, npc.x, npc.y + 1.0, npc.z);
 
@@ -353,8 +363,12 @@ pub fn sys_ragdoll_update(world: &mut WorldData, terrain: &Terrain, dt: f32) {
 
         // Timer
         npc.ragdoll_timer -= dt;
-        if npc.ragdoll_timer <= 0.0 {
-            // Snap NPC to hips position (avoid landing in river)
+        if npc.ragdoll_timer <= 0.0 && npc.skeleton.ragdoll_active {
+            // Timer expired: begin blend recovery (skeleton handles the gradual transition)
+            // Set timer to 0 so skeleton.blend_from_ragdoll starts blending
+            npc.skeleton.ragdoll_timer = 0.0;
+
+            // Snap NPC to hips position for blend start
             let hips = npc.skeleton.bones[0].world_pos;
             let snap_x = hips[0];
             let snap_z = hips[2];
@@ -363,11 +377,16 @@ pub fn sys_ragdoll_update(world: &mut WorldData, terrain: &Terrain, dt: f32) {
                 npc.z = snap_z;
             }
             npc.y = terrain.height_at(npc.x, npc.z);
-            npc.ragdoll_active = false;
-            npc.skeleton.ragdoll_active = false;
-            npc.skeleton.ragdoll_blend = 1.0;
             npc.knockback_vx = 0.0;
             npc.knockback_vz = 0.0;
+
+            // blend_from_ragdoll() in npc_physics will gradually transition
+            // ragdoll_active stays true until blend completes (skeleton sets it false)
+        }
+        // Check if skeleton finished blending back to animation
+        if npc.ragdoll_timer <= 0.0 && !npc.skeleton.ragdoll_active && npc.ragdoll_active {
+            // Blend complete — finalize recovery
+            npc.ragdoll_active = false;
 
             // Enter KnockedOut if not already
             if npc.state != NpcState::KnockedOut {
