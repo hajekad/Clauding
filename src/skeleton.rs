@@ -94,9 +94,11 @@ impl Bone {
 pub struct FootContact {
     pub grounded: bool,         // foot is planted on surface
     pub ground_y: f32,          // terrain height under this foot
+    pub surface_normal: Vec3,   // terrain normal under this foot (for slope adaptation)
     pub target_pos: Vec3,       // IK target in world space
     pub plant_pos: Vec3,        // position where foot was planted (stays fixed while grounded)
     pub lift_height: f32,       // current lift above ground during swing phase
+    pub push_force: Vec3,       // ground reaction force this foot exerts (for locomotion)
 }
 
 impl FootContact {
@@ -104,10 +106,110 @@ impl FootContact {
         FootContact {
             grounded: true,
             ground_y: 0.0,
+            surface_normal: [0.0, 1.0, 0.0],
             target_pos: [0.0; 3],
             plant_pos: [0.0; 3],
             lift_height: 0.0,
+            push_force: [0.0; 3],
         }
+    }
+}
+
+// ── Locomotion gait states ───────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Gait {
+    Idle,
+    Walk,
+    Run,
+    Sprint,
+}
+
+impl Gait {
+    /// Stride frequency (steps/sec) at this gait's natural speed
+    pub fn stride_freq(self) -> f32 {
+        match self {
+            Gait::Idle => 0.0,
+            Gait::Walk => 2.8,    // ~1.4 steps/sec per leg
+            Gait::Run => 4.5,
+            Gait::Sprint => 6.0,
+        }
+    }
+
+    /// Maximum stride length (meters forward per step)
+    pub fn stride_len(self) -> f32 {
+        match self {
+            Gait::Idle => 0.0,
+            Gait::Walk => 0.35,
+            Gait::Run => 0.55,
+            Gait::Sprint => 0.70,
+        }
+    }
+
+    /// Foot lift height during swing phase (meters)
+    pub fn foot_lift(self) -> f32 {
+        match self {
+            Gait::Idle => 0.0,
+            Gait::Walk => 0.06,
+            Gait::Run => 0.12,
+            Gait::Sprint => 0.16,
+        }
+    }
+
+    /// Arm swing amplitude (radians)
+    pub fn arm_swing(self) -> f32 {
+        match self {
+            Gait::Idle => 0.0,
+            Gait::Walk => 0.3,
+            Gait::Run => 0.6,
+            Gait::Sprint => 0.8,
+        }
+    }
+
+    /// Forward spine lean (radians)
+    pub fn spine_lean(self) -> f32 {
+        match self {
+            Gait::Idle => 0.0,
+            Gait::Walk => 0.03,
+            Gait::Run => 0.08,
+            Gait::Sprint => 0.14,
+        }
+    }
+
+    /// Speed thresholds with hysteresis for transition
+    /// Returns (enter_speed, exit_speed) — enter > exit prevents flickering
+    pub fn speed_range(self) -> (f32, f32) {
+        match self {
+            Gait::Idle => (0.0, 0.0),
+            Gait::Walk => (0.3, 0.15),
+            Gait::Run => (2.5, 2.0),
+            Gait::Sprint => (4.5, 3.8),
+        }
+    }
+}
+
+/// Select gait from current speed with hysteresis
+fn select_gait(speed: f32, current: Gait) -> Gait {
+    // Try to stay in current gait (hysteresis prevents flickering)
+    let (_, exit) = current.speed_range();
+    if speed >= exit {
+        // Check if we should upgrade to a faster gait
+        let next = match current {
+            Gait::Idle => Gait::Walk,
+            Gait::Walk => Gait::Run,
+            Gait::Run => Gait::Sprint,
+            Gait::Sprint => Gait::Sprint,
+        };
+        let (enter, _) = next.speed_range();
+        if speed >= enter { return next; }
+        return current;
+    }
+    // Downgrade
+    match current {
+        Gait::Sprint => Gait::Run,
+        Gait::Run => Gait::Walk,
+        Gait::Walk => Gait::Idle,
+        Gait::Idle => Gait::Idle,
     }
 }
 
@@ -123,9 +225,14 @@ pub struct Skeleton {
     pub walk_phase: f32,        // 0..TAU, drives left/right foot alternation
     pub feet: [FootContact; 2], // [left, right]
     pub com_offset: Vec3,       // center of mass offset from hips (body sway)
+    pub com_world: Vec3,        // actual center of mass position (mass-weighted bone average)
+    pub com_lean: Vec3,         // lean direction relative to support base (for balance)
     pub landing_speed: f32,     // vertical speed at last ground contact (for stumble)
     pub stumble_timer: f32,     // >0 = stumbling, decrements to 0
     pub stumble_dir: Vec3,      // stumble lean direction (world space)
+    pub total_push_force: Vec3, // accumulated ground reaction force from both feet
+    pub gait: Gait,             // current locomotion state (idle/walk/run/sprint)
+    pub gait_blend: f32,        // 0..1 blend progress during gait transition
 }
 
 impl Skeleton {
@@ -175,9 +282,14 @@ impl Skeleton {
             walk_phase: 0.0,
             feet: [FootContact::new(); 2],
             com_offset: [0.0; 3],
+            com_world: [0.0; 3],
+            com_lean: [0.0; 3],
             landing_speed: 0.0,
             stumble_timer: 0.0,
             stumble_dir: [0.0; 3],
+            total_push_force: [0.0; 3],
+            gait: Gait::Idle,
+            gait_blend: 1.0,
         }
     }
 
@@ -226,77 +338,121 @@ impl Skeleton {
 
     /// Step procedural animation: walk cycle from velocity, foot IK, CoM sway, stumble.
     /// Call once per frame for walking/standing characters. Not called during ragdoll.
-    /// `vel` = character horizontal velocity, `pos` = character world position,
-    /// `rot_y` = facing direction, `terrain` = for foot ground queries.
-    pub fn step_animation(&mut self, vel: Vec3, pos: Vec3, rot_y: f32, terrain: &crate::state::Terrain, on_ground: bool, dt: f32) {
+    /// `vel` = character velocity from rigid body, `pos` = character world position,
+    /// `rot_y` = facing direction, `terrain` = for foot ground/normal queries,
+    /// `mass` = character mass for ground reaction force computation.
+    pub fn step_animation(&mut self, vel: Vec3, pos: Vec3, rot_y: f32, terrain: &crate::state::Terrain, on_ground: bool, _mass: f32, dt: f32) {
         if self.ragdoll_active { return; }
 
         let horiz_speed = (vel[0] * vel[0] + vel[2] * vel[2]).sqrt();
         let pi = std::f32::consts::PI;
         let tau = std::f32::consts::TAU;
 
-        // ── Walk phase advancement (driven by actual velocity) ──
-        // Stride frequency: ~2 steps/sec at walk speed (~1.4 m/s), scales with speed
-        let stride_freq = if horiz_speed > 0.3 { horiz_speed * 2.0 } else { 0.0 };
-        self.walk_phase = (self.walk_phase + stride_freq * dt) % tau;
+        // ── Gait selection with hysteresis (momentum-governed transitions) ──
+        let new_gait = select_gait(horiz_speed, self.gait);
+        if new_gait != self.gait {
+            self.gait = new_gait;
+            self.gait_blend = 0.0; // start blending to new gait
+        }
+        // Blend rate governed by momentum: heavier/faster = slower transitions
+        let blend_rate = 3.0 / (1.0 + horiz_speed * 0.3); // ~3/s idle, ~1.5/s at sprint
+        self.gait_blend = (self.gait_blend + blend_rate * dt).min(1.0);
 
-        // ── Per-foot ground contact + IK targets ──
+        // Interpolate gait parameters during blend (smooth transitions)
+        let stride_freq = self.gait.stride_freq() * self.gait_blend
+            + self.gait.stride_freq() * (1.0 - self.gait_blend); // converges as blend→1
+        let stride_len = self.gait.stride_len();
+        let foot_lift_h = self.gait.foot_lift();
+        let arm_swing_amp = self.gait.arm_swing();
+        let spine_lean_amt = self.gait.spine_lean();
+
+        // ── Walk phase: leg cadence from gait stride frequency ──
+        let freq = if self.gait == Gait::Idle { 0.0 } else { stride_freq };
+        self.walk_phase = (self.walk_phase + freq * dt) % tau;
+
         let fwd = [-rot_y.sin(), 0.0, -rot_y.cos()];
         let right = [rot_y.cos(), 0.0, -rot_y.sin()];
 
-        // Hip offsets: left foot at -0.10 lateral, right at +0.10
-        let hip_y = pos[1] + 0.95; // hips height
-        let stride_len = (horiz_speed * 0.35).min(0.45); // max stride ~45cm
+        let hip_y = pos[1] + 0.95;
 
+        self.total_push_force = [0.0; 3];
+
+        // ── Per-foot: ground contact, surface normal, IK, ground reaction force ──
         for side in 0..2 {
             let lateral_sign: f32 = if side == 0 { -1.0 } else { 1.0 };
-            // Phase offset: left=0, right=PI (opposite feet)
             let phase = self.walk_phase + if side == 1 { pi } else { 0.0 };
             let sin_phase = phase.sin();
             let cos_phase = phase.cos();
 
-            // Hip position in world space
             let hip_pos = [
                 pos[0] + right[0] * 0.10 * lateral_sign,
                 hip_y,
                 pos[2] + right[2] * 0.10 * lateral_sign,
             ];
 
-            if horiz_speed > 0.3 {
-                // Walking: foot traces an arc — forward/backward with sin, up with abs(cos)
+            if self.gait != Gait::Idle {
                 let foot_fwd_offset = sin_phase * stride_len;
-                let foot_lift = (1.0 - cos_phase.abs()) * 0.08 * (horiz_speed / 1.4).min(1.5);
+                let foot_lift = (1.0 - cos_phase.abs()) * foot_lift_h;
 
                 let foot_x = pos[0] + right[0] * 0.10 * lateral_sign + fwd[0] * foot_fwd_offset;
                 let foot_z = pos[2] + right[2] * 0.10 * lateral_sign + fwd[2] * foot_fwd_offset;
                 let ground_y = terrain.height_at(foot_x, foot_z);
+                let foot_normal = terrain.normal_at(foot_x, foot_z);
 
-                // Foot grounded when phase is in second half of cycle (foot behind, on ground)
+                // Foot grounded during push phase (foot behind body, pressing against ground)
                 let is_contact = cos_phase > 0.0;
 
                 self.feet[side].grounded = is_contact && on_ground;
                 self.feet[side].ground_y = ground_y;
+                self.feet[side].surface_normal = foot_normal;
                 self.feet[side].lift_height = if is_contact { 0.0 } else { foot_lift };
                 self.feet[side].target_pos = [foot_x, ground_y + self.feet[side].lift_height, foot_z];
 
                 if is_contact {
                     self.feet[side].plant_pos = self.feet[side].target_pos;
                 }
+
+                // Ground reaction force: leg pushes backward+down against surface,
+                // normal reaction propels body forward. Force angle adjusted by surface normal.
+                // Steeper slopes → push angle shifts, reducing effective forward force.
+                if self.feet[side].grounded {
+                    // Foot pushes along surface tangent (forward direction projected onto surface)
+                    let n = foot_normal;
+                    // Remove surface normal component from forward direction
+                    let dot_fn = fwd[0] * n[0] + fwd[1] * n[1] + fwd[2] * n[2];
+                    let tangent_fwd = v3_normalize([
+                        fwd[0] - n[0] * dot_fn,
+                        fwd[1] - n[1] * dot_fn,
+                        fwd[2] - n[2] * dot_fn,
+                    ]);
+                    // Grip: how much of the foot's push actually propels (surface normal Y component)
+                    let grip = n[1].max(0.0); // flat=1.0, vertical=0.0
+                    // Push magnitude: proportional to phase (strongest at mid-push)
+                    let push_phase = cos_phase.max(0.0); // 0..1 during contact
+                    let push_mag = push_phase * grip;
+                    self.feet[side].push_force = v3_scale(tangent_fwd, push_mag);
+                    self.total_push_force = v3_add(self.total_push_force, self.feet[side].push_force);
+                } else {
+                    self.feet[side].push_force = [0.0; 3];
+                }
             } else {
-                // Idle: feet planted at rest positions
+                // Idle: feet planted at rest
                 let foot_x = pos[0] + right[0] * 0.10 * lateral_sign;
                 let foot_z = pos[2] + right[2] * 0.10 * lateral_sign;
                 let ground_y = terrain.height_at(foot_x, foot_z);
+                let foot_normal = terrain.normal_at(foot_x, foot_z);
                 self.feet[side].grounded = on_ground;
                 self.feet[side].ground_y = ground_y;
+                self.feet[side].surface_normal = foot_normal;
                 self.feet[side].lift_height = 0.0;
                 self.feet[side].target_pos = [foot_x, ground_y, foot_z];
                 self.feet[side].plant_pos = self.feet[side].target_pos;
+                self.feet[side].push_force = [0.0; 3];
             }
 
-            // Apply two-bone IK to leg bones
-            let upper_len = 0.42; // upper leg
-            let lower_len = 0.40; // lower leg
+            // Two-bone IK: solve leg chain from hip to foot target
+            let upper_len = 0.42;
+            let lower_len = 0.40;
             let pole_dir = fwd; // knees bend forward
             let (upper_rot, lower_rot) = solve_two_bone_ik(
                 hip_pos,
@@ -310,21 +466,63 @@ impl Skeleton {
             let lower_bone = if side == 0 { BoneId::LeftLowerLeg } else { BoneId::RightLowerLeg };
             self.bones[upper_bone as usize].local_rot = upper_rot;
             self.bones[lower_bone as usize].local_rot = lower_rot;
+
+            // Foot bone: align to surface normal when grounded
+            if self.feet[side].grounded {
+                let n = self.feet[side].surface_normal;
+                // Foot tilts to match surface: rotation from default (pointing down) to surface plane
+                let tilt_x = n[2].atan2(n[1]); // pitch from normal
+                let tilt_z = -n[0].atan2(n[1]); // roll from normal
+                let foot_bone = if side == 0 { BoneId::LeftFoot } else { BoneId::RightFoot };
+                self.bones[foot_bone as usize].local_rot = quat_mul(
+                    quat_from_axis_angle([1.0, 0.0, 0.0], tilt_x * 0.5),
+                    quat_from_axis_angle([0.0, 0.0, 1.0], tilt_z * 0.5),
+                );
+            }
         }
 
-        // ── Center of mass sway ──
-        // Lateral sway: shift hips toward planted foot
-        let sway_amount = if horiz_speed > 0.3 {
+        // ── Center of mass tracking ──
+        // Compute actual CoM from mass-weighted bone positions
+        let mut com_sum = [0.0f32; 3];
+        let mut mass_sum = 0.0f32;
+        for b in &self.bones {
+            com_sum = v3_add(com_sum, v3_scale(b.world_pos, b.mass));
+            mass_sum += b.mass;
+        }
+        if mass_sum > 0.0 {
+            self.com_world = v3_scale(com_sum, 1.0 / mass_sum);
+        }
+
+        // Support base: midpoint between grounded feet (or single foot, or hips if airborne)
+        let support_base = if self.feet[0].grounded && self.feet[1].grounded {
+            v3_scale(v3_add(self.feet[0].plant_pos, self.feet[1].plant_pos), 0.5)
+        } else if self.feet[0].grounded {
+            self.feet[0].plant_pos
+        } else if self.feet[1].grounded {
+            self.feet[1].plant_pos
+        } else {
+            pos // airborne: use character position
+        };
+
+        // Lean = horizontal offset of CoM from support base
+        self.com_lean = [
+            self.com_world[0] - support_base[0],
+            0.0,
+            self.com_world[2] - support_base[2],
+        ];
+        let lean_mag = (self.com_lean[0] * self.com_lean[0] + self.com_lean[2] * self.com_lean[2]).sqrt();
+
+        // Lateral sway: shift hips toward planted foot during walk
+        let sway_amount = if self.gait != Gait::Idle {
             self.walk_phase.cos() * 0.015 * (horiz_speed / 1.4).min(1.0)
         } else {
             0.0
         };
         self.com_offset = [right[0] * sway_amount, 0.0, right[2] * sway_amount];
 
-        // ── Arm swing (opposite to legs) ──
-        if horiz_speed > 0.3 {
-            let arm_swing = self.walk_phase.sin() * 0.4 * (horiz_speed / 2.0).min(1.0);
-            // Left arm swings opposite to left leg → same sign as walk_phase.sin()
+        // ── Arm swing (gait-specific amplitude) ──
+        if self.gait != Gait::Idle {
+            let arm_swing = self.walk_phase.sin() * arm_swing_amp;
             self.bones[BoneId::LeftUpperArm as usize].local_rot =
                 quat_from_axis_angle([1.0, 0.0, 0.0], arm_swing);
             self.bones[BoneId::RightUpperArm as usize].local_rot =
@@ -334,27 +532,34 @@ impl Skeleton {
             self.bones[BoneId::RightUpperArm as usize].local_rot = QUAT_IDENTITY;
         }
 
-        // ── Spine lean into movement ──
-        if horiz_speed > 1.0 {
-            let lean = (horiz_speed * 0.02).min(0.12); // slight forward lean
+        // ── Spine lean (gait-specific, forward lean increases with speed) ──
+        if self.gait != Gait::Idle {
             self.bones[BoneId::Spine as usize].local_rot =
-                quat_from_axis_angle([1.0, 0.0, 0.0], lean);
+                quat_from_axis_angle([1.0, 0.0, 0.0], spine_lean_amt);
         } else {
             self.bones[BoneId::Spine as usize].local_rot = QUAT_IDENTITY;
         }
 
-        // ── Landing detection → stumble ──
+        // ── Stumble triggers ──
+        // 1. Hard landing (vertical impact velocity)
         if on_ground && self.landing_speed < -4.0 {
-            // Hard landing — trigger stumble proportional to impact
-            let severity = (-self.landing_speed - 4.0) / 8.0; // 0..1 over 4..12 m/s
+            let severity = (-self.landing_speed - 4.0) / 8.0;
             self.stumble_timer = severity.clamp(0.2, 1.5);
-            // Stumble forward (movement direction or facing direction)
             if horiz_speed > 0.5 {
                 self.stumble_dir = v3_normalize([vel[0], 0.0, vel[2]]);
             } else {
                 self.stumble_dir = fwd;
             }
-            self.landing_speed = 0.0; // consumed
+            self.landing_speed = 0.0;
+        }
+        // 2. CoM lean exceeding balance threshold (off-balance stumble)
+        if on_ground && self.stumble_timer <= 0.0 && lean_mag > 0.35 {
+            self.stumble_timer = (lean_mag - 0.35).clamp(0.2, 1.0);
+            self.stumble_dir = if lean_mag > 0.01 {
+                v3_normalize(self.com_lean)
+            } else {
+                fwd
+            };
         }
 
         // Record vertical velocity for next-frame landing detection
@@ -368,14 +573,12 @@ impl Skeleton {
         if self.stumble_timer > 0.0 {
             self.stumble_timer -= dt;
             let t = self.stumble_timer.max(0.0);
-            // Lean forward + side wobble
-            let lean_fwd = t * 0.5; // decaying forward lean
-            let wobble = (t * 12.0).sin() * t * 0.15; // oscillating side lean
+            let lean_fwd = t * 0.5;
+            let wobble = (t * 12.0).sin() * t * 0.15;
             self.bones[BoneId::Spine as usize].local_rot =
                 quat_from_axis_angle([1.0, 0.0, 0.0], lean_fwd);
             self.bones[BoneId::Chest as usize].local_rot =
                 quat_from_axis_angle([0.0, 0.0, 1.0], wobble);
-            // Arms flail outward
             let flail = t * 0.8;
             self.bones[BoneId::LeftUpperArm as usize].local_rot =
                 quat_from_axis_angle([0.0, 0.0, 1.0], flail);
@@ -389,17 +592,89 @@ impl Skeleton {
         self.compute_world_transforms(root_pos, root_rot);
     }
 
-    /// Return walk swing angle for the renderer (replaces walk_phase.sin() * 0.4).
-    /// Positive = left leg forward, negative = left leg back.
+    /// Compute ground reaction force for locomotion.
+    /// Returns force vector to apply to the character's rigid body.
+    /// This is the actual "legs pushing on ground" force.
+    /// `desired_dir`: normalized direction the character wants to move
+    /// `desired_speed`: target speed from input/AI
+    /// `current_vel`: current body velocity
+    /// `mass`: character mass
+    /// `surface_friction`: dynamic friction coefficient of the surface (0..1, from material system)
+    pub fn compute_locomotion_force(&self, desired_dir: Vec3, desired_speed: f32, current_vel: Vec3, mass: f32, surface_friction: f32) -> Vec3 {
+        // No force if no foot is grounded
+        if !self.feet[0].grounded && !self.feet[1].grounded {
+            return [0.0; 3];
+        }
+
+        // Average slope grip from grounded feet (Y component of surface normal)
+        let mut slope_grip = 0.0f32;
+        let mut foot_count = 0.0f32;
+        for foot in &self.feet {
+            if foot.grounded {
+                slope_grip += foot.surface_normal[1].max(0.0);
+                foot_count += 1.0;
+            }
+        }
+        if foot_count > 0.0 { slope_grip /= foot_count; }
+
+        // Total grip = slope factor × surface friction coefficient
+        // Flat asphalt: 1.0 * 0.7 = 0.7 (good grip)
+        // Flat ice: 1.0 * 0.04 = 0.04 (nearly no grip)
+        // Steep grass: 0.6 * 0.4 = 0.24 (poor grip)
+        let total_grip = slope_grip * surface_friction;
+
+        // Push direction: project desired direction onto average surface tangent
+        let avg_normal = if self.feet[0].grounded && self.feet[1].grounded {
+            v3_normalize(v3_scale(
+                v3_add(self.feet[0].surface_normal, self.feet[1].surface_normal), 0.5
+            ))
+        } else if self.feet[0].grounded {
+            self.feet[0].surface_normal
+        } else {
+            self.feet[1].surface_normal
+        };
+
+        // Remove normal component from desired direction (project onto surface)
+        let dot_dn = v3_dot(desired_dir, avg_normal);
+        let surface_dir = v3_normalize([
+            desired_dir[0] - avg_normal[0] * dot_dn,
+            desired_dir[1] - avg_normal[1] * dot_dn,
+            desired_dir[2] - avg_normal[2] * dot_dn,
+        ]);
+
+        // Current speed along surface direction
+        let current_along = v3_dot(current_vel, surface_dir);
+        let speed_error = desired_speed - current_along;
+
+        // Ground reaction force: legs push against surface, limited by friction
+        // max force = friction_coefficient × normal_force (mass × g)
+        let max_push = total_grip * mass * 9.81;
+        let response_time = 0.15;
+        let desired_force = mass * speed_error / response_time;
+        let clamped_force = desired_force.clamp(-max_push, max_push);
+
+        // Scale by walk phase: force peaks when a foot is in push phase
+        let push_scale = if self.total_push_force[0].abs() + self.total_push_force[2].abs() > 0.01 {
+            let push_len = v3_len(self.total_push_force);
+            push_len.min(1.0) * 0.7 + 0.3
+        } else if desired_speed < 0.1 {
+            1.0
+        } else {
+            0.3
+        };
+
+        v3_scale(surface_dir, clamped_force * push_scale)
+    }
+
+    /// Return walk swing angle for the renderer (gait-appropriate amplitude).
     pub fn walk_swing(&self) -> f32 {
-        self.walk_phase.sin() * 0.4
+        self.walk_phase.sin() * self.gait.arm_swing().max(0.4)
     }
 
     /// Should this character enter ragdoll from fall damage?
-    /// Returns true if landing velocity exceeded fatal threshold.
+    /// Call BEFORE step_animation consumes landing_speed.
     pub fn should_ragdoll_from_fall(&self) -> bool {
-        // Triggered externally when landing_speed < -8.0 before it's consumed
-        false // step_animation handles stumble; caller checks landing_speed directly
+        self.landing_speed < -10.0
     }
 
     /// Blend from ragdoll back to animation over time.
@@ -496,7 +771,7 @@ impl Skeleton {
             b.world_pos[2] = b.world_pos[2].clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
         }
 
-        // Enforce distance constraints (parent-child bone lengths)
+        // Enforce distance + joint angle constraints
         for _ in 0..4 {
             for i in 1..BONE_COUNT {
                 let parent_idx = self.bones[i].parent.unwrap_or(0) as usize;
@@ -507,10 +782,10 @@ impl Skeleton {
                 let dist = v3_len(delta);
                 if dist < 0.001 { continue; }
 
+                // Distance constraint: keep bones at correct length
                 let diff = (dist - target_dist) / dist;
                 let correction = v3_scale(delta, diff * 0.5);
 
-                // Mass-weighted correction
                 let mi = self.bones[i].mass;
                 let mp = self.bones[parent_idx].mass;
                 let total = mi + mp;
@@ -519,6 +794,46 @@ impl Skeleton {
 
                 self.bones[i].world_pos = v3_sub(self.bones[i].world_pos, v3_scale(correction, wi));
                 self.bones[parent_idx].world_pos = v3_add(self.bones[parent_idx].world_pos, v3_scale(correction, wp));
+
+                // Cone constraint: limit angle between child direction and parent's axis
+                let cone_limit = self.bones[i].constraint.cone_angle;
+                if cone_limit < std::f32::consts::PI - 0.01 {
+                    // Parent's "down" direction (default bone axis)
+                    let parent_axis = quat_rotate(self.bones[parent_idx].world_rot, [0.0, -1.0, 0.0]);
+                    // Direction from parent to child
+                    let child_dir = v3_sub(self.bones[i].world_pos, self.bones[parent_idx].world_pos);
+                    let child_dist = v3_len(child_dir);
+                    if child_dist > 0.001 {
+                        let child_dir_n = v3_scale(child_dir, 1.0 / child_dist);
+                        let dot = v3_dot(child_dir_n, parent_axis).clamp(-1.0, 1.0);
+                        let angle = dot.acos();
+
+                        if angle > cone_limit {
+                            // Clamp: rotate child direction back to cone boundary
+                            let cross = v3_cross(parent_axis, child_dir_n);
+                            let cross_len = v3_len(cross);
+                            if cross_len > 0.001 {
+                                let axis = v3_scale(cross, 1.0 / cross_len);
+                                // New direction at the cone limit
+                                let clamped_q = quat_from_axis_angle(axis, cone_limit);
+                                let clamped_dir = quat_rotate(clamped_q, parent_axis);
+                                let new_pos = v3_add(
+                                    self.bones[parent_idx].world_pos,
+                                    v3_scale(clamped_dir, child_dist),
+                                );
+                                // Apply with mass weighting
+                                let move_vec = v3_sub(new_pos, self.bones[i].world_pos);
+                                self.bones[i].world_pos = v3_add(self.bones[i].world_pos, v3_scale(move_vec, wi));
+                                // Dampen velocity component along the constraint violation
+                                let vel_along = v3_dot(self.bones[i].vel, v3_normalize(move_vec));
+                                if vel_along < 0.0 {
+                                    let dampened = v3_scale(v3_normalize(move_vec), vel_along * 0.5);
+                                    self.bones[i].vel = v3_sub(self.bones[i].vel, dampened);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

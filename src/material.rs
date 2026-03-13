@@ -58,6 +58,20 @@ pub const MAT_METAL: SurfaceMaterial = SurfaceMaterial {
     rolling_resistance: 0.01,
 };
 
+pub const MAT_ICE: SurfaceMaterial = SurfaceMaterial {
+    static_friction: 0.08,
+    dynamic_friction: 0.04,
+    restitution: 0.02,
+    rolling_resistance: 0.005,
+};
+
+pub const MAT_WET_ROAD: SurfaceMaterial = SurfaceMaterial {
+    static_friction: 0.45,
+    dynamic_friction: 0.3,
+    restitution: 0.1,
+    rolling_resistance: 0.02,
+};
+
 /// Combine two surface materials for a contact pair.
 /// Uses geometric mean for friction, max for restitution.
 pub fn combine_materials(a: &SurfaceMaterial, b: &SurfaceMaterial) -> SurfaceMaterial {
