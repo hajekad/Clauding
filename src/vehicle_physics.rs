@@ -35,8 +35,36 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
     v.wheels[2].steer_angle = 0.0;   // RL
     v.wheels[3].steer_angle = 0.0;   // RR
 
+    // Electronic speed governor: cut throttle near max_speed
+    let governed_throttle = if v.drivetrain.max_speed > 0.0 {
+        let speed = v.speed.abs();
+        if speed >= v.drivetrain.max_speed {
+            0.0
+        } else if speed > v.drivetrain.max_speed * 0.95 {
+            // Smooth ramp-down in final 5% to avoid jerkiness
+            let t = (v.drivetrain.max_speed - speed) / (v.drivetrain.max_speed * 0.05);
+            v.drivetrain.throttle * t
+        } else {
+            v.drivetrain.throttle
+        }
+    } else {
+        v.drivetrain.throttle
+    };
+
     // Engine torque to driven wheels (reduced by engine bay damage)
-    let engine_torque = v.drivetrain.engine_torque * v.drivetrain.throttle * v.drivetrain.gear_ratio * dmg_engine;
+    // Power-limited: at high wheel speed, cap torque so power doesn't exceed max_power
+    let base_torque = v.drivetrain.engine_torque * governed_throttle * v.drivetrain.gear_ratio * dmg_engine;
+    let avg_wheel_speed = {
+        let sum: f32 = v.wheels.iter().map(|w| w.ang_vel.abs() * w.radius).sum();
+        (sum * 0.25).max(0.1) // average ground speed from wheels, floor at 0.1 m/s
+    };
+    let power_at_wheels = base_torque * avg_wheel_speed / v.wheels[0].radius;
+    let power_scale = if power_at_wheels > v.drivetrain.max_power && v.drivetrain.max_power > 0.0 {
+        v.drivetrain.max_power / power_at_wheels
+    } else {
+        1.0
+    };
+    let engine_torque = base_torque * power_scale;
     let per_wheel = engine_torque * 0.25; // 4WD split
     for w in &mut v.wheels {
         w.drive_torque = per_wheel;
@@ -46,6 +74,12 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
     let brake_torque = 3000.0 * v.drivetrain.brake;
     for w in &mut v.wheels {
         w.brake_torque = brake_torque;
+    }
+
+    // Handbrake: lock rear wheels (indices 2,3) with high brake torque
+    if v.drivetrain.handbrake {
+        v.wheels[2].brake_torque = 5000.0;
+        v.wheels[3].brake_torque = 5000.0;
     }
 
     // Get body orientation vectors
@@ -99,6 +133,16 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
             total_force = v3_add(total_force, tire_force);
             total_torque = v3_add(total_torque, v3_cross(r, tire_force));
         }
+    }
+
+    // Aerodynamic drag: F = -0.5 × Cd × A × ρ × v² × v_hat
+    // Cd=0.33, A=2.2m², ρ=1.225 → 0.5 × 0.33 × 2.2 × 1.225 ≈ 0.445
+    let speed_sq = v3_dot(v.body.vel, v.body.vel);
+    if speed_sq > 0.01 {
+        let speed = speed_sq.sqrt();
+        let drag_mag = 0.445 * speed_sq; // CdA_half_rho × v²
+        let drag_force = v3_scale(v.body.vel, -drag_mag / speed);
+        total_force = v3_add(total_force, drag_force);
     }
 
     // Apply accumulated forces to rigid body

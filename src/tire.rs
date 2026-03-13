@@ -74,6 +74,8 @@ impl WheelState {
 pub struct Drivetrain {
     pub engine_torque: f32,     // max engine torque (N*m)
     pub gear_ratio: f32,        // current gear ratio * final drive
+    pub max_power: f32,         // max engine power (W) — limits force at high speed
+    pub max_speed: f32,         // electronic speed governor (m/s) — 0 = no limit
     pub throttle: f32,          // 0..1
     pub brake: f32,             // 0..1
     pub handbrake: bool,
@@ -85,7 +87,9 @@ impl Drivetrain {
     pub fn new(engine_torque: f32, max_steer_deg: f32) -> Self {
         Drivetrain {
             engine_torque,
-            gear_ratio: 3.5,    // 1st gear * final drive
+            gear_ratio: 5.0,
+            max_power: 265_000.0, // 265 kW ≈ 360 HP — 0-100 in ~4.7s, 0-200 in ~17s
+            max_speed: 69.44,     // 250 km/h electronic speed governor
             throttle: 0.0,
             brake: 0.0,
             handbrake: false,
