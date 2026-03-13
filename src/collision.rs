@@ -165,7 +165,7 @@ fn decay_violation_timers(world: &mut WorldData, dt: f32) {
 /// Vehicles, NPCs, and player receive impulses proportional to distance.
 /// NPCs above the force threshold are ragdolled.
 pub fn apply_world_explosion(
-    world: &mut WorldData, player: &mut Player,
+    world: &mut WorldData, player: Option<&mut Player>,
     origin: crate::math::Vec3, radius: f32, force: f32,
 ) {
     // Vehicles
@@ -207,25 +207,27 @@ pub fn apply_world_explosion(
     }
 
     // Player — only apply direct explosion if on foot (vehicle absorbs blast when driving)
-    if player.in_vehicle.is_none() {
-        let player_pos = [player.x, player.y + 0.9, player.z];
-        let mag = crate::physics::apply_explosion(&mut player.body, player_pos, radius, force);
-        if mag > 0.0 {
-            player.x = player.body.pos[0];
-            player.z = player.body.pos[2];
-            let damage = mag * 0.1;
-            player.health = (player.health - damage).max(0.0);
-            player.damage_shake = (mag / force * 2.0).min(1.0);
+    if let Some(player) = player {
+        if player.in_vehicle.is_none() {
+            let player_pos = [player.x, player.y + 0.9, player.z];
+            let mag = crate::physics::apply_explosion(&mut player.body, player_pos, radius, force);
+            if mag > 0.0 {
+                player.x = player.body.pos[0];
+                player.z = player.body.pos[2];
+                let damage = mag * 0.1;
+                player.health = (player.health - damage).max(0.0);
+                player.damage_shake = (mag / force * 2.0).min(1.0);
 
-            // Player ragdoll from explosion (same threshold as NPCs: speed_change > 5 m/s)
-            let speed_change = mag / player.body.mass;
-            if speed_change > 5.0 && !player.skeleton.ragdoll_active {
-                let d = crate::math::v3_sub(player_pos, origin);
-                let dist = crate::math::v3_len(d);
-                let dir = if dist > 0.01 { crate::math::v3_scale(d, 1.0 / dist) } else { [0.0, 1.0, 0.0] };
-                let impulse = [dir[0] * mag, (dir[1] + 0.3) * mag, dir[2] * mag];
-                player.skeleton.activate_ragdoll([player.x, player.y, player.z], player.rot_y, impulse);
-                player.skeleton.ragdoll_timer = RAGDOLL_DURATION;
+                // Player ragdoll from explosion (same threshold as NPCs: speed_change > 5 m/s)
+                let speed_change = mag / player.body.mass;
+                if speed_change > 5.0 && !player.skeleton.ragdoll_active {
+                    let d = crate::math::v3_sub(player_pos, origin);
+                    let dist = crate::math::v3_len(d);
+                    let dir = if dist > 0.01 { crate::math::v3_scale(d, 1.0 / dist) } else { [0.0, 1.0, 0.0] };
+                    let impulse = [dir[0] * mag, (dir[1] + 0.3) * mag, dir[2] * mag];
+                    player.skeleton.activate_ragdoll([player.x, player.y, player.z], player.rot_y, impulse);
+                    player.skeleton.ragdoll_timer = RAGDOLL_DURATION;
+                }
             }
         }
     }
@@ -615,47 +617,16 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                     world.vehicles[j].deformation.apply_impact(impact_j, energy, obb_b.half_w, obb_b.half_d);
 
                     // Explosion cascade when a vehicle becomes totaled
+                    // Blasts all nearby entities (vehicles, NPCs, player on foot)
                     if world.vehicles[i].deformation.is_totaled() {
                         let origin = world.vehicles[i].body.pos;
                         let blast_force = energy.sqrt().min(500.0);
-                        for ni in 0..nn {
-                            if world.npcs[ni].ragdoll_active { continue; }
-                            let mag = crate::physics::apply_explosion(&mut world.npcs[ni].body, origin, 10.0, blast_force);
-                            if mag / world.npcs[ni].body.mass > 5.0 {
-                                let imp = crate::math::v3_scale(
-                                    crate::math::v3_sub(world.npcs[ni].body.pos, origin),
-                                    mag / crate::math::v3_len(crate::math::v3_sub(world.npcs[ni].body.pos, origin)).max(0.1),
-                                );
-                                init_ragdoll(&mut world.npcs[ni], imp[0], imp[1] + mag * 0.3, imp[2]);
-                            }
-                        }
-                        if let Some(ref mut p) = player.as_deref_mut() {
-                            if p.in_vehicle.is_none() {
-                                crate::physics::apply_explosion(&mut p.body, origin, 10.0, blast_force);
-                            }
-                        }
-                        crate::physics::apply_explosion(&mut world.vehicles[j].body, origin, 10.0, blast_force);
+                        apply_world_explosion(world, player.as_deref_mut(), origin, 10.0, blast_force);
                     }
                     if world.vehicles[j].deformation.is_totaled() {
                         let origin = world.vehicles[j].body.pos;
                         let blast_force = energy.sqrt().min(500.0);
-                        for ni in 0..nn {
-                            if world.npcs[ni].ragdoll_active { continue; }
-                            let mag = crate::physics::apply_explosion(&mut world.npcs[ni].body, origin, 10.0, blast_force);
-                            if mag / world.npcs[ni].body.mass > 5.0 {
-                                let imp = crate::math::v3_scale(
-                                    crate::math::v3_sub(world.npcs[ni].body.pos, origin),
-                                    mag / crate::math::v3_len(crate::math::v3_sub(world.npcs[ni].body.pos, origin)).max(0.1),
-                                );
-                                init_ragdoll(&mut world.npcs[ni], imp[0], imp[1] + mag * 0.3, imp[2]);
-                            }
-                        }
-                        if let Some(ref mut p) = player.as_deref_mut() {
-                            if p.in_vehicle.is_none() {
-                                crate::physics::apply_explosion(&mut p.body, origin, 10.0, blast_force);
-                            }
-                        }
-                        crate::physics::apply_explosion(&mut world.vehicles[i].body, origin, 10.0, blast_force);
+                        apply_world_explosion(world, player.as_deref_mut(), origin, 10.0, blast_force);
                     }
                 }
 
