@@ -19,10 +19,10 @@ pub const NUM_STREET_LIGHTS: usize = 60;
 pub const CAR_ROAD_WIDTH: f32 = 6.0;
 pub const SIDEWALK_WIDTH: f32 = 1.5;
 pub const FIELD_ROAD_WIDTH: f32 = 2.5;
-pub const NPC_SPEED_SIDEWALK: f32 = 3.5;
-pub const NPC_SPEED_FIELD_ROAD: f32 = 2.8;
-pub const NPC_SPEED_CAR_ROAD: f32 = 2.0;
-pub const NPC_SPEED_TERRAIN: f32 = 1.8;
+pub const NPC_SPEED_SIDEWALK: f32 = 2.22;  // 8 km/h Walk gait
+pub const NPC_SPEED_FIELD_ROAD: f32 = 2.22;
+pub const NPC_SPEED_CAR_ROAD: f32 = 2.22;
+pub const NPC_SPEED_TERRAIN: f32 = 2.22;
 pub const NPC_SPEED_STEEP: f32 = 1.0;
 pub const VEHICLE_SPEED: f32 = 15.0;
 pub const VEHICLE_ACCEL: f32 = 12.0;
@@ -40,14 +40,14 @@ pub const PARKING_SPOT_WIDTH: f32 = 2.5;
 pub const VEHICLE_GROUND_OFFSET: f32 = 0.08; // lift vehicles above terrain to prevent slope clipping
 pub const VEHICLE_COLLISION_RADIUS: f32 = 2.2; // half-length of vehicle for separation (~4.6m car)
 pub const FOG_DIST: f32 = 375.0;
-pub const PLAYER_SPEED: f32 = 5.0;
-pub const SPRINT_SPEED: f32 = 9.0;
+pub const PLAYER_SPEED: f32 = 3.06;  // 11 km/h Run gait
+pub const SPRINT_SPEED: f32 = 7.78;  // 28 km/h Sprint gait
 pub const PLAYER_RADIUS: f32 = 0.4;
 pub const DAY_LENGTH: f32 = 1440.0; // 1 game-minute = 1 real second (24 real minutes per day)
 pub const HEADLESS_DT: f32 = 1.0 / 30.0; // shared timestep for headless simulation (observe, etc.)
 pub const NUM_NPCS: usize = 100;
 pub const NUM_ITEMS: usize = 250;
-pub const NPC_SPEED: f32 = 2.5;
+pub const NPC_SPEED: f32 = 2.22; // 8 km/h Walk gait
 pub const WORK_DURATION: f32 = 720.0;
 pub const TERRAIN_GRID: usize = 250;
 pub const TERRAIN_CELL: f32 = WORLD_SIZE / TERRAIN_GRID as f32; // 2m per cell
@@ -304,7 +304,7 @@ impl Vehicle {
         let half_w = 0.93 * scale;
         let half_h = 0.7 * scale;
         let half_d = 2.3 * scale;
-        let mass = 1500.0 * scale * scale; // ~1500kg base
+        let mass = 1660.0 * scale * scale; // ~1660kg (Audi RS5 class)
         let shape = CollisionShape::Box { half_extents: [half_w, half_h, half_d] };
         let inertia = shape.inertia_diag(mass);
         let mut body = RigidBody::new_dynamic([x, y, z], mass, inertia);
@@ -331,7 +331,7 @@ impl Vehicle {
             SuspensionState::new(susp_params),
         ];
 
-        let drivetrain = Drivetrain::new(350.0, 35.0); // 350 Nm, 35° max steer
+        let drivetrain = Drivetrain::new(750.0, 35.0); // 750 Nm, 35° max steer
 
         (body, wheels, suspension, drivetrain)
     }
@@ -701,6 +701,9 @@ pub struct Player {
     pub body: crate::physics::RigidBody,
     // Articulated skeleton (procedural animation + IK)
     pub skeleton: crate::skeleton::Skeleton,
+    // Standing on vehicle (character-on-vehicle stacking)
+    pub standing_on_vehicle: Option<usize>,
+    pub standing_on_vehicle_timer: f32, // hysteresis: stay "on vehicle" for 0.1s after losing contact
 }
 
 pub struct Camera {
@@ -733,6 +736,8 @@ pub struct WorldData {
     pub river_segments: Vec<RiverSegment>,
     pub bridges: Vec<Bridge>,
     pub clutter: Vec<[f32; 3]>, // (x, z, radius) for barrels/crates/sacks/handcarts
+    pub collision_grid: crate::physics::SpatialGrid,
+    pub contact_buffer: crate::physics::ContactBuffer,
 }
 
 pub struct GameState {
@@ -797,6 +802,8 @@ impl GameState {
                     crate::physics::RigidBody::new_dynamic([0.0, 0.0, 10.0], 80.0, inertia)
                 },
                 skeleton: crate::skeleton::Skeleton::new_humanoid(),
+                standing_on_vehicle: None,
+                standing_on_vehicle_timer: 0.0,
             },
             camera: Camera {
                 x: 0.0, y: 8.0, z: 18.0,
@@ -819,6 +826,8 @@ impl GameState {
                 river_segments: Vec::new(),
                 bridges: Vec::new(),
                 clutter: Vec::new(),
+                collision_grid: crate::physics::SpatialGrid::new(),
+                contact_buffer: crate::physics::ContactBuffer::new(),
             },
             mouse_dx: 0.0,
             mouse_dy: 0.0,

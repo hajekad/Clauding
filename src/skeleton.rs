@@ -130,9 +130,9 @@ impl Gait {
     pub fn stride_freq(self) -> f32 {
         match self {
             Gait::Idle => 0.0,
-            Gait::Walk => 2.8,    // ~1.4 steps/sec per leg
-            Gait::Run => 4.5,
-            Gait::Sprint => 6.0,
+            Gait::Walk => 2.5,    // 8 km/h brisk walk (NPC default)
+            Gait::Run => 3.0,     // 11 km/h jog (player default)
+            Gait::Sprint => 4.5,  // 28 km/h sprint
         }
     }
 
@@ -140,9 +140,9 @@ impl Gait {
     pub fn stride_len(self) -> f32 {
         match self {
             Gait::Idle => 0.0,
-            Gait::Walk => 0.35,
-            Gait::Run => 0.55,
-            Gait::Sprint => 0.70,
+            Gait::Walk => 0.89,   // 2.5 × 0.89 = 2.225 m/s ≈ 8 km/h
+            Gait::Run => 1.02,    // 3.0 × 1.02 = 3.06 m/s ≈ 11 km/h
+            Gait::Sprint => 1.73, // 4.5 × 1.73 = 7.785 m/s ≈ 28 km/h
         }
     }
 
@@ -156,9 +156,9 @@ impl Gait {
     pub fn foot_lift(self) -> f32 {
         match self {
             Gait::Idle => 0.0,
-            Gait::Walk => 0.06,
+            Gait::Walk => 0.08,   // brisk walk
             Gait::Run => 0.12,
-            Gait::Sprint => 0.16,
+            Gait::Sprint => 0.22, // high knee lift at full sprint
         }
     }
 
@@ -166,9 +166,9 @@ impl Gait {
     pub fn arm_swing(self) -> f32 {
         match self {
             Gait::Idle => 0.0,
-            Gait::Walk => 0.3,
+            Gait::Walk => 0.35,
             Gait::Run => 0.6,
-            Gait::Sprint => 0.8,
+            Gait::Sprint => 1.0,
         }
     }
 
@@ -176,9 +176,9 @@ impl Gait {
     pub fn spine_lean(self) -> f32 {
         match self {
             Gait::Idle => 0.0,
-            Gait::Walk => 0.03,
+            Gait::Walk => 0.04,
             Gait::Run => 0.08,
-            Gait::Sprint => 0.14,
+            Gait::Sprint => 0.20, // aggressive forward lean at sprint
         }
     }
 
@@ -189,18 +189,18 @@ impl Gait {
             Gait::Idle => 0.20,   // standing still — tips easily
             Gait::Walk => 0.30,
             Gait::Run => 0.40,    // wider dynamic stance
-            Gait::Sprint => 0.50, // momentum carries through mild lean
+            Gait::Sprint => 0.60, // momentum carries through mild lean
         }
     }
 
-    /// Speed thresholds with hysteresis for transition
+    /// Speed thresholds with hysteresis for animation gait transition
     /// Returns (enter_speed, exit_speed) — enter > exit prevents flickering
     pub fn speed_range(self) -> (f32, f32) {
         match self {
             Gait::Idle => (0.0, 0.0),
-            Gait::Walk => (0.3, 0.15),
-            Gait::Run => (2.5, 2.0),
-            Gait::Sprint => (4.5, 3.8),
+            Gait::Walk => (0.5, 0.3),    // start walk animation at 0.5 m/s
+            Gait::Run => (2.5, 1.8),     // transition to run above ~2.5 m/s
+            Gait::Sprint => (5.5, 4.5),  // transition to sprint above ~5.5 m/s
         }
     }
 
@@ -777,6 +777,111 @@ impl Skeleton {
     /// This is the actual "legs pushing on ground" force.
     ///
     /// Speed is EMERGENT from the gait's stride parameters (frequency × length),
+    /// Animate upper body while driving based on suspension state.
+    /// Produces lateral sway, pitch from braking/acceleration, steering lean, and head stabilization.
+    /// `suspension_comp`: per-wheel compression [FL, FR, RL, RR]
+    /// `speed`: vehicle forward speed (m/s)
+    /// `steer`: steering input (-1..1, negative=left, positive=right)
+    /// Optionally call with vehicle world pos/rot for steering wheel IK (Phase 4).
+    pub fn step_driving_animation(&mut self, suspension_comp: &[f32; 4], speed: f32, steer: f32, _dt: f32) {
+        use BoneId::*;
+
+        // Average suspension compression → vertical bounce via Hips offset
+        let avg = (suspension_comp[0] + suspension_comp[1] + suspension_comp[2] + suspension_comp[3]) * 0.25;
+        let rest = 0.35; // SuspensionParams default rest_length
+        let vert_offset = (avg - rest * 0.5) * 0.15;
+        self.bones[Hips as usize].local_pos[1] = 0.95 + vert_offset;
+
+        // Lateral sway: left vs right suspension diff → Spine/Chest roll
+        let left_comp = (suspension_comp[0] + suspension_comp[2]) * 0.5;
+        let right_comp = (suspension_comp[1] + suspension_comp[3]) * 0.5;
+        let roll = (left_comp - right_comp) * 0.08; // subtle roll angle
+
+        // Pitch: front vs rear diff → Spine forward/backward lean
+        let front_comp = (suspension_comp[0] + suspension_comp[1]) * 0.5;
+        let rear_comp = (suspension_comp[2] + suspension_comp[3]) * 0.5;
+        let pitch = (front_comp - rear_comp) * 0.06; // braking pitches forward
+
+        // Steering lean: lean into turns at speed
+        let steer_lean = steer * speed.abs().min(20.0) * 0.003;
+
+        // Apply to Spine: roll + pitch
+        self.bones[Spine as usize].local_rot = quat_mul(
+            quat_from_axis_angle([0.0, 0.0, 1.0], roll + steer_lean),
+            quat_from_axis_angle([1.0, 0.0, 0.0], pitch),
+        );
+
+        // Chest: amplify the sway slightly
+        self.bones[Chest as usize].local_rot = quat_mul(
+            quat_from_axis_angle([0.0, 0.0, 1.0], (roll + steer_lean) * 0.5),
+            quat_from_axis_angle([1.0, 0.0, 0.0], pitch * 0.5),
+        );
+
+        // Head stabilization: counter-rotate to stay upright (vestibulo-ocular reflex)
+        // Head compensates ~60% of body roll and ~40% of pitch
+        let head_roll = -(roll + steer_lean) * 0.9;
+        let head_pitch = -pitch * 0.6;
+        self.bones[Neck as usize].local_rot = QUAT_IDENTITY;
+        self.bones[Head as usize].local_rot = quat_mul(
+            quat_from_axis_angle([0.0, 0.0, 1.0], head_roll),
+            quat_from_axis_angle([1.0, 0.0, 0.0], head_pitch),
+        );
+
+        // Arms: relax into a neutral driving position (slightly forward, hands at ~10-2 o'clock)
+        // Upper arms angle forward-down slightly
+        let arm_pitch = -0.5; // ~30° forward
+        self.bones[LeftUpperArm as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], arm_pitch);
+        self.bones[RightUpperArm as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], arm_pitch);
+        // Forearms bend at elbow ~90°
+        let elbow_bend = -1.2; // ~70° bend
+        self.bones[LeftForearm as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], elbow_bend);
+        self.bones[RightForearm as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], elbow_bend);
+
+        // Legs: seated position (thighs forward, knees bent)
+        let thigh_angle = 1.4; // ~80° forward
+        let knee_bend = -1.8;  // ~100° bend
+        self.bones[LeftUpperLeg as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], thigh_angle);
+        self.bones[LeftLowerLeg as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], knee_bend);
+        self.bones[RightUpperLeg as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], thigh_angle);
+        self.bones[RightLowerLeg as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], knee_bend);
+        self.bones[LeftFoot as usize].local_rot = QUAT_IDENTITY;
+        self.bones[RightFoot as usize].local_rot = QUAT_IDENTITY;
+    }
+
+    /// Apply steering wheel arm IK after step_driving_animation + compute_world_transforms.
+    /// `wheel_pos`: world-space steering wheel center
+    /// `steer_angle`: current steering wheel rotation (radians, from steer_input * max_steer)
+    pub fn apply_steering_wheel_ik(&mut self, wheel_pos: Vec3, steer_angle: f32) {
+        use BoneId::*;
+        let upper_len = self.bones[LeftUpperArm as usize].length;
+        let lower_len = self.bones[LeftForearm as usize].length;
+
+        // Steering wheel grip points rotate with the wheel
+        let (sin_s, cos_s) = steer_angle.sin_cos();
+        // Left hand at 10 o'clock, right at 2 o'clock positions on wheel (radius ~0.17m)
+        let grip_r = 0.17;
+        let left_offset = [-grip_r * cos_s, grip_r * sin_s, 0.0];
+        let right_offset = [grip_r * cos_s, -grip_r * sin_s, 0.0];
+
+        let left_target = v3_add(wheel_pos, left_offset);
+        let right_target = v3_add(wheel_pos, right_offset);
+
+        // Pole direction: forward-down (elbows point forward and slightly down)
+        let pole = [0.0, -0.3, -1.0];
+
+        // Left arm IK
+        let left_shoulder = self.bones[LeftUpperArm as usize].world_pos;
+        let (l_upper, l_lower) = solve_two_bone_ik(left_shoulder, left_target, upper_len, lower_len, pole);
+        self.bones[LeftUpperArm as usize].world_rot = l_upper;
+        self.bones[LeftForearm as usize].world_rot = l_lower;
+
+        // Right arm IK
+        let right_shoulder = self.bones[RightUpperArm as usize].world_pos;
+        let (r_upper, r_lower) = solve_two_bone_ik(right_shoulder, right_target, upper_len, lower_len, pole);
+        self.bones[RightUpperArm as usize].world_rot = r_upper;
+        self.bones[RightForearm as usize].world_rot = r_lower;
+    }
+
     /// NOT from an externally imposed target. The gait determines how fast legs pump;
     /// the surface friction caps how much of that force translates to movement.
     ///
@@ -792,7 +897,7 @@ impl Skeleton {
         }
 
         // Speed emerges from gait: stride_freq × stride_len
-        // Walk: 2.8 × 0.35 = 0.98 m/s, Run: 4.5 × 0.55 = 2.475 m/s, Sprint: 6.0 × 0.70 = 4.2 m/s
+        // Walk: 2.5 × 0.89 = 2.22 m/s (8 km/h), Run: 3.0 × 1.02 = 3.06 m/s (11 km/h), Sprint: 4.5 × 1.73 = 7.78 m/s (28 km/h)
         let desired_speed = desired_gait.natural_speed();
 
         // Average slope grip from grounded feet (Y component of surface normal)
@@ -929,6 +1034,34 @@ impl Skeleton {
             self.bones[i].world_rot = quat_slerp(self.bones[i].world_rot, anim_bones[i].world_rot, t);
             // Dampen velocities as blend increases
             self.bones[i].vel = v3_scale(self.bones[i].vel, 1.0 - t);
+        }
+
+        // Ground-bracing IK: during early recovery (blend < 0.5), arms reach toward ground
+        if t < 0.5 {
+            let brace_strength = 1.0 - t * 2.0; // 1.0 at blend=0, 0 at blend=0.5
+            let hips_pos = self.bones[BoneId::Hips as usize].world_pos;
+            let ground_y = hips_pos[1] - 0.9; // approximate ground below hips
+            let upper_len = self.bones[BoneId::LeftUpperArm as usize].length;
+            let lower_len = self.bones[BoneId::LeftForearm as usize].length;
+
+            for side in 0..2 {
+                let upper_id = if side == 0 { BoneId::LeftUpperArm } else { BoneId::RightUpperArm };
+                let lower_id = if side == 0 { BoneId::LeftForearm } else { BoneId::RightForearm };
+                let shoulder_pos = self.bones[upper_id as usize].world_pos;
+                // Target: ground below shoulder, slightly forward
+                let target = [shoulder_pos[0], ground_y, shoulder_pos[2] - 0.1];
+                let pole = [0.0, 1.0, 0.0]; // elbows up
+                let (upper_rot, lower_rot) = solve_two_bone_ik(
+                    shoulder_pos, target, upper_len, lower_len, pole,
+                );
+                // Blend IK rotations with current ragdoll rotations
+                self.bones[upper_id as usize].world_rot = quat_slerp(
+                    self.bones[upper_id as usize].world_rot, upper_rot, brace_strength * 0.6,
+                );
+                self.bones[lower_id as usize].world_rot = quat_slerp(
+                    self.bones[lower_id as usize].world_rot, lower_rot, brace_strength * 0.6,
+                );
+            }
         }
     }
 
