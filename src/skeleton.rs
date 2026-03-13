@@ -146,6 +146,12 @@ impl Gait {
         }
     }
 
+    /// Natural speed for this gait: emerges from stride frequency × stride length.
+    /// This is the speed the character achieves when legs are pumping at full cadence.
+    pub fn natural_speed(self) -> f32 {
+        self.stride_freq() * self.stride_len()
+    }
+
     /// Foot lift height during swing phase (meters)
     pub fn foot_lift(self) -> f32 {
         match self {
@@ -184,6 +190,39 @@ impl Gait {
             Gait::Walk => (0.3, 0.15),
             Gait::Run => (2.5, 2.0),
             Gait::Sprint => (4.5, 3.8),
+        }
+    }
+
+    /// All animation parameters as a tuple for interpolation during gait transitions
+    fn params(self) -> GaitParams {
+        GaitParams {
+            stride_freq: self.stride_freq(),
+            stride_len: self.stride_len(),
+            foot_lift: self.foot_lift(),
+            arm_swing: self.arm_swing(),
+            spine_lean: self.spine_lean(),
+        }
+    }
+}
+
+/// Snapshot of gait animation parameters for smooth blending between gaits
+#[derive(Clone, Copy)]
+struct GaitParams {
+    stride_freq: f32,
+    stride_len: f32,
+    foot_lift: f32,
+    arm_swing: f32,
+    spine_lean: f32,
+}
+
+impl GaitParams {
+    fn lerp(a: &GaitParams, b: &GaitParams, t: f32) -> GaitParams {
+        GaitParams {
+            stride_freq: a.stride_freq + (b.stride_freq - a.stride_freq) * t,
+            stride_len: a.stride_len + (b.stride_len - a.stride_len) * t,
+            foot_lift: a.foot_lift + (b.foot_lift - a.foot_lift) * t,
+            arm_swing: a.arm_swing + (b.arm_swing - a.arm_swing) * t,
+            spine_lean: a.spine_lean + (b.spine_lean - a.spine_lean) * t,
         }
     }
 }
@@ -233,6 +272,10 @@ pub struct Skeleton {
     pub total_push_force: Vec3, // accumulated ground reaction force from both feet
     pub gait: Gait,             // current locomotion state (idle/walk/run/sprint)
     pub gait_blend: f32,        // 0..1 blend progress during gait transition
+    prev_gait_params: GaitParams, // snapshot of previous gait's parameters for blending
+    // Jump compression phase
+    pub jump_phase: f32,        // 0 = none, 0→1 = compressing, 1→2 = extending (launch)
+    pub jump_crouch: f32,       // current crouch depth (meters, for visual + force timing)
 }
 
 impl Skeleton {
@@ -290,6 +333,9 @@ impl Skeleton {
             total_push_force: [0.0; 3],
             gait: Gait::Idle,
             gait_blend: 1.0,
+            prev_gait_params: Gait::Idle.params(),
+            jump_phase: 0.0,
+            jump_crouch: 0.0,
         }
     }
 
@@ -351,20 +397,27 @@ impl Skeleton {
         // ── Gait selection with hysteresis (momentum-governed transitions) ──
         let new_gait = select_gait(horiz_speed, self.gait);
         if new_gait != self.gait {
+            // Snapshot current (blended) params before switching
+            let cur = self.gait.params();
+            self.prev_gait_params = if self.gait_blend < 1.0 {
+                GaitParams::lerp(&self.prev_gait_params, &cur, self.gait_blend)
+            } else {
+                cur
+            };
             self.gait = new_gait;
-            self.gait_blend = 0.0; // start blending to new gait
+            self.gait_blend = 0.0; // start blending from old params to new gait
         }
         // Blend rate governed by momentum: heavier/faster = slower transitions
         let blend_rate = 3.0 / (1.0 + horiz_speed * 0.3); // ~3/s idle, ~1.5/s at sprint
         self.gait_blend = (self.gait_blend + blend_rate * dt).min(1.0);
 
-        // Interpolate gait parameters during blend (smooth transitions)
-        let stride_freq = self.gait.stride_freq() * self.gait_blend
-            + self.gait.stride_freq() * (1.0 - self.gait_blend); // converges as blend→1
-        let stride_len = self.gait.stride_len();
-        let foot_lift_h = self.gait.foot_lift();
-        let arm_swing_amp = self.gait.arm_swing();
-        let spine_lean_amt = self.gait.spine_lean();
+        // Interpolate between previous gait params and current gait params
+        let blended = GaitParams::lerp(&self.prev_gait_params, &self.gait.params(), self.gait_blend);
+        let stride_freq = blended.stride_freq;
+        let stride_len = blended.stride_len;
+        let foot_lift_h = blended.foot_lift;
+        let arm_swing_amp = blended.arm_swing;
+        let spine_lean_amt = blended.spine_lean;
 
         // ── Walk phase: leg cadence from gait stride frequency ──
         let freq = if self.gait == Gait::Idle { 0.0 } else { stride_freq };
@@ -595,16 +648,25 @@ impl Skeleton {
     /// Compute ground reaction force for locomotion.
     /// Returns force vector to apply to the character's rigid body.
     /// This is the actual "legs pushing on ground" force.
-    /// `desired_dir`: normalized direction the character wants to move
-    /// `desired_speed`: target speed from input/AI
+    ///
+    /// Speed is EMERGENT from the gait's stride parameters (frequency × length),
+    /// NOT from an externally imposed target. The gait determines how fast legs pump;
+    /// the surface friction caps how much of that force translates to movement.
+    ///
+    /// `desired_dir`: normalized direction the character wants to move (zero = braking)
+    /// `desired_gait`: the gait the character wants to achieve (Walk/Run/Sprint/Idle)
     /// `current_vel`: current body velocity
     /// `mass`: character mass
     /// `surface_friction`: dynamic friction coefficient of the surface (0..1, from material system)
-    pub fn compute_locomotion_force(&self, desired_dir: Vec3, desired_speed: f32, current_vel: Vec3, mass: f32, surface_friction: f32) -> Vec3 {
+    pub fn compute_locomotion_force(&self, desired_dir: Vec3, desired_gait: Gait, current_vel: Vec3, mass: f32, surface_friction: f32) -> Vec3 {
         // No force if no foot is grounded
         if !self.feet[0].grounded && !self.feet[1].grounded {
             return [0.0; 3];
         }
+
+        // Speed emerges from gait: stride_freq × stride_len
+        // Walk: 2.8 × 0.35 = 0.98 m/s, Run: 4.5 × 0.55 = 2.475 m/s, Sprint: 6.0 × 0.70 = 4.2 m/s
+        let desired_speed = desired_gait.natural_speed();
 
         // Average slope grip from grounded feet (Y component of surface normal)
         let mut slope_grip = 0.0f32;
@@ -635,32 +697,56 @@ impl Skeleton {
         };
 
         // Remove normal component from desired direction (project onto surface)
-        let dot_dn = v3_dot(desired_dir, avg_normal);
-        let surface_dir = v3_normalize([
-            desired_dir[0] - avg_normal[0] * dot_dn,
-            desired_dir[1] - avg_normal[1] * dot_dn,
-            desired_dir[2] - avg_normal[2] * dot_dn,
-        ]);
+        let dir_len = v3_len(desired_dir);
+        let surface_dir = if dir_len > 0.01 {
+            let dot_dn = v3_dot(desired_dir, avg_normal);
+            v3_normalize([
+                desired_dir[0] - avg_normal[0] * dot_dn,
+                desired_dir[1] - avg_normal[1] * dot_dn,
+                desired_dir[2] - avg_normal[2] * dot_dn,
+            ])
+        } else {
+            // No desired direction: brake (deceleration)
+            let horiz_vel = [current_vel[0], 0.0, current_vel[2]];
+            let hv_len = v3_len(horiz_vel);
+            if hv_len > 0.1 {
+                v3_scale(horiz_vel, -1.0 / hv_len) // push against current motion
+            } else {
+                return [0.0; 3]; // nearly stopped, no force needed
+            }
+        };
 
         // Current speed along surface direction
         let current_along = v3_dot(current_vel, surface_dir);
-        let speed_error = desired_speed - current_along;
+        let speed_error = if dir_len > 0.01 {
+            desired_speed - current_along
+        } else {
+            // Braking: reduce speed to zero
+            -current_along
+        };
 
         // Ground reaction force: legs push against surface, limited by friction
         // max force = friction_coefficient × normal_force (mass × g)
         let max_push = total_grip * mass * 9.81;
+
+        // Force = gait-driven push magnitude, capped by friction
+        // At the desired gait, legs produce enough force to sustain natural_speed against damping.
+        // The push force per stride is: mass × desired_speed / response_time
+        // On low friction, this is capped → character can't reach full gait speed (emergent)
         let response_time = 0.15;
         let desired_force = mass * speed_error / response_time;
         let clamped_force = desired_force.clamp(-max_push, max_push);
 
         // Scale by walk phase: force peaks when a foot is in push phase
+        // This makes force pulsed per footstep, not continuous — legs actually drive the motion
         let push_scale = if self.total_push_force[0].abs() + self.total_push_force[2].abs() > 0.01 {
             let push_len = v3_len(self.total_push_force);
+            // Foot in push phase contributes more; between pushes, force drops
             push_len.min(1.0) * 0.7 + 0.3
         } else if desired_speed < 0.1 {
-            1.0
+            1.0 // braking: full force always
         } else {
-            0.3
+            0.3 // no foot pushing: reduced force (between stride pushes)
         };
 
         v3_scale(surface_dir, clamped_force * push_scale)

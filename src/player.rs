@@ -53,6 +53,24 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     // Skip walking controls when driving
     if state.player.in_vehicle.is_some() { return; }
 
+    // Player ragdoll: skeleton ragdoll runs, player has no movement control
+    if state.player.skeleton.ragdoll_active {
+        let p = &mut state.player;
+        // Run ragdoll physics
+        p.skeleton.step_ragdoll(&state.terrain, dt);
+        // Sync position to hips
+        let hips = p.skeleton.bones[0].world_pos;
+        p.body.pos = hips;
+        p.x = hips[0];
+        p.y = hips[1];
+        p.z = hips[2];
+        // Blend recovery when timer expired
+        p.skeleton.blend_from_ragdoll(p.body.pos, p.rot_y, dt);
+        // Update ragdoll timer
+        p.skeleton.ragdoll_timer -= dt;
+        return;
+    }
+
     // Camera forward/right projected to XZ plane
     let cam_yaw = state.camera.yaw;
     let fwd_x = -cam_yaw.sin();
@@ -82,35 +100,78 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     let p = &mut state.player;
 
     p.sprinting = state.keybinds.is_pressed(Action::Sprint, &state.keys) && p.stamina > 0.0 && moving;
-    let speed = if p.sprinting { SPRINT_SPEED } else { PLAYER_SPEED };
+    // Gait selected from input intent — speed emerges from gait parameters, not a lookup table
+    let desired_gait = if !moving {
+        crate::skeleton::Gait::Idle
+    } else if p.sprinting {
+        crate::skeleton::Gait::Sprint
+    } else {
+        crate::skeleton::Gait::Run // default walk key = run gait
+    };
 
-    // Jump: leg compression then extension launch
-    // On press: compress legs (crouch briefly), then apply upward ground reaction force
+    // Jump: two-phase leg compression → extension ground reaction force
+    // Phase 0→1 = compression (crouch, ~0.1s), Phase 1→2 = extension (launch force applied over ~0.05s)
     let jump_now = state.keybinds.is_pressed(Action::Jump, &state.keys);
     let jump_prev = state.keybinds.is_pressed(Action::Jump, &state.prev_keys);
-    if jump_now && !jump_prev && p.on_ground {
-        // Ground reaction force: legs extend against surface, launching body upward
-        // Force direction biased by surface normal (jumping on a slope launches at an angle)
-        let ground_n = state.terrain.normal_at(p.body.pos[0], p.body.pos[2]);
-        // Blend between pure up and surface normal for launch direction
-        let launch_dir = crate::math::v3_normalize([
-            ground_n[0] * 0.3,
-            ground_n[1].max(0.7),
-            ground_n[2] * 0.3,
-        ]);
-        // Impulse = mass * desired_velocity (conservation of momentum)
-        let impulse_mag = JUMP_VELOCITY * p.body.mass;
-        p.body.apply_impulse([
-            launch_dir[0] * impulse_mag / p.body.mass,
-            launch_dir[1] * impulse_mag / p.body.mass,
-            launch_dir[2] * impulse_mag / p.body.mass,
-        ]);
-        p.on_ground = false;
+    if jump_now && !jump_prev && p.on_ground && p.skeleton.jump_phase <= 0.0 {
+        p.skeleton.jump_phase = 0.001; // begin compression
+    }
+    // Advance jump phases
+    if p.skeleton.jump_phase > 0.0 && p.skeleton.jump_phase < 1.0 {
+        // Compression phase: legs bend, body lowers (~0.1s duration)
+        let compress_speed = 10.0; // phase units/sec (0→1 in 0.1s)
+        p.skeleton.jump_phase += compress_speed * dt;
+        p.skeleton.jump_crouch = p.skeleton.jump_phase.min(1.0) * 0.08; // up to 8cm crouch
+        if p.skeleton.jump_phase >= 1.0 {
+            p.skeleton.jump_phase = 1.0; // transition to extension
+        }
+    }
+    if p.skeleton.jump_phase >= 1.0 && p.skeleton.jump_phase < 2.0 {
+        // Extension phase: legs push against ground, applying upward force over ~0.05s
+        let extend_speed = 20.0; // phase units/sec (1→2 in 0.05s)
+        let prev_phase = p.skeleton.jump_phase;
+        p.skeleton.jump_phase += extend_speed * dt;
+        p.skeleton.jump_crouch = (2.0 - p.skeleton.jump_phase.min(2.0)) * 0.08;
+
+        // Apply ground reaction force progressively (not instant velocity set)
+        // Total impulse = mass × JUMP_VELOCITY, spread over extension duration
+        if p.on_ground {
+            let ground_n = state.terrain.normal_at(p.body.pos[0], p.body.pos[2]);
+            let launch_dir = crate::math::v3_normalize([
+                ground_n[0] * 0.3,
+                ground_n[1].max(0.7),
+                ground_n[2] * 0.3,
+            ]);
+            // Force = impulse / extension_duration, applied each frame
+            // Total impulse over extension phase = mass * JUMP_VELOCITY
+            let phase_fraction = (p.skeleton.jump_phase - prev_phase).min(1.0);
+            let force_mag = JUMP_VELOCITY * p.body.mass / (1.0 / extend_speed); // force = impulse / duration
+            let frame_force = force_mag * phase_fraction;
+            p.body.apply_force([
+                launch_dir[0] * frame_force,
+                launch_dir[1] * frame_force,
+                launch_dir[2] * frame_force,
+            ]);
+        }
+
+        if p.skeleton.jump_phase >= 2.0 {
+            p.skeleton.jump_phase = 0.0;
+            p.skeleton.jump_crouch = 0.0;
+            p.on_ground = false;
+        }
     }
 
     // Query surface material for friction
     let surface = surface_at(p.body.pos[0], p.body.pos[2], &state.road_network);
     let surface_friction = crate::material::material_for_surface(surface).dynamic_friction;
+
+    // Landing detection: check for ragdoll/stumble BEFORE animation consumes landing_speed
+    if p.on_ground && p.skeleton.should_ragdoll_from_fall() {
+        // Player ragdoll from high fall (landing speed < -10 m/s)
+        let impulse = [p.body.vel[0] * 0.5, 0.0, p.body.vel[2] * 0.5];
+        p.skeleton.activate_ragdoll([p.x, p.y, p.z], p.rot_y, impulse);
+        p.skeleton.ragdoll_timer = RAGDOLL_DURATION;
+    }
 
     if moving {
         let dx = move_x / len;
@@ -120,10 +181,10 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         let target_rot = (-dx).atan2(-dz);
         smooth_rotate(&mut p.rot_y, target_rot, TURN_RATE, dt);
 
-        // Locomotion: legs push against ground surface via skeleton ground reaction force
+        // Locomotion: legs push against ground — speed emerges from gait stride parameters
         let desired_dir = [dx, 0.0, dz];
         let walk_force = p.skeleton.compute_locomotion_force(
-            desired_dir, speed, p.body.vel, p.body.mass, surface_friction,
+            desired_dir, desired_gait, p.body.vel, p.body.mass, surface_friction,
         );
         p.body.apply_force(walk_force);
     } else {
@@ -133,7 +194,7 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
 
         // Deceleration: legs actively brake by pushing against ground
         let decel_force = p.skeleton.compute_locomotion_force(
-            [0.0, 0.0, 0.0], 0.0, p.body.vel, p.body.mass, surface_friction,
+            [0.0, 0.0, 0.0], crate::skeleton::Gait::Idle, p.body.vel, p.body.mass, surface_friction,
         );
         p.body.apply_force(decel_force);
     }
