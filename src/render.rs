@@ -621,9 +621,10 @@ pub fn sys_render(
 
     // Dynamic entities: generate into scratch buffer, render once
     scratch.clear();
+    let is_night = hour < 6.0 || hour > 20.0;
     for (vi, v) in world.vehicles.iter().enumerate() {
         let show_interior = player.in_vehicle == Some(vi);
-        gen_vehicle_mesh(v, scratch, show_interior);
+        gen_vehicle_mesh(v, scratch, show_interior, is_night);
     }
     for npc in &world.npcs {
         if npc.state == NpcState::Sleeping { continue; }
@@ -641,6 +642,16 @@ pub fn sys_render(
     }
     if player.in_vehicle.is_none() {
         gen_player_mesh(player, scratch);
+    }
+    // Night-time street light glow halos (dynamic — only rendered at night)
+    if is_night {
+        for sl in &world.street_lights {
+            let dx = sl.x - eye[0];
+            let dz = sl.z - eye[2];
+            if dx * dx + dz * dz > 150.0 * 150.0 { continue; } // distance cull
+            let gy = sl.ground_y;
+            mesh::glow_halo(scratch, sl.x, gy + 5.2, sl.z, 0.2, 1.5, 8, 0x00FFDD88);
+        }
     }
     render_tris(fb, &vp, scratch, eye, &tc, fw, fh);
 }
@@ -3005,9 +3016,49 @@ pub fn gen_head_standalone(tris: &mut Vec<WorldTri>, face: &FaceSliders, skin: u
     }
 }
 
-pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bool) {
+pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bool, headlights: bool) {
     let base = tris.len();
     gen_rs5_body(tris, v.color, show_interior);
+    // Night-time headlight + tail light glow (only added when lights are on)
+    if headlights {
+        // Headlight glow — directional forward cones
+        for &side in &[-1.0f32, 1.0] {
+            let hx = side * 0.72;
+            mesh::glow_directional(tris, hx, 0.66, -2.36, [0.0, 0.0, -1.0],
+                0.06, 0.4, 8, 0x00FFEE88);
+        }
+        // Tail light glow — directional rear cones (red)
+        for &side in &[-1.0f32, 1.0] {
+            mesh::glow_directional(tris, side * 0.64, 0.74, 2.35, [0.0, 0.0, 1.0],
+                0.04, 0.25, 6, 0x00FF2222);
+        }
+    }
+    // Deformation visual: displace outer shell vertices inward based on crash damage
+    let dmg = v.deformation.damage_fraction();
+    if dmg > 0.01 {
+        for tri in &mut tris[base..] {
+            for vert in &mut tri.v {
+                // Only displace vertices on the outer body shell (horiz dist > 0.4 from center)
+                let dx = vert[0];
+                let dz = vert[2];
+                let horiz_dist = (dx * dx + dz * dz).sqrt();
+                if horiz_dist > 0.4 && vert[1] > 0.1 && vert[1] < 1.5 {
+                    let angle = dz.atan2(dx);
+                    let deform = v.deformation.sample_at_angle(angle);
+                    if deform > 0.001 {
+                        // Push vertex inward toward center, scaled by distance from center
+                        let edge_frac = ((horiz_dist - 0.4) / 0.6).min(1.0);
+                        let disp = deform * edge_frac;
+                        let inv_dist = 1.0 / horiz_dist;
+                        vert[0] -= dx * inv_dist * disp;
+                        vert[2] -= dz * inv_dist * disp;
+                        // Slight downward crush for heavy impacts
+                        vert[1] -= deform * edge_frac * 0.15;
+                    }
+                }
+            }
+        }
+    }
     let s = v.scale;
     let ch = ((v.color >> 4) ^ (v.color >> 12) ^ (v.color >> 20)) & 0xFF;
     let sx = s * (1.0 + (ch as f32 - 128.0) * 0.0008);
@@ -3949,7 +4000,8 @@ pub fn generate_dynamic_gpu_vertices(
         if dist_sq > LOD_VEH_DIST_SQ { continue; }
         if dist_sq < LOD_VEH_FULL_SQ {
             let show_interior = player.in_vehicle == Some(vi);
-            gen_vehicle_mesh(v, scratch, show_interior);
+            let is_night = hour < 6.0 || hour > 20.0;
+            gen_vehicle_mesh(v, scratch, show_interior, is_night);
         } else if dist_sq < LOD_VEH_MID_SQ {
             gen_vehicle_mesh_mid(v, scratch);
         } else {
@@ -3988,6 +4040,16 @@ pub fn generate_dynamic_gpu_vertices(
     }
     if player.in_vehicle.is_none() {
         gen_player_mesh(player, scratch);
+    }
+    // Night-time street light glow halos (dynamic — only rendered at night)
+    if is_night {
+        for sl in &world.street_lights {
+            let dx = sl.x - eye[0];
+            let dz = sl.z - eye[2];
+            if dx * dx + dz * dz > 150.0 * 150.0 { continue; }
+            let gy = sl.ground_y;
+            mesh::glow_halo(scratch, sl.x, gy + 5.2, sl.z, 0.2, 1.5, 8, 0x00FFDD88);
+        }
     }
     // Convert to GPU format (raw material colors — GPU shader does lighting)
     out.reserve(scratch.len() * 3 + 4000); // +sky dome, clouds, sun/moon glow, stars

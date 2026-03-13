@@ -687,6 +687,7 @@ fn make_vehicle(color: u32) -> state::Vehicle {
         },
         drivetrain: clauding::tire::Drivetrain::new(350.0, 35.0),
         deformation: clauding::deform::VehicleDeformation::new(),
+        surface_override: None,
     }
 }
 
@@ -1470,13 +1471,13 @@ fn main() {
 
     let vehicle = make_vehicle(0xFFCC3333);
     tris.clear();
-    render::gen_vehicle_mesh(&vehicle, &mut tris, false);
+    render::gen_vehicle_mesh(&vehicle, &mut tris, false, false);
     let img = render_sheet(&mut gpu_ctx, &tris, 0.7, 5.5, "Vehicle");
     save_png(&img, IMG_W, IMG_H, "debug/model_vehicle.png");
 
     let vehicle_interior = make_vehicle(0xFF3333CC);
     tris.clear();
-    render::gen_vehicle_mesh(&vehicle_interior, &mut tris, true);
+    render::gen_vehicle_mesh(&vehicle_interior, &mut tris, true, false);
     let img = render_sheet(&mut gpu_ctx, &tris, 0.7, 5.5, "Vehicle Interior");
     save_png(&img, IMG_W, IMG_H, "debug/model_vehicle_int.png");
 
