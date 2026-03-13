@@ -61,7 +61,11 @@ fn main() {
     let h = window.height();
     eprintln!("Window: {}x{}", w, h);
 
-    let world_seed: u64 = 42;
+    let world_seed: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(42);
+    eprintln!("World seed: {}", world_seed);
     let mut game = state::GameState::init(w, h, world_seed);
 
     // Init GPU graphics pipeline
@@ -108,8 +112,38 @@ fn main() {
             &mut game.invert_mouse_y,
             &game.keys,
             &game.prev_keys,
+            game.world_seed,
         );
         if quit { break; }
+
+        // World regeneration (triggered by New World menu)
+        if let Some(new_seed) = game.menu.regenerate_seed.take() {
+            let saved_keybinds = game.keybinds.clone();
+            let saved_sensitivity = game.mouse_sensitivity;
+            let saved_invert_x = game.invert_mouse_x;
+            let saved_invert_y = game.invert_mouse_y;
+            let saved_keys = game.keys;
+            let saved_prev_keys = game.prev_keys;
+
+            game = state::GameState::init(w, h, new_seed);
+
+            game.keybinds = saved_keybinds;
+            game.mouse_sensitivity = saved_sensitivity;
+            game.invert_mouse_x = saved_invert_x;
+            game.invert_mouse_y = saved_invert_y;
+            game.keys = saved_keys;
+            game.prev_keys = saved_prev_keys;
+
+            // Re-upload static GPU vertices
+            if gpu.as_ref().is_some_and(|g| g.has_graphics()) {
+                render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
+                gpu.as_mut().unwrap().upload_static_vertices(&gpu_static_verts);
+            }
+            particles = particle::ParticleSystem::new(&mut gpu, new_seed.wrapping_add(0xBEEF));
+            accumulator = 0.0;
+            eprintln!("World seed: {}", new_seed);
+            continue; // skip rest of this frame
+        }
 
         let now = Instant::now();
         let frame_dt = now.duration_since(last_frame).as_secs_f32();

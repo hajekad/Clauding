@@ -38,6 +38,7 @@ impl Action {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct KeyBinds {
     pub binds: [(Action, usize); 8],
 }

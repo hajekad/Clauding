@@ -48,7 +48,7 @@ const JOB_COLOR: u32 = 0xFF44DDFF;
 const MINIMAP_INTERACTIBLE: u32 = 0xFF44CCCC;
 
 // 3x5 pixel font for digits 0-9, symbols, and A-Z
-const FONT: [[u8; 5]; 42] = [
+const FONT: [[u8; 5]; 43] = [
     [0b111, 0b101, 0b101, 0b101, 0b111], // 0
     [0b010, 0b110, 0b010, 0b010, 0b111], // 1
     [0b111, 0b001, 0b111, 0b100, 0b111], // 2
@@ -93,6 +93,7 @@ const FONT: [[u8; 5]; 42] = [
     [0b000, 0b000, 0b111, 0b000, 0b000], // - (dash) 39
     [0b000, 0b010, 0b000, 0b010, 0b000], // : (colon) 40
     [0b010, 0b001, 0b010, 0b100, 0b010], // > (arrow) 41
+    [0b000, 0b000, 0b000, 0b000, 0b111], // _ (underscore) 42
 ];
 
 const TIME_COLOR: u32 = 0xFFFFFFFF;
@@ -366,6 +367,7 @@ fn ascii_to_font_idx(c: u8) -> Option<usize> {
         b'[' => Some(14), // reuse C glyph shape for [
         b']' => Some(15), // reuse D glyph shape for ]
         b'?' => Some(28),  // reuse Q shape
+        b'_' => Some(42),
         _ => Some(38), // space for unknown
     }
 }
