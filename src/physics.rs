@@ -183,7 +183,7 @@ impl Contact {
 // ── Integration ──────────────────────────────────────────────────────────
 
 const GRAVITY: Vec3 = [0.0, -9.81, 0.0];
-const LINEAR_DAMPING: f32 = 0.01;
+const LINEAR_DAMPING: f32 = 0.0001;
 const ANGULAR_DAMPING: f32 = 0.02;
 
 /// Semi-implicit Euler: integrate forces → velocity → position
@@ -236,9 +236,8 @@ const SLOP: f32 = 0.005; // penetration tolerance before correction
 /// Contacts reference bodies by index; usize::MAX means the world (infinite mass).
 ///
 /// Currently: ground contact for characters/vehicles is handled by direct enforcement
-/// (simpler, stable). This solver is infrastructure for inter-body contact resolution
-/// (e.g., stacking objects, character standing on vehicle) — not yet wired in.
-#[allow(dead_code)]
+/// (simpler, stable). This solver handles inter-body contact resolution
+/// (vehicle-vehicle, character-on-vehicle stacking).
 pub fn solve_contacts(bodies: &mut [RigidBody], contacts: &mut [Contact], dt: f32) {
     if contacts.is_empty() || dt < 1e-8 { return; }
 
@@ -251,7 +250,6 @@ pub fn solve_contacts(bodies: &mut [RigidBody], contacts: &mut [Contact], dt: f3
     }
 }
 
-#[allow(dead_code)]
 fn solve_one(bodies: &mut [RigidBody], c: &mut Contact, inv_dt: f32) {
     let n = c.normal;
 
@@ -381,8 +379,8 @@ pub fn ground_contact(
 // ── Box vs Box collision (SAT) ───────────────────────────────────────────
 
 /// Test two oriented boxes for overlap. Returns contact if overlapping.
-/// Infrastructure for full 3D contact pipeline (vehicle-vehicle currently uses 2D OBB in collision.rs).
-#[allow(dead_code)]
+/// 3D contact narrow phase for vehicle-vehicle collisions.
+/// Uses 6 face axes (sufficient for box-vs-box when mostly axis-aligned).
 pub fn box_vs_box(
     idx_a: usize, body_a: &RigidBody, half_a: Vec3,
     idx_b: usize, body_b: &RigidBody, half_b: Vec3,
@@ -435,7 +433,6 @@ pub fn box_vs_box(
     Some(Contact::new(idx_a, idx_b, contact_point, best_axis, min_pen, mat))
 }
 
-#[allow(dead_code)]
 fn test_sat_axis(
     axis: Vec3, d: Vec3,
     axes_a: &[Vec3; 3], halfs_a: &[f32; 3],
@@ -542,5 +539,134 @@ pub fn capsule_ground_contact(
         Some(Contact::new(body_idx, usize::MAX, point, normal, pen, mat))
     } else {
         None
+    }
+}
+
+// ── Character-on-vehicle surface test ────────────────────────────────────
+
+/// Test if a point (character feet position) is on top of a vehicle.
+/// Returns Some((surface_normal, surface_y_world)) if the point XZ is within
+/// the vehicle's OBB footprint. Used for characters standing on moving vehicles.
+pub fn point_on_vehicle_surface(
+    point: Vec3,
+    veh_pos: Vec3,
+    veh_rot_y: f32,
+    half_w: f32,
+    half_d: f32,
+    roof_height: f32,
+) -> Option<(Vec3, f32)> {
+    // Transform point into vehicle local space (XZ only)
+    let dx = point[0] - veh_pos[0];
+    let dz = point[2] - veh_pos[2];
+    let (sin_r, cos_r) = veh_rot_y.sin_cos();
+    let local_x = dx * cos_r + dz * sin_r;
+    let local_z = -dx * sin_r + dz * cos_r;
+
+    // Check if within OBB footprint (with small margin for roof edge)
+    if local_x.abs() > half_w + 0.05 || local_z.abs() > half_d + 0.05 {
+        return None;
+    }
+
+    // Check vertical: character feet must be near roof height (within 0.5m above)
+    let surface_y = veh_pos[1] + roof_height;
+    let feet_y = point[1];
+    if feet_y < surface_y - 0.1 || feet_y > surface_y + 0.5 {
+        return None;
+    }
+
+    Some(([0.0, 1.0, 0.0], surface_y))
+}
+
+// ── Spatial grid (broad phase) ──────────────────────────────────────────
+
+/// Entity type tag for spatial grid entries
+#[derive(Clone, Copy, PartialEq)]
+pub enum EntityKind {
+    Vehicle(usize),
+    Npc(usize),
+    Player,
+}
+
+/// Uniform grid spatial hash for broad-phase collision.
+/// 500m world centered at origin → covers -260 to +260 with 10m cells.
+pub struct SpatialGrid {
+    cell_size: f32,
+    grid_w: usize,
+    world_min: f32,
+    cells: Vec<Vec<EntityKind>>,
+}
+
+const GRID_CELL_SIZE: f32 = 10.0;
+const GRID_W: usize = 54; // covers 540m → -270 to +270
+const GRID_WORLD_MIN: f32 = -270.0;
+
+impl SpatialGrid {
+    pub fn new() -> Self {
+        let total = GRID_W * GRID_W;
+        let mut cells = Vec::with_capacity(total);
+        for _ in 0..total {
+            cells.push(Vec::new());
+        }
+        SpatialGrid {
+            cell_size: GRID_CELL_SIZE,
+            grid_w: GRID_W,
+            world_min: GRID_WORLD_MIN,
+            cells,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        for cell in &mut self.cells {
+            cell.clear();
+        }
+    }
+
+    fn cell_coords(&self, x: f32, z: f32) -> (usize, usize) {
+        let cx = ((x - self.world_min) / self.cell_size) as isize;
+        let cz = ((z - self.world_min) / self.cell_size) as isize;
+        let cx = cx.clamp(0, self.grid_w as isize - 1) as usize;
+        let cz = cz.clamp(0, self.grid_w as isize - 1) as usize;
+        (cx, cz)
+    }
+
+    pub fn insert(&mut self, x: f32, z: f32, entity: EntityKind) {
+        let (cx, cz) = self.cell_coords(x, z);
+        self.cells[cz * self.grid_w + cx].push(entity);
+    }
+
+    /// Collect all entities in the 3x3 cell neighborhood around (x, z)
+    pub fn query(&self, x: f32, z: f32, buf: &mut Vec<EntityKind>) {
+        buf.clear();
+        let (cx, cz) = self.cell_coords(x, z);
+        let gw = self.grid_w;
+        let min_x = if cx > 0 { cx - 1 } else { 0 };
+        let max_x = if cx + 1 < gw { cx + 1 } else { gw - 1 };
+        let min_z = if cz > 0 { cz - 1 } else { 0 };
+        let max_z = if cz + 1 < gw { cz + 1 } else { gw - 1 };
+        for nz in min_z..=max_z {
+            let row = nz * gw;
+            for nx in min_x..=max_x {
+                buf.extend_from_slice(&self.cells[row + nx]);
+            }
+        }
+    }
+}
+
+/// Contact accumulation buffer for the sequential impulse solver
+pub struct ContactBuffer {
+    pub contacts: Vec<Contact>,
+}
+
+impl ContactBuffer {
+    pub fn new() -> Self {
+        ContactBuffer { contacts: Vec::new() }
+    }
+
+    pub fn clear(&mut self) {
+        self.contacts.clear();
+    }
+
+    pub fn push(&mut self, c: Contact) {
+        self.contacts.push(c);
     }
 }
