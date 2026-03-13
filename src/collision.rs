@@ -260,7 +260,7 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
             let time_to_impact = dist / vspeed;
             if time_to_impact < 1.0 {
                 // NPC starts bracing/flinching
-                let threat_dir = [-dir_to_npc[0], 0.0, -dir_to_npc[2]]; // away from vehicle
+                let threat_dir = [-dir_to_npc[0], 0.0, -dir_to_npc[2]]; // toward vehicle (NPC faces incoming threat)
                 world.npcs[ni].skeleton.start_anticipation(threat_dir, time_to_impact);
             }
         }

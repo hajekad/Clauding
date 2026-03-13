@@ -289,8 +289,8 @@ pub struct Skeleton {
     pub jump_phase: f32,        // 0 = none, 0→1 = compressing, 1→2 = extending (launch)
     pub jump_crouch: f32,       // current crouch depth (meters, for visual + force timing)
     // Euphoria-style active ragdoll
-    pub bone_active: [bool; BONE_COUNT],    // per-bone: true = PD motor active, false = passive ragdoll
-    pub bone_target_rot: [Quat; BONE_COUNT], // PD target rotation per bone (world-space)
+    pub bone_active: [bool; BONE_COUNT],      // per-bone: true = spring motor active, false = passive ragdoll
+    pub bone_target_pos: [Vec3; BONE_COUNT],  // target world-space positions for active motors
     pub vehicle_contact: Option<VehicleContact>, // continuous body-on-vehicle contact
     pub anticipation_timer: f32,             // >0 = NPC is bracing/dodging before impact
     pub anticipation_dir: Vec3,              // direction of incoming threat
@@ -308,9 +308,9 @@ pub struct VehicleContact {
     pub time: f32,                  // how long contact has been active
 }
 
-// PD controller gains for active ragdoll motors
-const RAGDOLL_KP: f32 = 200.0;     // proportional gain (stiffness, N·m/rad)
-const RAGDOLL_KD: f32 = 20.0;      // derivative gain (damping, N·m·s/rad)
+// Position-based spring motor gains for active ragdoll
+const RAGDOLL_KP: f32 = 200.0;     // spring stiffness (N/m)
+const RAGDOLL_KD: f32 = 20.0;      // velocity damping (N·s/m)
 
 impl Skeleton {
     /// Create default humanoid skeleton with anatomical proportions.
@@ -372,7 +372,7 @@ impl Skeleton {
             jump_phase: 0.0,
             jump_crouch: 0.0,
             bone_active: [true; BONE_COUNT],
-            bone_target_rot: [QUAT_IDENTITY; BONE_COUNT],
+            bone_target_pos: [[0.0; 3]; BONE_COUNT],
             vehicle_contact: None,
             anticipation_timer: 0.0,
             anticipation_dir: [0.0; 3],
@@ -959,8 +959,8 @@ impl Skeleton {
     }
 
     /// Step ragdoll physics: gravity, active motors, per-bone collision, constraints.
-    /// Euphoria-style: bones with `bone_active[i] == true` have PD motors driving them
-    /// toward `bone_target_rot[i]`, giving "keep head up" / "brace arms" behaviors.
+    /// Euphoria-style: bones with `bone_active[i] == true` have spring motors driving them
+    /// toward `bone_target_pos[i]`, giving "keep head up" / "brace arms" behaviors.
     pub fn step_ragdoll(&mut self, terrain: &crate::state::Terrain, dt: f32) {
         if !self.ragdoll_active { return; }
 
@@ -973,46 +973,16 @@ impl Skeleton {
 
         // Integrate each bone independently
         for i in 0..BONE_COUNT {
-            // Active ragdoll motor: PD controller applies angular correction.
-            // Computes a torque from orientation error, converts to tangential velocity
-            // change at the bone's position (v = ω × r, where r is parent→bone vector).
+            // Active ragdoll motor: position-based spring-damper.
+            // Drives active bones toward target world-space positions.
+            // F = Kp * (target - current) - Kd * velocity
             let motor_vel_change = if self.bone_active[i] && i > 0 {
-                let parent_idx = self.bones[i].parent.unwrap_or(0) as usize;
-                let parent_pos = self.bones[parent_idx].world_pos;
-                let target = self.bone_target_rot[i];
-                let current = self.bones[i].world_rot;
-
-                // Quaternion error: how far current orientation is from target
-                let q_err = quat_mul(target, quat_conjugate(current));
-                let (axis, angle) = quat_to_axis_angle(q_err);
-                // Clamp angle to avoid huge corrections from quaternion wraparound
-                let angle = if angle > std::f32::consts::PI { angle - std::f32::consts::TAU } else { angle };
-
-                // PD torque: τ = Kp * θ_error - Kd * ω (angular velocity damping)
-                let ang_vel_along_axis = v3_dot(self.bones[i].ang_vel, axis);
-                let torque_mag = RAGDOLL_KP * angle - RAGDOLL_KD * ang_vel_along_axis;
-
-                // Angular acceleration: α = τ / I (moment of inertia ≈ m * r²)
-                let lever = v3_len(self.bones[i].local_pos).max(0.05);
-                let inertia = self.bones[i].mass * lever * lever;
-                let ang_accel = torque_mag / inertia.max(0.1);
-
-                // Update angular velocity: ω += α * dt
-                self.bones[i].ang_vel = v3_add(
-                    self.bones[i].ang_vel,
-                    v3_scale(axis, ang_accel * dt),
-                );
-
-                // Convert angular velocity to tangential linear velocity: v = ω × r
-                let r = v3_sub(self.bones[i].world_pos, parent_pos);
-                let r_len = v3_len(r);
-                if r_len > 0.001 {
-                    // Tangential velocity from the angular correction
-                    let omega = v3_scale(axis, ang_accel * dt);
-                    v3_cross(omega, r)
-                } else {
-                    [0.0; 3]
-                }
+                let error = v3_sub(self.bone_target_pos[i], self.bones[i].world_pos);
+                let spring = v3_scale(error, RAGDOLL_KP);
+                let damp = v3_scale(self.bones[i].vel, RAGDOLL_KD);
+                let force = v3_sub(spring, damp);
+                // F = ma → Δv = (F/m) * dt
+                v3_scale(force, dt / self.bones[i].mass.max(0.1))
             } else {
                 [0.0; 3]
             };
@@ -1098,10 +1068,17 @@ impl Skeleton {
                 self.bones[i].world_pos = v3_sub(self.bones[i].world_pos, v3_scale(correction, wi));
                 self.bones[parent_idx].world_pos = v3_add(self.bones[parent_idx].world_pos, v3_scale(correction, wp));
 
-                // Cone constraint
+                // Cone constraint: child direction must stay within cone_angle of parent's axis.
+                // Parent axis derived from grandparent→parent direction (not stale world_rot).
                 let cone_limit = self.bones[i].constraint.cone_angle;
                 if cone_limit < std::f32::consts::PI - 0.01 {
-                    let parent_axis = quat_rotate(self.bones[parent_idx].world_rot, [0.0, -1.0, 0.0]);
+                    let parent_axis = if let Some(gp) = self.bones[parent_idx].parent {
+                        let d = v3_sub(self.bones[parent_idx].world_pos, self.bones[gp as usize].world_pos);
+                        let dl = v3_len(d);
+                        if dl > 0.001 { v3_scale(d, 1.0 / dl) } else { [0.0, -1.0, 0.0] }
+                    } else {
+                        [0.0, -1.0, 0.0] // root: default downward
+                    };
                     let child_dir = v3_sub(self.bones[i].world_pos, self.bones[parent_idx].world_pos);
                     let child_dist = v3_len(child_dir);
                     if child_dist > 0.001 {
@@ -1138,39 +1115,51 @@ impl Skeleton {
         self.ragdoll_timer -= dt;
     }
 
-    /// Update active ragdoll motor targets based on behavioral rules.
-    /// Head: try to stay upright. Arms: brace toward ground when falling.
-    /// Spine: resist extreme bending. Legs: passive unless partial ragdoll.
+    /// Update active ragdoll motor targets: world-space positions that spring motors drive toward.
+    /// Head: stay upright above hips. Arms: brace toward ground when falling.
+    /// Spine: resist collapse, keep torso erect. Legs: default hanging positions.
     fn update_active_targets(&mut self) {
-        // Head: always try to stay upright (look forward/up)
-        self.bone_target_rot[BoneId::Head as usize] = quat_from_axis_angle([1.0, 0.0, 0.0], -0.1);
-        self.bone_target_rot[BoneId::Neck as usize] = QUAT_IDENTITY;
+        let hips = self.bones[BoneId::Hips as usize].world_pos;
 
-        // Spine: resist extreme bending, try to stay roughly aligned
-        self.bone_target_rot[BoneId::Spine as usize] = QUAT_IDENTITY;
-        self.bone_target_rot[BoneId::Chest as usize] = QUAT_IDENTITY;
+        // Hips target = current position (root is physics-driven, no motor on root)
+        self.bone_target_pos[BoneId::Hips as usize] = hips;
 
-        // Arms: brace toward ground when falling (extend arms downward/forward)
+        // Spine chain: keep torso upright above hips
+        self.bone_target_pos[BoneId::Spine as usize] = v3_add(hips, [0.0, 0.15, 0.0]);
+        self.bone_target_pos[BoneId::Chest as usize] = v3_add(hips, [0.0, 0.35, 0.0]);
+        self.bone_target_pos[BoneId::Neck as usize] = v3_add(hips, [0.0, 0.60, 0.0]);
+        self.bone_target_pos[BoneId::Head as usize] = v3_add(hips, [0.0, 0.70, 0.0]);
+
+        // Arms: behavior depends on vertical velocity
         let hips_vel_y = self.bones[BoneId::Hips as usize].vel[1];
         if hips_vel_y < -2.0 {
-            // Falling: extend arms forward and down to brace for impact
-            let brace_angle = ((-hips_vel_y - 2.0) / 8.0).clamp(0.0, 1.0) * 1.2;
-            self.bone_target_rot[BoneId::LeftUpperArm as usize] =
-                quat_from_axis_angle([1.0, 0.0, 0.0], brace_angle);
-            self.bone_target_rot[BoneId::RightUpperArm as usize] =
-                quat_from_axis_angle([1.0, 0.0, 0.0], brace_angle);
-            // Forearms extend (reduce bend)
-            self.bone_target_rot[BoneId::LeftForearm as usize] =
-                quat_from_axis_angle([1.0, 0.0, 0.0], -brace_angle * 0.3);
-            self.bone_target_rot[BoneId::RightForearm as usize] =
-                quat_from_axis_angle([1.0, 0.0, 0.0], -brace_angle * 0.3);
+            // Falling: brace arms forward and down for impact
+            let brace = ((-hips_vel_y - 2.0) / 8.0).clamp(0.0, 1.0);
+            let fwd = brace * 0.3;
+            let drop = brace * 0.2;
+            self.bone_target_pos[BoneId::LeftUpperArm as usize] =
+                v3_add(hips, [-0.22, 0.55 - drop, -fwd]);
+            self.bone_target_pos[BoneId::RightUpperArm as usize] =
+                v3_add(hips, [0.22, 0.55 - drop, -fwd]);
+            self.bone_target_pos[BoneId::LeftForearm as usize] =
+                v3_add(hips, [-0.22, 0.27 - drop, -fwd * 1.5]);
+            self.bone_target_pos[BoneId::RightForearm as usize] =
+                v3_add(hips, [0.22, 0.27 - drop, -fwd * 1.5]);
         } else {
-            // Not falling: arms relax to default
-            self.bone_target_rot[BoneId::LeftUpperArm as usize] = QUAT_IDENTITY;
-            self.bone_target_rot[BoneId::RightUpperArm as usize] = QUAT_IDENTITY;
-            self.bone_target_rot[BoneId::LeftForearm as usize] = QUAT_IDENTITY;
-            self.bone_target_rot[BoneId::RightForearm as usize] = QUAT_IDENTITY;
+            // Not falling: arms hang at sides
+            self.bone_target_pos[BoneId::LeftUpperArm as usize] = v3_add(hips, [-0.22, 0.55, 0.0]);
+            self.bone_target_pos[BoneId::RightUpperArm as usize] = v3_add(hips, [0.22, 0.55, 0.0]);
+            self.bone_target_pos[BoneId::LeftForearm as usize] = v3_add(hips, [-0.22, 0.27, 0.0]);
+            self.bone_target_pos[BoneId::RightForearm as usize] = v3_add(hips, [0.22, 0.27, 0.0]);
         }
+
+        // Legs: default positions below hips
+        self.bone_target_pos[BoneId::LeftUpperLeg as usize] = v3_add(hips, [-0.10, -0.42, 0.0]);
+        self.bone_target_pos[BoneId::RightUpperLeg as usize] = v3_add(hips, [0.10, -0.42, 0.0]);
+        self.bone_target_pos[BoneId::LeftLowerLeg as usize] = v3_add(hips, [-0.10, -0.82, 0.0]);
+        self.bone_target_pos[BoneId::RightLowerLeg as usize] = v3_add(hips, [0.10, -0.82, 0.0]);
+        self.bone_target_pos[BoneId::LeftFoot as usize] = v3_add(hips, [-0.10, -0.95, 0.0]);
+        self.bone_target_pos[BoneId::RightFoot as usize] = v3_add(hips, [0.10, -0.95, 0.0]);
     }
 
     /// Activate partial ragdoll: only specified body region goes limp,
@@ -1207,6 +1196,8 @@ impl Skeleton {
 
         self.ragdoll_active = true;
         self.ragdoll_blend = 0.0;
+        self.vehicle_contact = None;
+        self.anticipation_timer = 0.0;
     }
 
     /// Per-bone vehicle collision: test each bone capsule against a vehicle OBB.
@@ -1230,9 +1221,17 @@ impl Skeleton {
         let mut best_normal = [0.0f32; 3];
 
         for i in 0..BONE_COUNT {
-            // Capsule collision: test 3 points along the bone (root, midpoint, tip)
+            // Capsule collision: test 3 points along the bone (root, midpoint, tip).
+            // Bone direction derived from parent→bone position (not stale world_rot).
             let bone_root = self.bones[i].world_pos;
-            let bone_dir = quat_rotate(self.bones[i].world_rot, [0.0, -self.bones[i].length, 0.0]);
+            let parent_c = self.bones[i].parent.unwrap_or(0) as usize;
+            let to_bone = v3_sub(bone_root, self.bones[parent_c].world_pos);
+            let to_bone_len = v3_len(to_bone);
+            let bone_dir = if to_bone_len > 0.001 {
+                v3_scale(to_bone, self.bones[i].length / to_bone_len)
+            } else {
+                [0.0, -self.bones[i].length, 0.0]
+            };
             let bone_tip = v3_add(bone_root, bone_dir);
             let bone_mid = v3_add(bone_root, v3_scale(bone_dir, 0.5));
 
