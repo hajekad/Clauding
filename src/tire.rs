@@ -18,9 +18,9 @@ pub struct PacejkaCoeffs {
     pub e: f32,  // curvature
 }
 
-/// Default coefficients for street tires on asphalt
-pub const PACEJKA_LONG: PacejkaCoeffs = PacejkaCoeffs { b: 10.0, c: 1.9, d: 1.0, e: 0.97 };
-pub const PACEJKA_LAT: PacejkaCoeffs = PacejkaCoeffs { b: 12.0, c: 2.3, d: 1.0, e: 0.97 };
+/// Default coefficients for performance tires (d > 1.0 = tire compound exceeds surface μ)
+pub const PACEJKA_LONG: PacejkaCoeffs = PacejkaCoeffs { b: 10.0, c: 1.9, d: 1.15, e: 0.97 };
+pub const PACEJKA_LAT: PacejkaCoeffs = PacejkaCoeffs { b: 12.0, c: 2.3, d: 1.05, e: 0.97 };
 
 /// Evaluate the Magic Formula: F = D * sin(C * atan(B*x - E*(B*x - atan(B*x))))
 fn pacejka(p: &PacejkaCoeffs, slip: f32) -> f32 {
@@ -40,6 +40,7 @@ pub struct WheelState {
     pub brake_torque: f32,      // applied brake torque (N*m)
     pub drive_torque: f32,      // applied drive torque from engine (N*m)
     pub punctured: bool,        // punctured tire: reduced friction, no grip recovery
+    pub abs: bool,              // ABS active on this wheel (false for handbrake)
     // Suspension attachment point in local vehicle space
     pub local_pos: Vec3,
     // Output (computed each frame)
@@ -47,6 +48,7 @@ pub struct WheelState {
     pub on_ground: bool,
     pub compression: f32,       // current suspension compression (0..1)
     pub ground_y: f32,          // terrain height at contact
+    pub slip_ratio: f32,        // last computed longitudinal slip ratio
 }
 
 impl WheelState {
@@ -59,11 +61,13 @@ impl WheelState {
             brake_torque: 0.0,
             drive_torque: 0.0,
             punctured: false,
+            abs: true,
             local_pos,
             contact_force: [0.0; 3],
             on_ground: false,
             compression: 0.0,
             ground_y: 0.0,
+            slip_ratio: 0.0,
         }
     }
 }
@@ -146,6 +150,26 @@ pub fn compute_tire_forces(
         vy_tire.signum() * 0.5 // low speed approximation
     };
 
+    wheel.slip_ratio = slip_ratio;
+
+    // ABS: modulate brake torque to stay near optimal Pacejka slip (~0.10-0.12)
+    // When slip exceeds peak, ABS releases brake pressure to let wheel recover
+    let effective_brake = if wheel.abs && wheel.brake_torque > 50.0 {
+        let slip_mag = slip_ratio.abs();
+        if slip_mag > 0.20 {
+            // Deep lockup — release brake to recover wheel speed
+            wheel.brake_torque * 0.05
+        } else if slip_mag > 0.12 {
+            // Past peak Pacejka — progressively reduce brake pressure
+            let t = (slip_mag - 0.12) / 0.08; // 0 at 0.12, 1 at 0.20
+            wheel.brake_torque * (1.0 - t * 0.95)
+        } else {
+            wheel.brake_torque
+        }
+    } else {
+        wheel.brake_torque // no ABS: handbrake or low brake torque
+    };
+
     // Punctured tire: drastically reduced friction (riding on rim)
     let puncture_mult = if wheel.punctured { 0.3 } else { 1.0 };
     let effective_friction = surface.dynamic_friction * puncture_mult;
@@ -163,14 +187,14 @@ pub fn compute_tire_forces(
         [0.0; 3], // no vertical tire force (that's suspension)
     );
 
-    // Tire angular velocity update: torque balance on wheel
+    // Tire angular velocity update: torque balance on wheel (using ABS-modulated brake)
     let tire_reaction_torque = -fx * wheel.radius; // ground reaction opposes tire rotation
     let net_torque = wheel.drive_torque + tire_reaction_torque
-        - wheel.brake_torque * wheel.ang_vel.signum();
+        - effective_brake * wheel.ang_vel.signum();
     wheel.ang_vel += net_torque / wheel.inertia * dt;
 
     // Brake can stop wheel completely
-    if wheel.brake_torque > 0.0 && wheel.ang_vel.abs() < 0.5 && wheel.drive_torque.abs() < 1.0 {
+    if effective_brake > 0.0 && wheel.ang_vel.abs() < 0.5 && wheel.drive_torque.abs() < 1.0 {
         wheel.ang_vel *= 0.9;
     }
 

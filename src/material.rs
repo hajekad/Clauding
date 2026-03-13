@@ -10,10 +10,10 @@ pub struct SurfaceMaterial {
 
 // Per-surface material constants
 pub const MAT_ASPHALT: SurfaceMaterial = SurfaceMaterial {
-    static_friction: 0.9,
-    dynamic_friction: 0.7,
+    static_friction: 1.1,
+    dynamic_friction: 0.9,  // performance tires on dry asphalt
     restitution: 0.1,
-    rolling_resistance: 0.015,
+    rolling_resistance: 0.012,
 };
 
 pub const MAT_CONCRETE: SurfaceMaterial = SurfaceMaterial {

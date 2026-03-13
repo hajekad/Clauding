@@ -96,12 +96,15 @@ pub fn compute_suspension(
     let compression = compression.clamp(-susp.params.max_extension, susp.params.max_compression);
 
     // Compression velocity (for damping)
+    // When transitioning from unloaded (prev=0) to ground contact, skip damper spike —
+    // the damper needs two valid frames to compute velocity
+    let was_unloaded = susp.compression.abs() < 1e-6;
     susp.prev_compression = susp.compression;
     susp.compression = compression;
-    let comp_velocity = if dt > 1e-6 {
-        (compression - susp.prev_compression) / dt
-    } else {
+    let comp_velocity = if was_unloaded || dt < 1e-6 {
         0.0
+    } else {
+        (compression - susp.prev_compression) / dt
     };
 
     // Spring + damper force: F = k*x + c*v
