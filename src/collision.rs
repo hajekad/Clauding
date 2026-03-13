@@ -672,15 +672,29 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                             p.damage_shake = CAMERA_SHAKE_INTENSITY;
                         }
                     }
-                    // NPC driver damage
+                    // NPC driver damage + KO check
                     if let Some(owner) = world.vehicles[i].owner_npc {
                         if owner < nn && world.npcs[owner].in_vehicle {
                             world.npcs[owner].health -= occupant_damage;
+                            if world.npcs[owner].health <= 0.0 {
+                                world.npcs[owner].in_vehicle = false;
+                                world.vehicles[i].ai_active = false;
+                                world.vehicles[i].parked = true;
+                                world.vehicles[i].speed = 0.0;
+                                crate::combat::knockout_npc(&mut world.npcs[owner]);
+                            }
                         }
                     }
                     if let Some(owner) = world.vehicles[j].owner_npc {
                         if owner < nn && world.npcs[owner].in_vehicle {
                             world.npcs[owner].health -= occupant_damage;
+                            if world.npcs[owner].health <= 0.0 {
+                                world.npcs[owner].in_vehicle = false;
+                                world.vehicles[j].ai_active = false;
+                                world.vehicles[j].parked = true;
+                                world.vehicles[j].speed = 0.0;
+                                crate::combat::knockout_npc(&mut world.npcs[owner]);
+                            }
                         }
                     }
                 }
