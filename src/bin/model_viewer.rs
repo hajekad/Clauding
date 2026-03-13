@@ -648,6 +648,8 @@ fn make_player() -> state::Player {
             clauding::physics::RigidBody::new_dynamic([0.0, 0.0, 0.0], 80.0, inertia)
         },
         skeleton: clauding::skeleton::Skeleton::new_humanoid(),
+        standing_on_vehicle: None,
+        standing_on_vehicle_timer: 0.0,
     }
 }
 

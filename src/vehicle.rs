@@ -12,13 +12,19 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
     let interact_prev = state.keybinds.is_pressed(Action::Interact, &state.prev_keys);
     if interact_now && !interact_prev {
         if let Some(vi) = state.player.in_vehicle {
-            // Exit vehicle
+            // Exit vehicle — sync player body from vehicle state
             let v = &state.world.vehicles[vi];
             let exit_x = v.x + v.rot_y.sin() * 2.5;
             let exit_z = v.z + v.rot_y.cos() * 2.5;
+            let exit_y = v.y;
             state.player.x = exit_x;
+            state.player.y = exit_y;
             state.player.z = exit_z;
             state.player.rot_y = v.rot_y;
+            state.player.body.pos = [exit_x, exit_y, exit_z];
+            state.player.body.vel = [0.0, 0.0, 0.0];
+            state.player.vel_y = 0.0;
+            state.player.on_ground = true;
             state.world.vehicles[vi].occupied = false;
             state.world.vehicles[vi].speed = 0.0;
             state.player.in_vehicle = None;
@@ -50,6 +56,10 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
                     state.world.vehicles[vi].parking_target = None;
                 }
                 state.player.in_vehicle = Some(vi);
+                // Reset player body state for clean driving
+                state.player.body.vel = [0.0, 0.0, 0.0];
+                state.player.vel_y = 0.0;
+                state.player.on_ground = true;
             }
         }
     }
@@ -93,10 +103,13 @@ fn drive_vehicle(state: &mut GameState, vi: usize, _dt: f32) {
     let left = state.keybinds.is_pressed(Action::MoveLeft, &state.keys);
     let right = state.keybinds.is_pressed(Action::MoveRight, &state.keys);
 
+    let handbrake = state.keybinds.is_pressed(Action::Jump, &state.keys);
+
     let v = &mut state.world.vehicles[vi];
     let throttle = if fwd { 1.0 } else { 0.0 };
     let brake = if back { 1.0 } else if !fwd && v.speed.abs() > 0.5 { 0.3 } else { 0.0 };
     let steer = if left { -1.0 } else if right { 1.0 } else { 0.0 };
+    v.drivetrain.handbrake = handbrake;
     crate::vehicle_physics::player_drive_input(v, throttle, brake, steer);
 
     // Sync player position from vehicle — driver bounces with suspension
@@ -111,6 +124,41 @@ fn drive_vehicle(state: &mut GameState, vi: usize, _dt: f32) {
     state.player.y = state.world.vehicles[vi].y + seat_offset;
     state.player.rot_y = state.world.vehicles[vi].rot_y;
     state.player.terrain_normal = state.world.vehicles[vi].terrain_normal;
+
+    // Keep player body synced to vehicle — prevents stale vel_y / on_ground
+    state.player.body.pos = [state.player.x, state.player.y, state.player.z];
+    state.player.body.vel = state.world.vehicles[vi].body.vel;
+    state.player.vel_y = 0.0;
+    state.player.on_ground = true;
+
+    // Animate driver skeleton based on suspension bounce
+    let susp_comp = [
+        state.world.vehicles[vi].suspension[0].compression,
+        state.world.vehicles[vi].suspension[1].compression,
+        state.world.vehicles[vi].suspension[2].compression,
+        state.world.vehicles[vi].suspension[3].compression,
+    ];
+    let veh_speed = state.world.vehicles[vi].speed;
+    state.player.skeleton.step_driving_animation(&susp_comp, veh_speed, steer, _dt);
+
+    // Steering wheel IK: compute wheel world position and apply arm IK
+    {
+        let v = &state.world.vehicles[vi];
+        // Steering wheel in vehicle local space: ~center-left, dash height, forward
+        let local_wheel = [0.35 * v.scale, 0.65 * v.scale, -0.8 * v.scale];
+        let (sin_r, cos_r) = v.rot_y.sin_cos();
+        let wheel_world = [
+            v.x + local_wheel[0] * cos_r - local_wheel[2] * sin_r,
+            v.y + local_wheel[1],
+            v.z + local_wheel[0] * sin_r + local_wheel[2] * cos_r,
+        ];
+        let steer_angle = steer * 35.0_f32.to_radians(); // max_steer = 35°
+        // Compute world transforms for the skeleton before IK
+        let root_rot = crate::math::quat_from_rot_y(state.player.rot_y);
+        let skel_pos = [state.player.x, state.player.y, state.player.z];
+        state.player.skeleton.compute_world_transforms(skel_pos, root_rot);
+        state.player.skeleton.apply_steering_wheel_ik(wheel_world, steer_angle);
+    }
 
     // Speed limit check
     if state.world.vehicles[vi].speed.abs() > SPEED_LIMIT {

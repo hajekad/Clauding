@@ -222,6 +222,45 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         p.on_ground = false;
     }
 
+    // Character-on-vehicle stacking: check if standing on a vehicle roof
+    {
+        let feet_pos = p.body.pos;
+        let mut found_vehicle = None;
+        for (vi, v) in state.world.vehicles.iter().enumerate() {
+            let half_w = 0.93 * v.scale;
+            let half_d = 2.3 * v.scale;
+            let roof_h = 1.2 * v.scale;
+            if let Some((_normal, surface_y)) = crate::physics::point_on_vehicle_surface(
+                feet_pos, v.body.pos, v.rot_y, half_w, half_d, roof_h,
+            ) {
+                // Vehicle surface is higher than terrain → stand on vehicle
+                if surface_y > ground_y {
+                    p.body.pos[1] = surface_y;
+                    if p.body.vel[1] < 0.0 { p.body.vel[1] = 0.0; }
+                    p.on_ground = true;
+                    // Transfer vehicle velocity via friction (metal surface, μ ≈ 0.4)
+                    let friction = 0.4;
+                    let vvel = v.body.vel;
+                    p.body.vel[0] += (vvel[0] - p.body.vel[0]) * friction * dt.min(0.1);
+                    p.body.vel[2] += (vvel[2] - p.body.vel[2]) * friction * dt.min(0.1);
+                    found_vehicle = Some(vi);
+                    p.standing_on_vehicle_timer = 0.15; // hysteresis
+                    break;
+                }
+            }
+        }
+        if found_vehicle.is_some() {
+            p.standing_on_vehicle = found_vehicle;
+        } else if p.standing_on_vehicle_timer > 0.0 {
+            p.standing_on_vehicle_timer -= dt;
+            if p.standing_on_vehicle_timer <= 0.0 {
+                p.standing_on_vehicle = None;
+            }
+        } else {
+            p.standing_on_vehicle = None;
+        }
+    }
+
     // Building collision (axis-separated sliding)
     if check_walk_collision(&state.world, p.body.pos[0], prev_pos[2], PLAYER_RADIUS, None) {
         p.body.pos[0] = prev_pos[0];

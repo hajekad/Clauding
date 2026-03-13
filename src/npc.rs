@@ -91,6 +91,35 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, road_network:
         world.npcs[i].on_ground = false;
     }
 
+    // Character-on-vehicle stacking: NPC standing on vehicle roof
+    if !world.npcs[i].ragdoll_active {
+        let feet_pos = world.npcs[i].body.pos;
+        for vi in 0..world.vehicles.len() {
+            let v = &world.vehicles[vi];
+            let dx = feet_pos[0] - v.x;
+            let dz = feet_pos[2] - v.z;
+            if dx.abs() > 5.0 || dz.abs() > 5.0 { continue; }
+            let half_w = 0.93 * v.scale;
+            let half_d = 2.3 * v.scale;
+            let roof_h = 1.2 * v.scale;
+            if let Some((_normal, surface_y)) = crate::physics::point_on_vehicle_surface(
+                feet_pos, v.body.pos, v.rot_y, half_w, half_d, roof_h,
+            ) {
+                if surface_y > ground {
+                    world.npcs[i].body.pos[1] = surface_y;
+                    if world.npcs[i].body.vel[1] < 0.0 { world.npcs[i].body.vel[1] = 0.0; }
+                    world.npcs[i].on_ground = true;
+                    // Transfer vehicle velocity via friction
+                    let friction = 0.4;
+                    let vvel = v.body.vel;
+                    world.npcs[i].body.vel[0] += (vvel[0] - world.npcs[i].body.vel[0]) * friction * dt.min(0.1);
+                    world.npcs[i].body.vel[2] += (vvel[2] - world.npcs[i].body.vel[2]) * friction * dt.min(0.1);
+                    break;
+                }
+            }
+        }
+    }
+
     // Building collision (axis-separated sliding)
     let home_idx = world.npcs[i].home_idx;
     if check_walk_collision(world, world.npcs[i].body.pos[0], prev_pos[2], 0.4, Some(home_idx)) {
@@ -231,14 +260,9 @@ pub fn npc_walk_toward(
     while diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
     npc.rot_y += diff.clamp(-6.0 * dt, 6.0 * dt);
 
-    // Gait selection based on surface and urgency — speed emerges from gait stride parameters
+    // Gait selection — NPCs walk everywhere at 8 km/h (Walk gait)
     let surface = surface_at(npc.x, npc.z, net);
-    let desired_gait = match surface {
-        Surface::Sidewalk => crate::skeleton::Gait::Run,
-        Surface::CarRoad => crate::skeleton::Gait::Run,
-        Surface::FieldRoad => crate::skeleton::Gait::Walk,
-        Surface::Terrain => crate::skeleton::Gait::Walk,
-    };
+    let desired_gait = crate::skeleton::Gait::Walk;
 
     // Locomotion: legs push against ground via skeleton ground reaction force
     // Actual speed emerges from gait (stride_freq × stride_len) capped by surface friction
@@ -529,6 +553,34 @@ fn npc_driving(world: &mut WorldData, i: usize, terrain: &Terrain, net: &mut Roa
     let rest = world.vehicles[car_idx].suspension[0].params.rest_length;
     let seat_offset = (avg_comp - rest * 0.5) * 0.3; // damped fraction of suspension travel
     world.npcs[i].y = world.vehicles[car_idx].y + seat_offset;
+
+    // Animate driver skeleton based on suspension bounce
+    let susp_comp = [
+        world.vehicles[car_idx].suspension[0].compression,
+        world.vehicles[car_idx].suspension[1].compression,
+        world.vehicles[car_idx].suspension[2].compression,
+        world.vehicles[car_idx].suspension[3].compression,
+    ];
+    let veh_speed = world.vehicles[car_idx].speed;
+    let steer = world.vehicles[car_idx].drivetrain.steer_input;
+    world.npcs[i].skeleton.step_driving_animation(&susp_comp, veh_speed, steer, _dt);
+
+    // Steering wheel IK
+    {
+        let v = &world.vehicles[car_idx];
+        let local_wheel = [0.35 * v.scale, 0.65 * v.scale, -0.8 * v.scale];
+        let (sin_r, cos_r) = v.rot_y.sin_cos();
+        let wheel_world = [
+            v.x + local_wheel[0] * cos_r - local_wheel[2] * sin_r,
+            v.y + local_wheel[1],
+            v.z + local_wheel[0] * sin_r + local_wheel[2] * cos_r,
+        ];
+        let steer_angle = steer * 35.0_f32.to_radians();
+        let root_rot = crate::math::quat_from_rot_y(world.vehicles[car_idx].rot_y);
+        let skel_pos = [world.npcs[i].x, world.npcs[i].y, world.npcs[i].z];
+        world.npcs[i].skeleton.compute_world_transforms(skel_pos, root_rot);
+        world.npcs[i].skeleton.apply_steering_wheel_ik(wheel_world, steer_angle);
+    }
 
     // Check if we've arrived near target
     let tx = world.npcs[i].target_x;
