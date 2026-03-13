@@ -1776,6 +1776,8 @@ fn generate_parking_lots(
         }
         // Wider base section
         mesh::cylinder_tris(tris, lx, lgy + 0.2, lz, 0.12, 0.4, 6, LAMP_BASE_COLOR);
+        // Decorative collar ring where base meets pole
+        mesh::ring_tris(tris, lx, lgy + 0.42, lz, 0.10, 0.03, 8, 4, LAMP_BASE_COLOR);
         // Main pole (8 segments for rounder appearance)
         mesh::cylinder_tris(tris, lx, lgy + 2.7, lz, 0.06, 4.6, 8, LAMP_POLE_COLOR);
         mesh::sphere_tris(tris, lx, lgy + 5.2, lz, 0.2, 1, LAMP_GLOW_COLOR);
@@ -1788,7 +1790,7 @@ fn generate_parking_lots(
             let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
             mesh::push_tri(tris, [lx, pool_y, lz], [lx + a1.cos() * 3.0, pool_y, lz + a1.sin() * 3.0], [lx + a0.cos() * 3.0, pool_y, lz + a0.sin() * 3.0], [0.0, 1.0, 0.0], pool_color);
         }
-        street_lights.push(StreetLight { x: lx, z: lz });
+        street_lights.push(StreetLight { x: lx, z: lz, ground_y: lgy });
     }
 }
 
@@ -2937,15 +2939,15 @@ pub fn generate_world(game: &mut GameState) {
 
         // Cornice with more detail (double ledge)
         let cornice_color = darken(color, 0.8);
-        mesh::box_tris(&mut tris, x, ground_y + h - 0.1, z,
-            w + 0.35, 0.12, d + 0.35, cornice_color);
-        mesh::box_tris(&mut tris, x, ground_y + h - 0.25, z,
-            w + 0.25, 0.08, d + 0.25, cornice_color);
+        mesh::cornice_tris(&mut tris, x, ground_y + h - 0.1, z,
+            w, d, 0.12, 0.175, cornice_color);
+        mesh::cornice_tris(&mut tris, x, ground_y + h - 0.25, z,
+            w, d, 0.08, 0.125, cornice_color);
 
         // Belt course on taller buildings
         if h > 8.0 {
-            mesh::box_tris(&mut tris, x, ground_y + h * 0.5, z,
-                w + 0.15, 0.15, d + 0.15, cornice_color);
+            mesh::cornice_tris(&mut tris, x, ground_y + h * 0.5, z,
+                w, d, 0.15, 0.075, cornice_color);
         }
 
         // Chimney (40% of buildings)
@@ -3163,7 +3165,7 @@ pub fn generate_world(game: &mut GameState) {
             mesh::push_tri(&mut tris, [pool_x, pool_y, pool_z], [pool_x + a1.cos() * pool_r, pool_y, pool_z + a1.sin() * pool_r], [pool_x + a0.cos() * pool_r, pool_y, pool_z + a0.sin() * pool_r], [0.0, 1.0, 0.0], pool_color);
         }
 
-        game.world.street_lights.push(StreetLight { x, z });
+        game.world.street_lights.push(StreetLight { x, z, ground_y });
     }
 
     // Trash bins at road network nodes (intersections), then along road segments
@@ -3309,6 +3311,7 @@ pub fn generate_world(game: &mut GameState) {
             scale,
             body: phys_body, wheels: phys_wheels, suspension: phys_susp, drivetrain: phys_drive,
             deformation: crate::deform::VehicleDeformation::new(),
+            surface_override: None,
         });
     }
 
