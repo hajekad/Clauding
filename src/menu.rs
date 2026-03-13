@@ -595,7 +595,8 @@ pub fn sys_menu_render(
             let scale = 3;
             let line_h = scale * 5 + scale * 4;
             let num_actions = ALL_ACTIONS.len();
-            let total = num_actions + 2;
+            // Player actions + vehicle header + 4 vehicle rows + reset + back
+            let total = num_actions + 1 + 4 + 2;
 
             let panel_w = 520;
             let panel_h = line_h * (total + 2) + scale * 4;
@@ -613,6 +614,7 @@ pub fn sys_menu_render(
 
             let items_y = sep_y + scale * 3;
 
+            // Rebindable player actions
             for i in 0..num_actions {
                 let y = items_y + i * line_h;
                 let action = ALL_ACTIONS[i];
@@ -632,10 +634,35 @@ pub fn sys_menu_render(
                 }
             }
 
+            // Vehicle controls section (read-only, uses same keybinds contextually)
+            let veh_y = items_y + num_actions * line_h;
+            draw_hline(fb, bx + scale * 2, veh_y, panel_w - scale * 4, BORDER_ACCENT);
+            draw_text(fb, bx + scale * 4, veh_y + scale * 2, "VEHICLE", 2, GOLD_DIM);
+            let veh_items_y = veh_y + scale * 2 + 2 * 5 + scale * 2;
+            let veh_binds: [(&str, crate::input::Action); 4] = [
+                ("Throttle", crate::input::Action::MoveForward),
+                ("Brake", crate::input::Action::MoveBack),
+                ("Steer", crate::input::Action::MoveLeft),  // display both L/R
+                ("Handbrake", crate::input::Action::Jump),
+            ];
+            for (vi, (label, action)) in veh_binds.iter().enumerate() {
+                let y = veh_items_y + vi * line_h;
+                if *label == "Steer" {
+                    let lk = key_name(keybinds.key_for(crate::input::Action::MoveLeft));
+                    let rk = key_name(keybinds.key_for(crate::input::Action::MoveRight));
+                    let buf = format_vehicle_steer_line(label, lk, rk);
+                    draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, TEXT_DIM);
+                } else {
+                    let kn = key_name(keybinds.key_for(*action));
+                    let buf = format_keybind_line("  ", label, kn);
+                    draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, TEXT_DIM);
+                }
+            }
+
             // Reset Defaults
             {
                 let i = num_actions;
-                let y = items_y + i * line_h;
+                let y = veh_items_y + 4 * line_h;
                 let sel = menu.cursor == i;
                 let c = if sel { TEXT_SEL } else { TEXT_DIM };
                 let iw = text_pw("RESET DEFAULTS", scale);
@@ -646,7 +673,7 @@ pub fn sys_menu_render(
             // Back
             {
                 let i = num_actions + 1;
-                let y = items_y + i * line_h;
+                let y = veh_items_y + 5 * line_h;
                 let sel = menu.cursor == i;
                 let c = if sel { TEXT_SEL } else { TEXT_DIM };
                 draw_text(fb, bx + scale * 4, y, "BACK", scale, c);
@@ -757,6 +784,20 @@ fn format_keybind_line(prefix: &str, action_name: &str, key: &str) -> [u8; 64] {
     while i < 20 { if i < 64 { buf[i] = b' '; } i += 1; }
     if i < 64 { buf[i] = b'['; i += 1; }
     for &c in key.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    if i < 64 { buf[i] = b']'; }
+    buf
+}
+
+fn format_vehicle_steer_line(label: &str, left_key: &str, right_key: &str) -> [u8; 64] {
+    let mut buf = [b' '; 64];
+    let mut i = 0;
+    for &c in b"  " { if i < 64 { buf[i] = c; i += 1; } }
+    for &c in label.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    while i < 20 { if i < 64 { buf[i] = b' '; } i += 1; }
+    if i < 64 { buf[i] = b'['; i += 1; }
+    for &c in left_key.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    if i < 64 { buf[i] = b'/'; i += 1; }
+    for &c in right_key.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
     if i < 64 { buf[i] = b']'; }
     buf
 }
