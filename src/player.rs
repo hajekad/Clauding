@@ -179,7 +179,7 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         // Locomotion: legs push against ground — speed emerges from gait stride parameters
         let desired_dir = [dx, 0.0, dz];
         let walk_force = p.skeleton.compute_locomotion_force(
-            desired_dir, desired_gait, p.body.vel, p.body.mass, surface_friction,
+            desired_dir, desired_gait, p.body.vel, p.body.mass, surface_friction, f32::MAX,
         );
         p.body.apply_force(walk_force);
     } else {
@@ -189,7 +189,7 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
 
         // Deceleration: legs actively brake by pushing against ground
         let decel_force = p.skeleton.compute_locomotion_force(
-            [0.0, 0.0, 0.0], crate::skeleton::Gait::Idle, p.body.vel, p.body.mass, surface_friction,
+            [0.0, 0.0, 0.0], crate::skeleton::Gait::Idle, p.body.vel, p.body.mass, surface_friction, f32::MAX,
         );
         p.body.apply_force(decel_force);
     }

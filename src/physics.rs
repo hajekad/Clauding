@@ -520,8 +520,7 @@ pub fn apply_explosion_to_all(
 // ── Capsule vs ground (character-specific) ───────────────────────────────
 
 /// Character capsule ground contact — returns contact at feet position.
-/// Infrastructure for character-on-vehicle stacking (not yet wired).
-#[allow(dead_code)]
+/// Used for NPC/player ground response with terrain normal.
 pub fn capsule_ground_contact(
     body_idx: usize,
     body: &RigidBody,

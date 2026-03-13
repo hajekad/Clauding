@@ -890,7 +890,7 @@ impl Skeleton {
     /// `current_vel`: current body velocity
     /// `mass`: character mass
     /// `surface_friction`: dynamic friction coefficient of the surface (0..1, from material system)
-    pub fn compute_locomotion_force(&self, desired_dir: Vec3, desired_gait: Gait, current_vel: Vec3, mass: f32, surface_friction: f32) -> Vec3 {
+    pub fn compute_locomotion_force(&self, desired_dir: Vec3, desired_gait: Gait, current_vel: Vec3, mass: f32, surface_friction: f32, max_speed: f32) -> Vec3 {
         // No force if no foot is grounded
         if !self.feet[0].grounded && !self.feet[1].grounded {
             return [0.0; 3];
@@ -898,7 +898,8 @@ impl Skeleton {
 
         // Speed emerges from gait: stride_freq × stride_len
         // Walk: 2.5 × 0.89 = 2.22 m/s (8 km/h), Run: 3.0 × 1.02 = 3.06 m/s (11 km/h), Sprint: 4.5 × 1.73 = 7.78 m/s (28 km/h)
-        let desired_speed = desired_gait.natural_speed();
+        // Surface-dependent speed cap: terrain/steep slopes limit top speed below gait natural
+        let desired_speed = desired_gait.natural_speed().min(max_speed);
 
         // Average slope grip from grounded feet (Y component of surface normal)
         let mut slope_grip = 0.0f32;

@@ -19,11 +19,27 @@ pub const NUM_STREET_LIGHTS: usize = 60;
 pub const CAR_ROAD_WIDTH: f32 = 6.0;
 pub const SIDEWALK_WIDTH: f32 = 1.5;
 pub const FIELD_ROAD_WIDTH: f32 = 2.5;
-pub const NPC_SPEED_SIDEWALK: f32 = 2.22;  // 8 km/h Walk gait
-pub const NPC_SPEED_FIELD_ROAD: f32 = 2.22;
-pub const NPC_SPEED_CAR_ROAD: f32 = 2.22;
-pub const NPC_SPEED_TERRAIN: f32 = 2.22;
-pub const NPC_SPEED_STEEP: f32 = 1.0;
+pub const NPC_SPEED_SIDEWALK: f32 = 2.22;    // 8 km/h — smooth concrete
+pub const NPC_SPEED_FIELD_ROAD: f32 = 1.80;  // 6.5 km/h — uneven gravel/dirt
+pub const NPC_SPEED_CAR_ROAD: f32 = 2.22;    // 8 km/h — smooth asphalt
+pub const NPC_SPEED_TERRAIN: f32 = 1.50;     // 5.4 km/h — grass, uneven ground
+pub const NPC_SPEED_STEEP: f32 = 1.0;        // 3.6 km/h — steep slopes, careful footing
+
+/// Max NPC walking speed for a given surface type, factoring in terrain slope
+pub fn npc_speed_for_surface(surface: Surface, terrain_normal_y: f32) -> f32 {
+    let base = match surface {
+        Surface::Sidewalk => NPC_SPEED_SIDEWALK,
+        Surface::CarRoad => NPC_SPEED_CAR_ROAD,
+        Surface::FieldRoad => NPC_SPEED_FIELD_ROAD,
+        Surface::Terrain => NPC_SPEED_TERRAIN,
+    };
+    // Steep slope override: normal_y < 0.85 ≈ >32° slope
+    if terrain_normal_y < 0.85 {
+        base.min(NPC_SPEED_STEEP)
+    } else {
+        base
+    }
+}
 pub const VEHICLE_SPEED: f32 = 15.0;
 pub const VEHICLE_ACCEL: f32 = 12.0;
 pub const VEHICLE_BRAKE: f32 = 20.0;
@@ -245,7 +261,7 @@ pub struct Tree {
 }
 
 pub struct StreetLight {
-    pub x: f32, pub z: f32,
+    pub x: f32, pub z: f32, pub ground_y: f32,
 }
 
 pub struct TrashBin {
@@ -286,6 +302,7 @@ pub struct Vehicle {
     pub suspension: [crate::suspension::SuspensionState; 4],
     pub drivetrain: crate::tire::Drivetrain,
     pub deformation: crate::deform::VehicleDeformation,
+    pub surface_override: Option<Surface>, // studio: force surface material for testing
 }
 
 impl Vehicle {

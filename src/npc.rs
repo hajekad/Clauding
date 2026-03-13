@@ -81,11 +81,27 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, road_network:
     // Integrate rigid body (gravity + walk force + slope force + damping)
     crate::physics::integrate(&mut world.npcs[i].body, dt);
 
-    // Ground contact enforcement
-    let ground = terrain.height_at(world.npcs[i].body.pos[0], world.npcs[i].body.pos[2]);
-    if world.npcs[i].body.pos[1] <= ground {
-        world.npcs[i].body.pos[1] = ground;
-        if world.npcs[i].body.vel[1] < 0.0 { world.npcs[i].body.vel[1] = 0.0; }
+    // Ground contact enforcement — capsule vs terrain with proper normal response
+    let surface = crate::world::surface_at(
+        world.npcs[i].body.pos[0], world.npcs[i].body.pos[2], road_network,
+    );
+    let surface_mat = *crate::material::material_for_surface(surface);
+    if let Some(contact) = crate::physics::capsule_ground_contact(
+        i, &world.npcs[i].body, 0.3, 0.6, terrain, surface_mat,
+    ) {
+        // Push character out of ground along terrain normal
+        world.npcs[i].body.pos = crate::math::v3_add(
+            world.npcs[i].body.pos,
+            crate::math::v3_scale(contact.normal, contact.penetration),
+        );
+        // Kill velocity into the ground (project out the component along normal)
+        let vel_into = crate::math::v3_dot(world.npcs[i].body.vel, contact.normal);
+        if vel_into < 0.0 {
+            world.npcs[i].body.vel = crate::math::v3_sub(
+                world.npcs[i].body.vel,
+                crate::math::v3_scale(contact.normal, vel_into),
+            );
+        }
         world.npcs[i].on_ground = true;
     } else {
         world.npcs[i].on_ground = false;
@@ -94,6 +110,7 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, road_network:
     // Character-on-vehicle stacking: NPC standing on vehicle roof
     if !world.npcs[i].ragdoll_active {
         let feet_pos = world.npcs[i].body.pos;
+        let ground = terrain.height_at(feet_pos[0], feet_pos[2]);
         for vi in 0..world.vehicles.len() {
             let v = &world.vehicles[vi];
             let dx = feet_pos[0] - v.x;
@@ -181,7 +198,7 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, road_network:
 /// Computes path on demand, follows waypoints, handles collision sliding.
 pub fn npc_walk_toward(
     world: &mut WorldData, i: usize, tx: f32, tz: f32,
-    net: &RoadNetwork, _terrain: &Terrain, dt: f32,
+    net: &RoadNetwork, terrain: &Terrain, dt: f32,
     walk_grid: &crate::navmesh::WalkGrid,
 ) -> f32 {
     let npc = &world.npcs[i];
@@ -260,16 +277,18 @@ pub fn npc_walk_toward(
     while diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
     npc.rot_y += diff.clamp(-6.0 * dt, 6.0 * dt);
 
-    // Gait selection — NPCs walk everywhere at 8 km/h (Walk gait)
+    // Gait + speed selection — surface-dependent speed cap (terrain/steep = slower)
     let surface = surface_at(npc.x, npc.z, net);
     let desired_gait = crate::skeleton::Gait::Walk;
+    let terrain_ny = terrain.normal_at(npc.x, npc.z)[1];
+    let max_speed = crate::state::npc_speed_for_surface(surface, terrain_ny);
 
     // Locomotion: legs push against ground via skeleton ground reaction force
-    // Actual speed emerges from gait (stride_freq × stride_len) capped by surface friction
+    // Actual speed emerges from gait (stride_freq × stride_len) capped by surface friction + speed limit
     let surface_friction = crate::material::material_for_surface(surface).dynamic_friction;
     let desired_dir = [-npc.rot_y.sin(), 0.0, -npc.rot_y.cos()];
     let walk_force = npc.skeleton.compute_locomotion_force(
-        desired_dir, desired_gait, npc.body.vel, npc.body.mass, surface_friction,
+        desired_dir, desired_gait, npc.body.vel, npc.body.mass, surface_friction, max_speed,
     );
     npc.body.apply_force(walk_force);
 
@@ -347,6 +366,7 @@ fn npc_home_task(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         let walk_force = npc.skeleton.compute_locomotion_force(
             desired_dir, crate::skeleton::Gait::Walk, npc.body.vel, npc.body.mass,
             crate::material::MAT_CONCRETE.dynamic_friction, // indoor floor
+            crate::state::NPC_SPEED_SIDEWALK, // indoor = smooth floor, full walk speed
         );
         npc.body.apply_force(walk_force);
     }
