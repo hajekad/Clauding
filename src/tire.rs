@@ -143,31 +143,47 @@ pub fn compute_tire_forces(
     let denom = vx_tire.abs().max(wheel_speed.abs()).max(0.5);
     let slip_ratio = (wheel_speed - vx_tire) / denom;
 
-    // Lateral slip angle: atan(vy / |vx|)
-    let slip_angle = if vx_tire.abs() > 0.5 {
-        (vy_tire / vx_tire.abs()).atan()
-    } else {
-        vy_tire.signum() * 0.5 // low speed approximation
-    };
+    // Lateral slip angle: atan(vy / |vx|) with smooth low-speed blending
+    // Use total contact speed for damping (not just vx) so drifts still generate grip
+    let contact_speed = (vx_tire * vx_tire + vy_tire * vy_tire).sqrt();
+    let min_speed = 0.5f32;
+    let raw_slip_angle = (vy_tire / vx_tire.abs().max(min_speed)).atan();
+    let low_speed_factor = (contact_speed / min_speed).min(1.0); // 0 at standstill, 1 at 0.5+ m/s
+    let slip_angle = raw_slip_angle * low_speed_factor;
 
     wheel.slip_ratio = slip_ratio;
 
-    // ABS: modulate brake torque to stay near optimal Pacejka slip (~0.10-0.12)
-    // When slip exceeds peak, ABS releases brake pressure to let wheel recover
+    // ABS: modulate brake torque to keep slip in the Pacejka plateau (~0.08-0.25)
+    // The Pacejka curve stays near peak force until slip ~0.25, then drops
     let effective_brake = if wheel.abs && wheel.brake_torque > 50.0 {
         let slip_mag = slip_ratio.abs();
-        if slip_mag > 0.20 {
-            // Deep lockup — release brake to recover wheel speed
+        if slip_mag > 0.50 {
             wheel.brake_torque * 0.05
-        } else if slip_mag > 0.12 {
-            // Past peak Pacejka — progressively reduce brake pressure
-            let t = (slip_mag - 0.12) / 0.08; // 0 at 0.12, 1 at 0.20
+        } else if slip_mag > 0.25 {
+            let t = (slip_mag - 0.25) / 0.25;
             wheel.brake_torque * (1.0 - t * 0.95)
         } else {
             wheel.brake_torque
         }
     } else {
         wheel.brake_torque // no ABS: handbrake or low brake torque
+    };
+
+    // Traction control (TC): limit drive torque when wheels spin past Pacejka plateau
+    // Wider threshold than ABS — allow some wheelspin for sportier feel
+    // Disabled when handbrake is active (allows burnout/drift)
+    let effective_drive = if wheel.abs && wheel.drive_torque.abs() > 10.0 {
+        let slip_mag = slip_ratio.abs();
+        if slip_mag > 0.50 {
+            wheel.drive_torque * 0.05
+        } else if slip_mag > 0.20 {
+            let t = (slip_mag - 0.20) / 0.30;
+            wheel.drive_torque * (1.0 - t * 0.95)
+        } else {
+            wheel.drive_torque
+        }
+    } else {
+        wheel.drive_torque // no TC: handbrake mode allows wheelspin
     };
 
     // Punctured tire: drastically reduced friction (riding on rim)
@@ -187,9 +203,9 @@ pub fn compute_tire_forces(
         [0.0; 3], // no vertical tire force (that's suspension)
     );
 
-    // Tire angular velocity update: torque balance on wheel (using ABS-modulated brake)
+    // Tire angular velocity update: torque balance on wheel (using TC-modulated drive and ABS-modulated brake)
     let tire_reaction_torque = -fx * wheel.radius; // ground reaction opposes tire rotation
-    let net_torque = wheel.drive_torque + tire_reaction_torque
+    let net_torque = effective_drive + tire_reaction_torque
         - effective_brake * wheel.ang_vel.signum();
     wheel.ang_vel += net_torque / wheel.inertia * dt;
 
