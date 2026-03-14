@@ -9,6 +9,10 @@ use crate::mesh;
 use crate::raster::*;
 use crate::state::*;
 use crate::color::{lerp_color, darken};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Debug flag: when true, player renders without clothing
+pub static NUDE_MODE: AtomicBool = AtomicBool::new(false);
 
 const VEHICLE_BODY_COLOR_DARKEN: f32 = 0.7;
 const WINDSHIELD_COLOR: u32 = 0xFF88AACC;
@@ -87,8 +91,8 @@ fn male_proportions() -> BodyProportions {
         head_scale: 0.62,
         head_cy: 1.70,
         neck_top: 1.50,
-        shoulder_rx: 0.32,
-        shoulder_deltoid_amp: 0.07,
+        shoulder_rx: 0.34,
+        shoulder_deltoid_amp: 0.09,
         hip_rx: 0.18,
         waist_rx: 0.15,
         chest_rx: 0.22,
@@ -1280,21 +1284,21 @@ fn gen_neck(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions, n: usi
 
     // Neck from torso top (1.48) through to neck_top — monotonically increasing Y
     let rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-        // Base — wide, blends with torso shoulder transition
-        (1.48, body_ring(0.0, 0.0, rx * 1.10, rz * 1.10, &[
-            (PI, 0.5, 0.025 * m),             // trapezius insertion
+        // Base — matches torso top ring exactly for seamless junction
+        (1.48, body_ring(0.0, 0.0, rx, rz, &[
+            (PI, 0.5, 0.035 * m),             // trapezius — matches torso top
             (PI * 0.5, 0.25, 0.012 * m),      // SCM origin (right, behind ear)
             (PI * 1.5, 0.25, 0.012 * m),      // SCM origin (left)
         ], n), skin),
         // Mid-neck — SCM prominent, laryngeal prominence
-        (1.49, body_ring(0.0, 0.0, rx * 1.02, rz * 1.02, &[
+        (1.49, body_ring(0.0, 0.0, rx * 0.96, rz * 0.96, &[
             (PI * 0.5, 0.28, 0.018 * m),      // SCM right — diagonal cord
             (PI * 1.5, 0.28, 0.018 * m),      // SCM left
             (0.0, 0.12, if props.has_adams_apple { 0.014 } else { 0.005 }), // larynx
             (PI, 0.4, 0.015 * m),             // nuchal muscles
         ], n), skin),
         // Upper neck — tapers, SCM fading
-        (nt, body_ring(0.0, 0.0, rx * 0.95, rz * 0.95, &[
+        (nt, body_ring(0.0, 0.0, rx * 0.88, rz * 0.88, &[
             (PI * 0.5, 0.25, 0.010 * m),      // SCM insertion
             (PI * 1.5, 0.25, 0.010 * m),
             (0.0, 0.10, if props.has_adams_apple { 0.008 } else { 0.003 }),
@@ -1628,11 +1632,11 @@ fn gen_nude_torso(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions, 
     {
         let sf = s(1.32);
         rings.push((1.32, body_ring(0.0, 0.0, 0.22 * sf, 0.19 * sf, &[
-            (0.35, 0.35, 0.028 * m), (-0.35, 0.35, 0.028 * m),
+            (0.35, 0.35, 0.035 * m), (-0.35, 0.35, 0.035 * m),
             (0.0, 0.10, -0.010),
-            (hp, 0.30, 0.035 * m), (PI + hp, 0.30, 0.035 * m),
+            (hp, 0.30, 0.045 * m), (PI + hp, 0.30, 0.045 * m),
             (PI, 0.15, -0.008 * m),
-            (PI - 0.5, 0.25, 0.022 * m), (PI + 0.5, 0.25, 0.022 * m),
+            (PI - 0.5, 0.25, 0.028 * m), (PI + 0.5, 0.25, 0.028 * m),
         ], n), sk));
     }
     {
@@ -1746,122 +1750,122 @@ fn gen_nude_arm(
     let a = props.arm_rx_scale;
     let m = props.muscle_def;
 
-    use std::f32::consts::PI;
-    let hp = PI * 0.5;
-
     // ── JOINT POSITIONS ──
-    // F4: Longer arms — wrist lowered from 0.66→0.54, elbow from 1.00→0.96
     let shoulder = [side * props.shoulder_joint_x, 1.42, 0.0];
     let elbow = [side * (props.shoulder_joint_x + 0.10), 0.96, fwd * 0.35];
     let wrist = [side * (props.shoulder_joint_x + 0.06), 0.54, fwd * 0.15 - bend];
 
-    // ── SINGLE CONTINUOUS ARM LOFT (shoulder → elbow → wrist) ──
-    // Upper arm rings are wide at shoulder to overlap with torso volume.
-    // Moderate inward bumps at PI+hp push arm inner surface into torso.
-    // Top cap seals arm from above. Z-buffer resolves overlap with torso.
-    let arm_heights: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
-        // Shoulder cap — arm center at shoulder_joint_x=0.22
-        // Outer edge ≈ 0.22+rx+bump ≈ 0.34, protrudes ~0.06 past torso shoulder
-        (1.44, 0.11, 0.12, vec![
-            (hp, 0.35, 0.030 * m),             // deltoid cap lateral
-            (PI + hp, 0.35, 0.035),            // inward overlap (structural)
-        ]),
-        (1.42, 0.10, 0.10, vec![
-            (hp, 0.35, 0.030 * m),             // deltoid cap
-            (0.5, 0.30, 0.020 * m),            // anterior delt
-            (PI - 0.5, 0.30, 0.016 * m),       // posterior delt
-            (PI + hp, 0.35, 0.035),            // inward overlap
-        ]),
-        (1.39, 0.092, 0.088, vec![
-            (hp, 0.35, 0.032 * m),             // deltoid peak
-            (0.5, 0.35, 0.022 * m),            // anterior deltoid
-            (PI - 0.5, 0.35, 0.018 * m),       // posterior deltoid
-            (PI + hp, 0.40, 0.040),            // inward overlap
-        ]),
-        (1.36, 0.085, 0.080, vec![
-            (hp, 0.35, 0.025 * m),             // deltoid insertion
-            (0.5, 0.30, 0.016 * m),            // anterior tail
-            (PI - 0.5, 0.30, 0.012 * m),       // posterior tail
-            (PI + hp, 0.45, 0.045),            // pec wrap inward
-        ]),
-        (1.32, 0.080, 0.074, vec![
-            (hp, 0.20, -0.005 * m),            // deltoid-bicep groove (lateral)
-            (0.0, 0.35, 0.018 * m),            // bicep emerging
-            (PI, 0.4, 0.015 * m),              // tricep long head
-            (PI + hp, 0.45, 0.048),            // pec/lat wrap inward
-        ]),
-        (1.26, 0.076, 0.070, vec![
-            (0.0, 0.4, 0.026 * m),             // bicep — stronger peak
-            (PI, 0.45, 0.020 * m),             // tricep
-            (hp, 0.25, 0.013 * m),             // brachialis
-            (PI + hp, 0.45, 0.045),            // pec/lat wrap
-        ]),
-        (1.20, 0.074, 0.068, vec![
-            (0.0, 0.4, 0.030 * m),             // bicep peak — strongest
-            (PI, 0.50, 0.026 * m),             // tricep — horseshoe shape
-            (PI - 0.4, 0.25, 0.013 * m),       // tricep lateral head
-            (PI + 0.4, 0.25, 0.013 * m),       // tricep medial head
-            (hp, 0.25, 0.015 * m),             // brachialis
-            (PI + hp, 0.45, 0.040),            // inner overlap
-        ]),
-        (1.14, 0.064, 0.058, vec![
-            (0.0, 0.35, 0.020 * m),            // bicep taper
-            (PI, 0.45, 0.018 * m),             // tricep taper
-            (PI - 0.4, 0.20, 0.009 * m),       // tricep lateral
-            (PI + 0.4, 0.20, 0.009 * m),       // tricep medial
-            (PI + hp, 0.40, 0.028),            // inner taper
-        ]),
-        // Elbow — olecranon point + narrowest transition
-        (0.98, 0.055, 0.052, vec![
-            (PI, 0.20, 0.014 * m),             // olecranon
-        ]),
-        (0.96, 0.052, 0.050, vec![
-            (PI, 0.18, 0.012 * m),             // olecranon point
-            (0.0, 0.25, -0.004),               // cubital fossa
-        ]),
-        (0.94, 0.055, 0.052, vec![]),
-        // Forearm — widens for muscle belly, tapers, cross-section flattens toward wrist
-        (0.88, 0.058, 0.054, vec![
-            (hp - 0.3, 0.35, 0.024 * m),       // brachioradialis (outer bulge)
-            (PI + hp + 0.3, 0.3, 0.018 * m),   // flexor group
-            (hp + 0.3, 0.3, 0.016 * m),        // extensor group
-            (PI + hp, 0.15, 0.006),            // ulnar border (bony ridge)
-        ]),
-        (0.82, 0.054, 0.050, vec![
-            (hp - 0.3, 0.35, 0.022 * m),       // brachioradialis taper
-            (PI + hp + 0.3, 0.3, 0.014 * m),   // flexor group
-            (PI + hp, 0.12, 0.006),            // ulnar border
-        ]),
-        (0.74, 0.048, 0.044, vec![
-            (hp, 0.3, 0.012 * m),              // extensor carpi
-            (PI + hp, 0.20, 0.008),            // ulnar border
-        ]),
-        (0.64, 0.044, 0.036, vec![
-            (PI + hp, 0.15, 0.006),            // ulnar border
-        ]),
-        // Wrist (F4: lowered from 0.66 to 0.54)
-        (0.54, 0.038, 0.030, vec![]),
-    ];
-
-    let shoulder_y = 1.44; // top of arm loft (overlaps torso)
+    let shoulder_y = 1.44;
     let elbow_y = 0.96;
     let wrist_y = 0.54;
-    let arm_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = arm_heights.iter().map(|&(ref y, rx, rz, ref bumps)| {
+    let arm_span = shoulder_y - wrist_y; // 0.90
+
+    // GLTF arm x_offset range
+    let gltf_max_x = anatomy::arm_ring_x(anatomy::arm_ring_count() - 1);
+
+    // rx/rz profile along the arm — muscular proportions, compensating for body_stretch
+    let arm_dims: &[(f32, f32, f32)] = &[
+        // (y, rx, rz) — significantly thicker for heroic build
+        (1.44, 0.155, 0.145),  // deltoid cap — wide shoulder wrap
+        (1.43, 0.150, 0.138),  // deltoid
+        (1.42, 0.144, 0.130),  // deltoid
+        (1.40, 0.136, 0.120),  // deltoid-to-upper-arm taper
+        (1.38, 0.128, 0.112),  // upper arm start
+        (1.35, 0.120, 0.106),  // bicep
+        (1.30, 0.115, 0.100),  // bicep peak
+        (1.24, 0.110, 0.096),  // mid-upper arm
+        (1.18, 0.104, 0.090),  // lower bicep
+        (1.12, 0.096, 0.084),  // tricep
+        (1.06, 0.086, 0.076),  // above elbow
+        (1.00, 0.078, 0.072),  // elbow approach
+        (0.96, 0.074, 0.068),  // elbow
+        (0.94, 0.078, 0.072),  // forearm belly start
+        (0.88, 0.084, 0.074),  // forearm belly peak
+        (0.82, 0.078, 0.068),  // mid forearm
+        (0.74, 0.068, 0.058),  // forearm taper
+        (0.64, 0.058, 0.048),  // lower forearm
+        (0.54, 0.050, 0.040),  // wrist
+    ];
+
+    let arm_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = arm_dims.iter().map(|&(y, rx, rz)| {
+        // Map arm Y to GLTF x_offset (0 at shoulder, gltf_max_x at wrist)
+        let t_arm = ((shoulder_y - y) / arm_span).clamp(0.0, 1.0);
+        let x_offset = t_arm * gltf_max_x;
+
+        // Get GLTF-calibrated contour (centroid-origin)
+        let mut ring = anatomy::arm_ring(x_offset, rx * a, rz * a, m, n);
+
+        // Mirror for left arm: negate X of each point, reverse for winding
+        if side < 0.0 {
+            for pt in ring.iter_mut() { pt[0] = -pt[0]; }
+            ring.reverse();
+        }
+
         // Interpolate center position along shoulder→elbow→wrist path
-        // Upper arm uses cubic ease-in: arm center stays near body even longer,
-        // moves outward quickly only near elbow. Maximizes torso overlap.
-        let (cx, cz) = if *y >= elbow_y {
-            let t_lin = ((shoulder_y - *y) / (shoulder_y - elbow_y)).clamp(0.0, 1.0);
-            let t = t_lin * t_lin * t_lin; // cubic — stays near shoulder even longer
+        let (cx, cz) = if y >= elbow_y {
+            let t_lin = ((shoulder_y - y) / (shoulder_y - elbow_y)).clamp(0.0, 1.0);
+            let t = t_lin * t_lin * t_lin;
             (shoulder[0] * (1.0 - t) + elbow[0] * t, shoulder[2] * (1.0 - t) + elbow[2] * t)
         } else {
-            let t = (elbow_y - *y) / (elbow_y - wrist_y);
+            let t = (elbow_y - y) / (elbow_y - wrist_y);
             (elbow[0] * (1.0 - t) + wrist[0] * t, elbow[2] * (1.0 - t) + wrist[2] * t)
         };
-        (*y, limb_ring(cx, cz, rx * a, rz * a, side, bumps, n), sk)
+
+        // Offset contour to arm center
+        for pt in ring.iter_mut() {
+            pt[0] += cx;
+            pt[1] += cz;
+        }
+
+        (y, ring, sk)
     }).collect();
 
+    let arm_base = tris.len();
     mesh::loft_y_tris(tris, &arm_rings);
+
+    // ── CURVATURE-BASED COLOR VARIATION (arms) ──
+    if m > 0.1 {
+        for tri in &mut tris[arm_base..] {
+            let cy = (tri.v[0][1] + tri.v[1][1] + tri.v[2][1]) / 3.0;
+            if cy < 0.56 || cy > 1.42 { continue; }
+            let cx = (tri.v[0][0] + tri.v[1][0] + tri.v[2][0]) / 3.0;
+            let cz = (tri.v[0][2] + tri.v[1][2] + tri.v[2][2]) / 3.0;
+            // Find arm center at this Y via same path interpolation
+            let (acx, acz) = if cy >= elbow_y {
+                let t_lin = ((shoulder_y - cy) / (shoulder_y - elbow_y)).clamp(0.0, 1.0);
+                let t = t_lin * t_lin * t_lin;
+                (shoulder[0] * (1.0 - t) + elbow[0] * t, shoulder[2] * (1.0 - t) + elbow[2] * t)
+            } else {
+                let t = ((elbow_y - cy) / (elbow_y - wrist_y)).clamp(0.0, 1.0);
+                (elbow[0] * (1.0 - t) + wrist[0] * t, elbow[2] * (1.0 - t) + wrist[2] * t)
+            };
+            let dx = cx - acx;
+            let dz = cz - acz;
+            let r_actual = (dx * dx + dz * dz).sqrt();
+            // Interpolate rx/rz at this Y
+            let mut rx_here = 0.0f32;
+            let mut rz_here = 0.0f32;
+            for j in 0..arm_dims.len() - 1 {
+                if cy >= arm_dims[j + 1].0 && cy <= arm_dims[j].0 {
+                    let t = (arm_dims[j].0 - cy) / (arm_dims[j].0 - arm_dims[j + 1].0);
+                    rx_here = arm_dims[j].1 + t * (arm_dims[j + 1].1 - arm_dims[j].1);
+                    rz_here = arm_dims[j].2 + t * (arm_dims[j + 1].2 - arm_dims[j].2);
+                    break;
+                }
+            }
+            if rx_here < 0.01 { continue; }
+            let theta = dx.atan2(-dz);
+            let ex = rx_here * a * theta.sin();
+            let ez = rz_here * a * theta.cos();
+            let r_smooth = (ex * ex + ez * ez).sqrt();
+            if r_smooth < 0.005 { continue; }
+            let dev = (r_actual - r_smooth) / r_smooth;
+            let shift = (dev * 8.0).clamp(-0.06, 0.06) * m;
+            if shift.abs() > 0.005 {
+                tri.color = darken(tri.color, 1.0 + shift);
+            }
+        }
+    }
 
     // ── HAND ──
     gen_hand(tris, wrist[0], wrist[1] - 0.05, wrist[2] - 0.02, side, sk);
@@ -1965,15 +1969,15 @@ fn gen_nude_leg(
     const Y_SCALE: f32 = (GAME_HI - GAME_LO) / (GLTF_HI - GLTF_LO);
     let gltf_to_game = |gy: f32| -> f32 { GAME_LO + (gy - GLTF_LO) * Y_SCALE };
 
-    // Base leg dimensions interpolated by game Y (from original ring definitions)
+    // Base leg dimensions interpolated by game Y — muscular proportions
     let base_dims = |y: f32| -> (f32, f32) {
         const CP: [(f32, f32, f32); 16] = [
-            (0.08, 0.048, 0.046), (0.14, 0.058, 0.052), (0.22, 0.070, 0.064),
-            (0.30, 0.088, 0.078), (0.36, 0.094, 0.086), (0.42, 0.090, 0.082),
-            (0.46, 0.088, 0.082), (0.48, 0.084, 0.078), (0.50, 0.088, 0.082),
-            (0.54, 0.110, 0.100), (0.62, 0.134, 0.122), (0.70, 0.150, 0.134),
-            (0.78, 0.158, 0.142), (0.84, 0.156, 0.140), (0.88, 0.152, 0.136),
-            (0.92, 0.145, 0.132),
+            (0.08, 0.055, 0.052), (0.14, 0.066, 0.060), (0.22, 0.080, 0.074),
+            (0.30, 0.100, 0.090), (0.36, 0.108, 0.098), (0.42, 0.102, 0.094),
+            (0.46, 0.100, 0.094), (0.48, 0.096, 0.090), (0.50, 0.102, 0.096),
+            (0.54, 0.126, 0.114), (0.62, 0.154, 0.140), (0.70, 0.172, 0.154),
+            (0.78, 0.180, 0.162), (0.84, 0.178, 0.160), (0.88, 0.174, 0.156),
+            (0.92, 0.168, 0.152),
         ];
         if y <= CP[0].0 { return (CP[0].1, CP[0].2); }
         if y >= CP[15].0 { return (CP[15].1, CP[15].2); }
@@ -2028,7 +2032,34 @@ fn gen_nude_leg(
         leg_rings.push((game_y, pts, sk));
     }
 
+    let leg_base = tris.len();
     mesh::loft_y_tris(tris, &leg_rings);
+
+    // ── CURVATURE-BASED COLOR VARIATION (legs) ──
+    if m > 0.1 {
+        for tri in &mut tris[leg_base..] {
+            let cy = (tri.v[0][1] + tri.v[1][1] + tri.v[2][1]) / 3.0;
+            if cy < 0.10 || cy > 0.90 { continue; }
+            let cx = (tri.v[0][0] + tri.v[1][0] + tri.v[2][0]) / 3.0;
+            let cz = (tri.v[0][2] + tri.v[1][2] + tri.v[2][2]) / 3.0;
+            // Distance from leg center axis
+            let dx = cx - lx;
+            let dz = cz - compute_cz(cy);
+            let r_actual = (dx * dx + dz * dz).sqrt();
+            // Smooth ellipse radius at this angle
+            let (brx, brz) = base_dims(cy);
+            let theta = dx.atan2(-dz);
+            let ex = brx * l * theta.sin();
+            let ez = brz * l * theta.cos();
+            let r_smooth = (ex * ex + ez * ez).sqrt();
+            if r_smooth < 0.005 { continue; }
+            let dev = (r_actual - r_smooth) / r_smooth;
+            let shift = (dev * 8.0).clamp(-0.06, 0.06) * m;
+            if shift.abs() > 0.005 {
+                tri.color = darken(tri.color, 1.0 + shift);
+            }
+        }
+    }
 
     // ── BARE FOOT ──
     gen_bare_foot(tris, ankle, side, sk);
@@ -2378,26 +2409,26 @@ fn gen_player_clothing(
         // Inner-thigh bumps push rings past body centerline for overlap coverage
         let pco = 0.030;
         let pants_data: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
-            (0.92, 0.130, 0.120, vec![
-                (PI + hp, 0.70, 0.085), (PI, 0.60, 0.060), (0.0, 0.60, 0.055),
+            (0.92, 0.150, 0.134, vec![
+                (PI + hp, 0.70, 0.100), (PI, 0.60, 0.070), (0.0, 0.60, 0.064),
             ]),
-            (0.88, 0.132, 0.122, vec![
-                (PI + hp, 0.70, 0.080), (PI, 0.60, 0.055), (0.0, 0.60, 0.050),
+            (0.88, 0.156, 0.138, vec![
+                (PI + hp, 0.70, 0.094), (PI, 0.60, 0.064), (0.0, 0.60, 0.058),
             ]),
-            (0.84, 0.134, 0.124, vec![
-                (PI + hp, 0.65, 0.065), (PI, 0.55, 0.045), (0.0, 0.55, 0.040),
+            (0.84, 0.160, 0.142, vec![
+                (PI + hp, 0.65, 0.076), (PI, 0.55, 0.052), (0.0, 0.55, 0.046),
             ]),
-            (0.78, 0.134, 0.124, vec![
-                (PI + hp, 0.60, 0.050), (PI, 0.50, 0.035), (0.0, 0.50, 0.030),
+            (0.78, 0.162, 0.144, vec![
+                (PI + hp, 0.60, 0.058), (PI, 0.50, 0.040), (0.0, 0.50, 0.035),
             ]),
-            (0.70, 0.128, 0.118, vec![
-                (PI + hp, 0.55, 0.030), (PI, 0.45, 0.020), (0.0, 0.45, 0.015),
+            (0.70, 0.154, 0.136, vec![
+                (PI + hp, 0.55, 0.035), (PI, 0.45, 0.024), (0.0, 0.45, 0.018),
             ]),
-            (0.62, 0.112, 0.104, vec![
-                (PI + hp, 0.50, 0.015),
+            (0.62, 0.136, 0.122, vec![
+                (PI + hp, 0.50, 0.018),
             ]),
-            (0.54, 0.092, 0.084, vec![]),
-            (0.48, 0.072, 0.066, vec![]),
+            (0.54, 0.108, 0.096, vec![]),
+            (0.48, 0.080, 0.074, vec![]),
         ];
         let pants_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = pants_data.iter().map(|(y, rx, rz, bumps)| {
             let cz = if *y >= knee_y {
@@ -2420,15 +2451,15 @@ fn gen_player_clothing(
 
         // Boot loft (knee → ankle) — same interpolation as gen_nude_leg lower half
         let bco = 0.018;
-        // F3: Boot radii increased to match thicker legs
+        // Boot radii sized to cover muscular legs
         let boot_data: [(f32, f32, f32); 7] = [
-            (0.48, 0.070, 0.066),
-            (0.42, 0.076, 0.070),
-            (0.36, 0.080, 0.072),
-            (0.30, 0.074, 0.066),
-            (0.22, 0.060, 0.054),
-            (0.14, 0.050, 0.044),
-            (0.08, 0.042, 0.040),
+            (0.48, 0.080, 0.074),
+            (0.42, 0.086, 0.080),
+            (0.36, 0.092, 0.084),
+            (0.30, 0.084, 0.076),
+            (0.22, 0.066, 0.060),
+            (0.14, 0.052, 0.048),
+            (0.08, 0.044, 0.042),
         ];
         let boot_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = boot_data.iter().map(|&(y, rx, rz)| {
             let cz = if y >= knee_y { knee_cz }
@@ -2956,7 +2987,7 @@ pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
         player.carrying_bin.is_some(),
         player.sitting,
         player.is_female,
-        Some((&app, PLAYER_SHIRT, PLAYER_PANTS)),
+        if NUDE_MODE.load(Ordering::Relaxed) { None } else { Some((&app, PLAYER_SHIRT, PLAYER_PANTS)) },
         None,
     );
 
@@ -2971,6 +3002,17 @@ pub fn gen_clothed_player_body(tris: &mut Vec<WorldTri>, is_female: bool) {
         tris, 0.0, app.skin, app.hair,
         0.0, false, false, false, is_female,
         Some((&app, PLAYER_SHIRT, PLAYER_PANTS)),
+        None,
+    );
+}
+
+/// Generate a nude player body (no clothing) for debug/anatomy inspection.
+pub fn gen_nude_player_body_export(tris: &mut Vec<WorldTri>, is_female: bool) {
+    let app = player_appearance(is_female);
+    gen_nude_player_body(
+        tris, 0.0, app.skin, app.hair,
+        0.0, false, false, false, is_female,
+        None, // no clothing
         None,
     );
 }

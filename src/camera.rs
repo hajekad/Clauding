@@ -3,9 +3,9 @@
 
 use crate::state::*;
 
-const CAM_DIST_WALK: f32 = 8.0;
+const CAM_DIST_WALK: f32 = 5.0;
 const CAM_DIST_DRIVE: f32 = 14.0;
-const CAM_HEIGHT_OFFSET: f32 = 1.5; // extra height above orbit center
+const CAM_HEIGHT_OFFSET: f32 = 1.2; // extra height above orbit center
 const CAM_LERP_WALK: f32 = 0.1;
 const CAM_LERP_DRIVE: f32 = 0.12;
 const PITCH_MIN: f32 = 0.05;  // ~3 degrees (nearly level)
