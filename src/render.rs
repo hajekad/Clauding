@@ -9,8 +9,6 @@ use crate::raster::*;
 use crate::state::*;
 use crate::color::{lerp_color, darken};
 
-const SKIN_COLOR: u32 = 0xFFDEB887;
-
 const VEHICLE_BODY_COLOR_DARKEN: f32 = 0.7;
 const WINDSHIELD_COLOR: u32 = 0xFF88AACC;
 const TIRE_COLOR: u32 = 0xFF222222;
@@ -52,7 +50,6 @@ fn place_mesh(
 }
 
 // ── Parameterized body proportions (from GLTF reference scans) ──
-#[allow(dead_code)]
 struct BodyProportions {
     body_stretch: f32,
     body_widen: f32,
@@ -65,7 +62,6 @@ struct BodyProportions {
     hip_rx: f32,
     waist_rx: f32,
     chest_rx: f32,
-    chest_rz: f32,
     // Muscle definition (0.0=smooth, 1.0=full male muscle)
     muscle_def: f32,
     // Limb scaling
@@ -79,13 +75,8 @@ struct BodyProportions {
     has_adams_apple: bool,
     // Female-specific
     has_breasts: bool,
-    breast_rx: f32,
-    breast_ry: f32,
     breast_rz: f32,
     breast_y: f32,
-    breast_z: f32,
-    breast_x_off: f32,
-    is_female: bool,
 }
 
 fn male_proportions() -> BodyProportions {
@@ -100,7 +91,6 @@ fn male_proportions() -> BodyProportions {
         hip_rx: 0.18,
         waist_rx: 0.15,
         chest_rx: 0.22,
-        chest_rz: 0.19,
         muscle_def: 1.0,
         arm_rx_scale: 1.0,
         leg_rx_scale: 1.0,
@@ -110,9 +100,8 @@ fn male_proportions() -> BodyProportions {
         neck_rz: 0.13,     // F5: thicker neck (was 0.10)
         has_adams_apple: true,
         has_breasts: false,
-        breast_rx: 0.0, breast_ry: 0.0, breast_rz: 0.0,
-        breast_y: 0.0, breast_z: 0.0, breast_x_off: 0.0,
-        is_female: false,
+        breast_rz: 0.0,
+        breast_y: 0.0,
     }
 }
 
@@ -128,7 +117,6 @@ fn female_proportions() -> BodyProportions {
         hip_rx: 0.20,
         waist_rx: 0.12,
         chest_rx: 0.17,
-        chest_rz: 0.16,
         muscle_def: 0.3,
         arm_rx_scale: 0.90,
         leg_rx_scale: 0.90,
@@ -138,13 +126,8 @@ fn female_proportions() -> BodyProportions {
         neck_rz: 0.10,     // F5: thicker neck (was 0.08)
         has_adams_apple: false,
         has_breasts: true,
-        breast_rx: 0.065,
-        breast_ry: 0.055,
         breast_rz: 0.038,     // subtle forward projection
         breast_y: 1.26,
-        breast_z: -0.18,      // closer to chest wall
-        breast_x_off: 0.09,
-        is_female: true,
     }
 }
 
@@ -324,9 +307,19 @@ const BAG_COLOR: u32 = 0xFF886644;
 // ═══════════════════════════════════════════════════════════════════════════
 
 // --- Material palettes ---
-const SKIN_TONES: [u32; 8] = [
-    0xFFDEB887, 0xFFD2A87A, 0xFFC89B6E, 0xFFE8C9A0,
-    0xFFBB9060, 0xFFA07850, 0xFFCCA882, 0xFFDDBC98,
+const SKIN_TONES: [u32; 12] = [
+    0xFFF5D6B8, // very light / pale
+    0xFFE8C9A0, // light warm
+    0xFFDEB887, // light tan
+    0xFFD2A87A, // medium light
+    0xFFCCA882, // golden
+    0xFFC89B6E, // medium
+    0xFFBB9060, // olive
+    0xFFA07850, // medium dark
+    0xFF8B6540, // brown
+    0xFF704D30, // dark brown
+    0xFF5A3D28, // deep brown
+    0xFFDDBC98, // warm beige
 ];
 const HAIR_COLORS: [u32; 8] = [
     0xFF332211, 0xFF443322, 0xFF221100, 0xFF554433,
@@ -374,6 +367,7 @@ struct NpcAppearance {
     sash_col: u32,
     belt_col: u32,        // belt leather color — varies per NPC
     face_age: u8,         // 0=young, 1=mid, 2=old (wrinkle density)
+    hair_style: u8,       // 0=full, 1=short crop, 2=receding/thin
     is_female: bool,
     face: FaceSliders,
 }
@@ -382,7 +376,7 @@ fn npc_appearance(seed: u32) -> NpcAppearance {
     let s = seed;
     let coat_col = COAT_COLORS[(s / 13) as usize % COAT_COLORS.len()];
     let has_coat = s % 4 != 0;
-    let is_female = s % 5 == 0;
+    let is_female = s % 2 == 0;
     let face_base = if is_female { FaceSliders::female_default() } else { FaceSliders::male_default() };
     NpcAppearance {
         skin: SKIN_TONES[(s / 3) as usize % SKIN_TONES.len()],
@@ -401,15 +395,31 @@ fn npc_appearance(seed: u32) -> NpcAppearance {
         sash_col: SASH_COLORS[(s / 23) as usize % SASH_COLORS.len()],
         belt_col: BELT_COLORS[(s / 31) as usize % BELT_COLORS.len()],
         face_age: ((s / 29) % 3) as u8,
+        hair_style: ((s / 37) % 3) as u8,
         is_female,
         face: FaceSliders::randomized(&face_base, s),
     }
 }
 
 fn player_appearance(is_female: bool) -> NpcAppearance {
-    let face = if is_female { FaceSliders::female_default() } else { FaceSliders::male_default() };
+    // Distinctive protagonist face — sharp jaw, defined brow, memorable profile
+    let face = if is_female {
+        FaceSliders {
+            jaw_definition: 0.55, chin_projection: 0.50, cheekbone: 0.82,
+            brow_ridge: 0.28, eye_size: 0.58, lip_fullness: 0.65,
+            skull_width: 0.44, nose_size: 0.32,
+            ..FaceSliders::female_default()
+        }
+    } else {
+        FaceSliders {
+            jaw_definition: 0.80, chin_projection: 0.72, cheekbone: 0.52,
+            brow_ridge: 0.70, eye_depth: 0.60, nose_bridge: 0.55,
+            masseter: 0.62, forehead_height: 0.42,
+            ..FaceSliders::male_default()
+        }
+    };
     NpcAppearance {
-        skin: SKIN_COLOR,
+        skin: SKIN_TONES[0], // use palette instead of constant
         hair: 0xFF332211,
         hat_type: 6,           // hood
         hat_col: 0xFF2A2A3A,   // dark blue-grey
@@ -425,6 +435,7 @@ fn player_appearance(is_female: bool) -> NpcAppearance {
         sash_col: 0xFFAA2222,  // red sash
         belt_col: LEATHER_DARK,
         face_age: 0,
+        hair_style: 0,
         is_female,
         face,
     }
@@ -1144,7 +1155,11 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
             push_box(tris, side * 0.16, 1.76, 0.04, 0.02, 0.04, 0.08, hair);
         }
     } else if !hat {
-        gen_hair_full(tris, hair, skw, skd, fh_off);
+        match app.hair_style {
+            1 => gen_hair_short(tris, hair, skw, skd),
+            2 => gen_hair_receding(tris, hair, skw, skd, fh_off),
+            _ => gen_hair_full(tris, hair, skw, skd, fh_off),
+        }
     }
 }
 
@@ -1198,6 +1213,60 @@ fn gen_hair_full(tris: &mut Vec<WorldTri>, hair: u32, skw: f32, skd: f32, fh_off
 
     // Hairline fringe — subtle forehead boundary
     mesh::ellipsoid_tris(tris, 0.0, 1.84 + fh_off, -0.20 * skd, 0.12 * skw, 0.010, 0.015, 0, hd);
+}
+
+/// Short cropped hair — tight to skull, visible scalp through thin coverage.
+/// Military/worker cut. Sideburns only, no back volume.
+fn gen_hair_short(tris: &mut Vec<WorldTri>, hair: u32, skw: f32, skd: f32) {
+    let hd = darken(hair, 0.88);
+    // Thin skull cap — sits very close to head, minimal volume
+    let hair_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+        (1.84, body_ring(0.0, 0.01 * skd, 0.205 * skw, 0.27 * skd, &[], 24), hd),
+        (1.90, body_ring(0.0, 0.03 * skd, 0.210 * skw, 0.28 * skd, &[], 24), hd),
+        (1.96, body_ring(0.0, 0.04 * skd, 0.200 * skw, 0.26 * skd, &[], 24), hair),
+        (2.02, body_ring(0.0, 0.04 * skd, 0.170 * skw, 0.22 * skd, &[], 24), hair),
+        (2.06, body_ring(0.0, 0.03 * skd, 0.120 * skw, 0.15 * skd, &[], 24), hd),
+        (2.09, body_ring(0.0, 0.02 * skd, 0.060 * skw, 0.08 * skd, &[], 24), hd),
+    ];
+    mesh::loft_y_tris(tris, &hair_rings);
+    // Short sideburns
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.19 * skw, 1.74, -0.01,
+            0.018, 0.04, 0.025, 0, hd);
+    }
+}
+
+/// Receding/thinning hair — exposed forehead, hair only on sides and back.
+/// Older/distinguished look. Horseshoe pattern.
+fn gen_hair_receding(tris: &mut Vec<WorldTri>, hair: u32, skw: f32, skd: f32, fh_off: f32) {
+    use std::f32::consts::PI;
+    let hd = darken(hair, 0.90);
+    let hl = darken(hair, 0.85);
+    // Side and back hair only — no top coverage (receded hairline)
+    // Back volume (nape area)
+    mesh::ellipsoid_tris(tris, 0.0, 1.76, 0.16 * skd, 0.13 * skw, 0.08, 0.07 * skd, 1, hl);
+    mesh::ellipsoid_tris(tris, 0.0, 1.68, 0.14 * skd, 0.11 * skw, 0.05, 0.05 * skd, 0, hl);
+    // Side patches (above ears) — thicker sideburns
+    for &side in &[-1.0f32, 1.0] {
+        mesh::ellipsoid_tris(tris, side * 0.195 * skw, 1.78, 0.02,
+            0.030, 0.07, 0.06, 0, hd);
+        mesh::ellipsoid_tris(tris, side * 0.19 * skw, 1.72, -0.01,
+            0.025, 0.05, 0.04, 0, hd);
+        // Temple wisps
+        mesh::ellipsoid_tris(tris, side * 0.18 * skw, 1.84 + fh_off, -0.06,
+            0.020, 0.02, 0.03, 0, hd);
+    }
+    // Thin back strip connecting sides
+    let back_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+        (1.82, body_ring(0.0, 0.10 * skd, 0.20 * skw, 0.10 * skd, &[
+            (PI, 0.5, 0.015),
+        ], 16), hd),
+        (1.88, body_ring(0.0, 0.10 * skd, 0.18 * skw, 0.08 * skd, &[
+            (PI, 0.5, 0.012),
+        ], 16), hd),
+        (1.94, body_ring(0.0, 0.09 * skd, 0.12 * skw, 0.05 * skd, &[], 16), hd),
+    ];
+    mesh::loft_y_tris(tris, &back_rings);
 }
 
 /// Neck — ring-lofted with SCM muscles and larynx. Continuous head-to-neck topology.
@@ -1887,43 +1956,46 @@ fn gen_bare_foot(tris: &mut Vec<WorldTri>, ankle: [f32; 3], side: f32, skin: u32
     let nail_col = darken(sk, 1.06);
     let lx = ankle[0];
     let az = ankle[2];
+    // Y coordinates relative to ankle — foot geometry follows ankle position
+    let ay = ankle[1]; // default 0.08 in standing
+    let y = |offset: f32| -> f32 { ay + offset };
 
     // ── HEEL — calcaneus, rounded posterior ──
-    mesh::ellipsoid_tris(tris, lx, 0.028, az + 0.035, 0.035, 0.028, 0.035, 0, sk);
+    mesh::ellipsoid_tris(tris, lx, y(-0.052), az + 0.035, 0.035, 0.028, 0.035, 0, sk);
     // Achilles insertion (slight bump at back)
-    mesh::ellipsoid_tris(tris, lx, 0.045, az + 0.04, 0.020, 0.015, 0.018, 0, sk_dk);
+    mesh::ellipsoid_tris(tris, lx, y(-0.035), az + 0.04, 0.020, 0.015, 0.018, 0, sk_dk);
 
     // ── MIDFOOT — arch structure ──
     // Dorsum (top of foot — convex ridge)
-    mesh::ellipsoid_tris(tris, lx, 0.042, az - 0.02, 0.038, 0.018, 0.055, 0, sk);
+    mesh::ellipsoid_tris(tris, lx, y(-0.038), az - 0.02, 0.038, 0.018, 0.055, 0, sk);
     // Lateral border (outer edge — touches ground)
-    mesh::ellipsoid_tris(tris, lx + side * 0.020, 0.015, az - 0.01, 0.020, 0.015, 0.050, 0, sk);
+    mesh::ellipsoid_tris(tris, lx + side * 0.020, y(-0.065), az - 0.01, 0.020, 0.015, 0.050, 0, sk);
     // Medial arch (inner — doesn't touch ground, concave underneath)
-    mesh::ellipsoid_tris(tris, lx - side * 0.015, 0.030, az - 0.005, 0.018, 0.020, 0.045, 0, sk);
+    mesh::ellipsoid_tris(tris, lx - side * 0.015, y(-0.050), az - 0.005, 0.018, 0.020, 0.045, 0, sk);
 
     // ── FOREFOOT — metatarsal heads (ball of foot) ──
     // Ball of foot — wide transverse arch
-    mesh::ellipsoid_tris(tris, lx, 0.018, az - 0.065, 0.042, 0.016, 0.025, 0, sk);
+    mesh::ellipsoid_tris(tris, lx, y(-0.062), az - 0.065, 0.042, 0.016, 0.025, 0, sk);
     // 1st metatarsal head (big toe side — prominent)
-    mesh::ellipsoid_tris(tris, lx - side * 0.020, 0.015, az - 0.068, 0.016, 0.013, 0.016, 0, sk_dk);
+    mesh::ellipsoid_tris(tris, lx - side * 0.020, y(-0.065), az - 0.068, 0.016, 0.013, 0.016, 0, sk_dk);
     // 5th metatarsal head (pinky side)
-    mesh::ellipsoid_tris(tris, lx + side * 0.025, 0.013, az - 0.060, 0.012, 0.010, 0.014, 0, sk_dk);
+    mesh::ellipsoid_tris(tris, lx + side * 0.025, y(-0.067), az - 0.060, 0.012, 0.010, 0.014, 0, sk_dk);
 
     // ── EXTENSOR TENDONS (top of foot, subtle ridges) ──
     for ti in 0..4 {
         let tx = lx + (ti as f32 - 1.5) * side * 0.010;
-        mesh::ellipsoid_tris(tris, tx, 0.048, az - 0.030, 0.003, 0.004, 0.035, 0, darken(sk, 0.97));
+        mesh::ellipsoid_tris(tris, tx, y(-0.032), az - 0.030, 0.003, 0.004, 0.035, 0, darken(sk, 0.97));
     }
 
     // ── TOES — hallux (big toe) + 4 lesser toes ──
     // Big toe — 2 phalanges, wider and thicker
     let btx = lx - side * 0.022;
     // Proximal phalanx
-    mesh::ellipsoid_tris(tris, btx, 0.013, az - 0.088, 0.014, 0.011, 0.018, 0, sk);
+    mesh::ellipsoid_tris(tris, btx, y(-0.067), az - 0.088, 0.014, 0.011, 0.018, 0, sk);
     // Distal phalanx
-    mesh::ellipsoid_tris(tris, btx, 0.012, az - 0.108, 0.012, 0.010, 0.014, 0, sk);
+    mesh::ellipsoid_tris(tris, btx, y(-0.068), az - 0.108, 0.012, 0.010, 0.014, 0, sk);
     // Toenail
-    push_box(tris, btx, 0.020, az - 0.118, 0.008, 0.003, 0.006, nail_col);
+    push_box(tris, btx, y(-0.060), az - 0.118, 0.008, 0.003, 0.006, nail_col);
 
     // 4 lesser toes — progressively shorter and thinner
     for ti in 0..4 {
@@ -1932,13 +2004,13 @@ fn gen_bare_foot(tris: &mut Vec<WorldTri>, ankle: [f32; 3], side: f32, skin: u32
         let toe_r = 0.008 - ti as f32 * 0.001;
         let tz = az - 0.082 + ti as f32 * 0.004; // each toe slightly shorter reach
         // Single phalanx (small toes read as one unit at game scale)
-        mesh::ellipsoid_tris(tris, tx, 0.010, tz - toe_len * 0.5, toe_r, 0.006, toe_len, 0, sk);
+        mesh::ellipsoid_tris(tris, tx, y(-0.070), tz - toe_len * 0.5, toe_r, 0.006, toe_len, 0, sk);
         // Toenail
-        push_box(tris, tx, 0.015, tz - toe_len + 0.002, 0.005, 0.002, 0.004, nail_col);
+        push_box(tris, tx, y(-0.065), tz - toe_len + 0.002, 0.005, 0.002, 0.004, nail_col);
     }
 
     // ── SOLE — flat pad for ground contact ──
-    mesh::ellipsoid_tris(tris, lx, 0.004, az - 0.02, 0.038, 0.004, 0.065, 0, sk_dk);
+    mesh::ellipsoid_tris(tris, lx, y(-0.076), az - 0.02, 0.038, 0.004, 0.065, 0, sk_dk);
 }
 
 /// Generate a limb cross-section ring, mirroring bumps for left-side limbs.
@@ -2079,81 +2151,6 @@ fn gen_nude_leg(
     gen_bare_foot(tris, ankle, side, sk);
 }
 
-/// Nude attack arm — single continuous loft, no sphere joints
-fn gen_nude_attack_arm(tris: &mut Vec<WorldTri>, side: f32, extend: f32, skin: u32, props: &BodyProportions, n: usize) {
-    let sk = skin;
-    let a = props.arm_rx_scale;
-    let m = props.muscle_def;
-
-    use std::f32::consts::PI;
-    let hp = PI * 0.5;
-
-    let sx = props.shoulder_joint_x;
-    let shoulder = [side * sx, 1.42, 0.0];
-    let elbow = [side * (sx + 0.10), 1.00, -0.15 - extend * 0.20];
-    let wrist = [side * (sx + 0.06), 0.66, -0.35 - extend * 0.35];
-
-    // ── SINGLE CONTINUOUS ATTACK ARM LOFT ──
-    let arm_heights: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
-        (1.42, 0.10, 0.10, vec![
-            (hp, 0.35, 0.035 * m), (0.5, 0.30, 0.022 * m), (PI - 0.5, 0.30, 0.018 * m),
-            (PI + hp, 0.35, 0.035),            // inward overlap
-        ]),
-        (1.38, 0.092, 0.088, vec![
-            (hp, 0.35, 0.038 * m), (0.5, 0.30, 0.024 * m), (PI - 0.5, 0.30, 0.020 * m),
-            (PI + hp, 0.40, 0.040),            // pec/lat wrap
-        ]),
-        (1.32, 0.080, 0.074, vec![
-            (hp, 0.30, 0.022 * m),
-            (PI + hp, 0.45, 0.045),            // pec/lat wrap
-        ]),
-        (1.28, 0.076, 0.070, vec![
-            (0.0, 0.4, 0.026 * m), (PI, 0.45, 0.020 * m),
-            (PI + hp, 0.45, 0.045),            // pec/lat wrap
-        ]),
-        (1.24, 0.074, 0.068, vec![
-            (0.0, 0.4, 0.030 * m), (PI, 0.45, 0.024 * m),
-            (PI + hp, 0.40, 0.038),            // inner taper
-        ]),
-        (1.18, 0.058, 0.054, vec![
-            (0.0, 0.35, 0.016 * m), (PI, 0.4, 0.014 * m),
-            (PI + hp, 0.35, 0.028),            // inner taper
-        ]),
-        // Elbow (F4: lowered to match new joint)
-        (1.02, 0.048, 0.046, vec![(PI, 0.3, 0.008 * m)]),
-        (1.00, 0.046, 0.044, vec![]),
-        (0.98, 0.048, 0.046, vec![]),
-        // Forearm
-        (0.88, 0.052, 0.048, vec![
-            (hp - 0.3, 0.35, 0.016 * m), (PI + hp + 0.3, 0.3, 0.012 * m),
-        ]),
-        (0.76, 0.044, 0.040, vec![
-            (hp - 0.3, 0.35, 0.010 * m),
-        ]),
-        (0.66, 0.036, 0.034, vec![]),
-    ];
-
-    let shoulder_y = 1.42;
-    let elbow_y = 1.00;
-    let wrist_y = 0.66;
-    let arm_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = arm_heights.iter().map(|&(ref y, rx, rz, ref bumps)| {
-        let (cx, cz) = if *y >= elbow_y {
-            let t_lin = (shoulder_y - *y) / (shoulder_y - elbow_y);
-            let t = t_lin * t_lin * t_lin; // cubic — stays near shoulder longer
-            (shoulder[0] * (1.0 - t) + elbow[0] * t, shoulder[2] * (1.0 - t) + elbow[2] * t)
-        } else {
-            let t = (elbow_y - *y) / (elbow_y - wrist_y);
-            (elbow[0] * (1.0 - t) + wrist[0] * t, elbow[2] * (1.0 - t) + wrist[2] * t)
-        };
-        (*y, limb_ring(cx, cz, rx * a, rz * a, side, bumps, n), sk)
-    }).collect();
-
-    mesh::loft_y_tris(tris, &arm_rings);
-
-    // ── FIST ──
-    push_box(tris, wrist[0], wrist[1] - 0.03, wrist[2] - 0.04, 0.040 * a, 0.035, 0.025 * a, darken(sk, 0.95));
-}
-
 /// ACU-style clothing over the detailed player body. Generated in natural (pre-stretch)
 /// coordinates so it transforms identically with the body. All major surfaces use the
 /// same loft technique as the nude body — offset body rings for smooth coverage.
@@ -2187,7 +2184,7 @@ fn gen_player_clothing(
     };
 
     let hp = PI * 0.5;
-    let co = 0.035; // clothing offset over body
+    let co = 0.055; // clothing offset over body (increased to prevent Z-fighting)
 
     // Breast coverage bump — matches nude body breast profile so coat covers chest
     let breast_bump = |y: f32| -> f32 {
@@ -2783,7 +2780,7 @@ fn gen_nude_player_body(
             has_coat: false, has_cape: false, has_sash: false,
             has_cross_strap: false, has_bracers: false,
             boot_type: 0, boot_col: 0, sash_col: 0, belt_col: 0,
-            face_age: 0, is_female, face,
+            face_age: 0, hair_style: 0, is_female, face,
         }
     };
 
@@ -2799,25 +2796,30 @@ fn gen_nude_player_body(
         for &side in &[-1.0f32, 1.0] {
             let hip_x = side * (props.hip_joint_x + 0.03);
             let hip_s = [hip_x, 0.48, 0.0];
+            let mid_thigh = [hip_x, 0.47, -0.21];
             let knee_s = [hip_x, 0.46, -0.42];
+            let mid_calf = [hip_x, 0.26, -0.43];
             let ankle_s = [hip_x, 0.06, -0.44];
             let l = props.leg_rx_scale;
-            mesh::tapered_cylinder_between(tris, hip_s, knee_s, 0.20 * l, 0.12 * l, 10, skin);
-            mesh::sphere_tris(tris, knee_s[0], knee_s[1], knee_s[2], 0.11 * l, 0, skin);
-            mesh::tapered_cylinder_between(tris, knee_s, ankle_s, 0.11 * l, 0.070 * l, 8, skin);
+            // Upper leg — tapers from hip to knee with thigh bulk
+            mesh::tapered_cylinder_between(tris, hip_s, mid_thigh, 0.20 * l, 0.18 * l, 10, skin);
+            mesh::tapered_cylinder_between(tris, mid_thigh, knee_s, 0.18 * l, 0.12 * l, 10, skin);
+            // Knee — smooth bulge
+            mesh::ellipsoid_tris(tris, knee_s[0], knee_s[1], knee_s[2],
+                0.10 * l, 0.10 * l, 0.08 * l, 0, skin);
+            // Lower leg — calf swell then taper
+            mesh::tapered_cylinder_between(tris, knee_s, mid_calf, 0.11 * l, 0.10 * l, 8, skin);
+            mesh::tapered_cylinder_between(tris, mid_calf, ankle_s, 0.10 * l, 0.06 * l, 8, skin);
             gen_bare_foot(tris, ankle_s, side, skin);
         }
+        // Seated arms — lofted anatomy, shift down to match seated torso
         for &side in &[-1.0f32, 1.0] {
-            let sh_x = side * props.shoulder_joint_x;
-            let shoulder = [sh_x, 0.98, 0.0];
-            let elbow = [side * (props.shoulder_joint_x + 0.06), 0.52, -0.15];
-            let wrist = [sh_x, 0.24, -0.30];
-            let aa = props.arm_rx_scale;
-            mesh::ellipsoid_tris(tris, shoulder[0], shoulder[1], shoulder[2], 0.12 * aa, 0.10, 0.10 * aa, 1, skin);
-            mesh::tapered_cylinder_between(tris, shoulder, elbow, 0.10 * aa, 0.070 * aa, 8, skin);
-            mesh::sphere_tris(tris, elbow[0], elbow[1], elbow[2], 0.066 * aa, 0, skin);
-            mesh::tapered_cylinder_between(tris, elbow, wrist, 0.068 * aa, 0.048 * aa, 7, skin);
-            gen_hand(tris, wrist[0], wrist[1] - 0.04, wrist[2] - 0.02, side, skin);
+            let arm_base = tris.len();
+            gen_nude_arm(tris, side, -0.25, 0.30, skin, &props, 16);
+            // Shift arm down by torso offset (seated torso is 0.4 lower)
+            for tri in &mut tris[arm_base..] {
+                for v in &mut tri.v { v[1] -= 0.44; }
+            }
         }
         // Stretch body
         let bs = props.body_stretch;
@@ -2866,19 +2868,61 @@ fn gen_nude_player_body(
     gen_neck(tris, skin, &props, 24);
     gen_nude_torso(tris, skin, &props, 32);
 
-    // Legs
+    // ── WALKING ANIMATION — hip sway, counter-rotation, speed-dependent arm bend ──
+    // Hip lateral sway: weight shifts toward stance leg
+    let hip_sway = -swing * 0.015; // subtle lateral shift
+
+    // Legs — stride with hip sway offset + foot lift arc
+    // Foot lift: the swinging leg lifts in an arc to clear ground, peaking at mid-swing
     let l_fwd = -swing * 0.40;
     let r_fwd = swing * 0.40;
-    let l_knee = if swing > 0.0 { swing * 0.22 } else { 0.0 };
-    let r_knee = if swing < 0.0 { (-swing) * 0.22 } else { 0.0 };
+    let l_knee = if swing > 0.0 { swing * 0.28 } else { 0.0 };
+    let r_knee = if swing < 0.0 { (-swing) * 0.28 } else { 0.0 };
+    // Foot lift: the backward-moving leg lifts to clear ground
+    // Peak lift occurs at max backward extension (sin peak of stride)
+    let l_lift = if l_fwd > 0.0 { l_fwd * 0.12 } else { 0.0 }; // left foot lifts when swinging back
+    let r_lift = if r_fwd > 0.0 { r_fwd * 0.12 } else { 0.0 }; // right foot lifts when swinging back
+    let l_leg_base = tris.len();
     gen_nude_leg(tris, -1.0, l_fwd, l_knee, skin, &props, 24);
+    // Lift foot vertices (below ankle Y=0.08) on the swinging leg
+    if l_lift > 0.001 {
+        for tri in &mut tris[l_leg_base..] {
+            for v in &mut tri.v {
+                if v[1] < 0.12 { // ankle and below
+                    let weight = 1.0 - (v[1] / 0.12).clamp(0.0, 1.0);
+                    v[1] += l_lift * weight;
+                }
+            }
+        }
+    }
+    let r_leg_base = tris.len();
     gen_nude_leg(tris, 1.0, r_fwd, r_knee, skin, &props, 24);
+    if r_lift > 0.001 {
+        for tri in &mut tris[r_leg_base..] {
+            for v in &mut tri.v {
+                if v[1] < 0.12 {
+                    let weight = 1.0 - (v[1] / 0.12).clamp(0.0, 1.0);
+                    v[1] += r_lift * weight;
+                }
+            }
+        }
+    }
 
-    // Arms
+    // Arms — counter-swing with speed-dependent bend
     if attack_phase > 0.0 {
         let t = (attack_phase / ATTACK_ANIM_DURATION).clamp(0.0, 1.0);
         let extend = 1.0 - (1.0 - t) * (1.0 - t);
-        gen_nude_attack_arm(tris, 1.0, extend, skin, &props, 24);
+        // Punch arm: reuse full anatomy loft (forward + extended bend)
+        let punch_fwd = -0.35 - extend * 0.50;
+        let punch_bend = 0.20 + extend * 0.30;
+        gen_nude_arm(tris, 1.0, punch_fwd, punch_bend, skin, &props, 24);
+        // Replace hand with fist on punch arm
+        let sx = props.shoulder_joint_x;
+        let wrist_x = 1.0 * (sx + 0.06);
+        let wrist_z = punch_fwd * 0.15 - punch_bend;
+        push_box(tris, wrist_x, 0.49, wrist_z - 0.06,
+            0.040 * props.arm_rx_scale, 0.035, 0.025 * props.arm_rx_scale,
+            darken(skin, 0.95));
         gen_nude_arm(tris, -1.0, -0.2, 0.3, skin, &props, 24);
     } else if carrying_item || carrying_bin {
         gen_nude_arm(tris, -1.0, -0.63, 0.30, skin, &props, 24);
@@ -2890,10 +2934,11 @@ fn gen_nude_player_body(
             mesh::cylinder_tris(tris, 0.0, 0.78, -0.55, 0.2, 0.55, 8, BIN_COLOR);
         }
     } else {
-        let l_arm_fwd = swing * 0.25;
-        let r_arm_fwd = -swing * 0.25;
-        let l_bend = 0.10 + swing.abs() * 0.14;
-        let r_bend = 0.10 + swing.abs() * 0.14;
+        // Shoulder counter-rotation: arms swing opposite to legs, forward arm bends more
+        let l_arm_fwd = swing * 0.30;
+        let r_arm_fwd = -swing * 0.30;
+        let l_bend = 0.10 + l_arm_fwd.abs() * 0.22;
+        let r_bend = 0.10 + r_arm_fwd.abs() * 0.22;
         gen_nude_arm(tris, -1.0, l_arm_fwd, l_bend, skin, &props, 24);
         gen_nude_arm(tris, 1.0, r_arm_fwd, r_bend, skin, &props, 24);
     }
@@ -2906,11 +2951,28 @@ fn gen_nude_player_body(
         );
     }
 
-    // Stretch body vertically (taller) and slightly widen (muscular mass)
+    // Stretch body vertically (taller), widen, apply hip sway + shoulder counter-twist
     let bs = props.body_stretch;
     let bw = props.body_widen;
+    // Shoulder counter-rotation: upper body twists opposite to hips during walk
+    let twist_angle = swing * 0.06; // ~3.4° at full swing — subtle but visible
+    let twist_sin = twist_angle.sin();
+    let twist_cos = twist_angle.cos();
     for tri in &mut tris[body_base..] {
         for v in &mut tri.v {
+            // Hip sway: lateral shift proportional to how low on the body (hips sway most)
+            let sway_weight = (1.0 - (v[1] / 1.5).clamp(0.0, 1.0)) * 0.5;
+            v[0] += hip_sway * sway_weight;
+            // Shoulder twist: Y-axis rotation increasing with height (waist=0, shoulders=full)
+            let twist_weight = ((v[1] - 0.92) / 0.50).clamp(0.0, 1.0);
+            if twist_weight > 0.0 {
+                let tw = twist_sin * twist_weight;
+                let tc = 1.0 + (twist_cos - 1.0) * twist_weight;
+                let ox = v[0];
+                let oz = v[2];
+                v[0] = ox * tc - oz * tw;
+                v[2] = ox * tw + oz * tc;
+            }
             v[0] *= bw;
             v[1] *= bs;
             v[2] *= bw;
@@ -2950,14 +3012,14 @@ fn gen_nude_player_body(
 
 pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
     let base = tris.len();
-    let skin = if player.hit_flash > 0.0 { 0xFFFF4444 } else { SKIN_COLOR };
     let app = player_appearance(player.is_female);
+    let skin = if player.hit_flash > 0.0 { 0xFFFF4444 } else { app.skin };
 
     gen_nude_player_body(
         tris,
         player.walk_phase.sin() * 0.4,
         skin,
-        0xFF332211,
+        app.hair,
         player.attack_phase,
         player.carrying_item,
         player.carrying_bin.is_some(),
@@ -2975,7 +3037,7 @@ pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
 pub fn gen_clothed_player_body(tris: &mut Vec<WorldTri>, is_female: bool) {
     let app = player_appearance(is_female);
     gen_nude_player_body(
-        tris, 0.0, SKIN_COLOR, 0xFF332211,
+        tris, 0.0, app.skin, app.hair,
         0.0, false, false, false, is_female,
         Some((&app, PLAYER_SHIRT, PLAYER_PANTS)),
         None,
@@ -2992,7 +3054,7 @@ pub fn gen_head_standalone(tris: &mut Vec<WorldTri>, face: &FaceSliders, skin: u
         has_coat: false, has_cape: false, has_sash: false,
         has_cross_strap: false, has_bracers: false,
         boot_type: 0, boot_col: 0, sash_col: 0, belt_col: 0,
-        face_age: 0, is_female, face: face.clone(),
+        face_age: 0, hair_style: 0, is_female, face: face.clone(),
     };
     let head_base = tris.len();
     gen_head(tris, &app, None);
@@ -3610,37 +3672,42 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
     let shirt = if npc.hit_flash > 0.0 { 0xFFFF4444 } else { job_shirt_color(npc) };
     let app = npc_appearance(npc.brain_idx as u32);
 
-    // Ragdoll rendering: actual character model oriented by ragdoll joints
+    // Ragdoll rendering: dual-segment orientation with waist blend
     if npc.ragdoll_active {
         let base = tris.len();
         let p = &npc.ragdoll_points;
         // hips=0, chest=1, head=2, l_hand=3, r_hand=4, l_foot=5, r_foot=6
 
-        // Compute body orientation from ragdoll joint positions
-        // "Up" axis: hips → head (spine direction)
-        let ux = p[2][0] - p[0][0];
-        let uy = p[2][1] - p[0][1];
-        let uz = p[2][2] - p[0][2];
-        let ulen = (ux * ux + uy * uy + uz * uz).sqrt().max(0.01);
-        let up = [ux / ulen, uy / ulen, uz / ulen];
+        // Helper: build orthonormal basis from up + hint right
+        let make_basis = |up_raw: [f32; 3], right_hint: [f32; 3]| -> [[f32; 3]; 3] {
+            let ulen = (up_raw[0]*up_raw[0] + up_raw[1]*up_raw[1] + up_raw[2]*up_raw[2]).sqrt().max(0.01);
+            let up = [up_raw[0]/ulen, up_raw[1]/ulen, up_raw[2]/ulen];
+            let dot = right_hint[0]*up[0] + right_hint[1]*up[1] + right_hint[2]*up[2];
+            let rx = right_hint[0] - dot*up[0];
+            let ry = right_hint[1] - dot*up[1];
+            let rz = right_hint[2] - dot*up[2];
+            let rlen = (rx*rx + ry*ry + rz*rz).sqrt().max(0.01);
+            let right = [rx/rlen, ry/rlen, rz/rlen];
+            let fwd = [
+                right[1]*up[2] - right[2]*up[1],
+                right[2]*up[0] - right[0]*up[2],
+                right[0]*up[1] - right[1]*up[0],
+            ];
+            [right, up, fwd]
+        };
 
-        // "Right" axis: left_foot → right_foot, orthogonalized against up
-        let rx = p[6][0] - p[5][0];
-        let ry = p[6][1] - p[5][1];
-        let rz = p[6][2] - p[5][2];
-        let dot_ru = rx * up[0] + ry * up[1] + rz * up[2];
-        let rx = rx - dot_ru * up[0];
-        let ry = ry - dot_ru * up[1];
-        let rz = rz - dot_ru * up[2];
-        let rlen = (rx * rx + ry * ry + rz * rz).sqrt().max(0.01);
-        let right = [rx / rlen, ry / rlen, rz / rlen];
-
-        // "Forward" = cross(right, up)
-        let fwd = [
-            right[1] * up[2] - right[2] * up[1],
-            right[2] * up[0] - right[0] * up[2],
-            right[0] * up[1] - right[1] * up[0],
+        // Lower body: hips→feet midpoint for "up", feet spread for "right"
+        let foot_mid = [
+            (p[5][0]+p[6][0])*0.5, (p[5][1]+p[6][1])*0.5, (p[5][2]+p[6][2])*0.5,
         ];
+        let lower_up = [p[0][0]-foot_mid[0], p[0][1]-foot_mid[1], p[0][2]-foot_mid[2]];
+        let feet_right = [p[6][0]-p[5][0], p[6][1]-p[5][1], p[6][2]-p[5][2]];
+        let lower = make_basis(lower_up, feet_right);
+
+        // Upper body: chest→head for "up", hands spread for "right"
+        let upper_up = [p[2][0]-p[1][0], p[2][1]-p[1][1], p[2][2]-p[1][2]];
+        let hands_right = [p[4][0]-p[3][0], p[4][1]-p[3][1], p[4][2]-p[3][2]];
+        let upper = make_basis(upper_up, hands_right);
 
         let job_hat = job_hat_color(npc.job);
 
@@ -3651,28 +3718,54 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
             job_hat,
         );
 
-        // Transform from local space (standing, feet at y=0) to ragdoll orientation.
-        // Map local origin to the midpoint between ragdoll feet.
-        let foot_mid = [
-            (p[5][0] + p[6][0]) * 0.5,
-            (p[5][1] + p[6][1]) * 0.5,
-            (p[5][2] + p[6][2]) * 0.5,
-        ];
+        // Blend zone: waist Y in stretched coords (~1.15 to ~1.55)
+        let blend_lo = 1.15; // hip region (post-stretch)
+        let blend_hi = 1.55; // chest region (post-stretch)
+
         for tri in &mut tris[base..] {
             for v in &mut tri.v {
-                let lx = v[0];
-                let ly = v[1];
-                let lz = v[2];
-                v[0] = right[0] * lx + up[0] * ly + fwd[0] * lz + foot_mid[0];
-                v[1] = right[1] * lx + up[1] * ly + fwd[1] * lz + foot_mid[1];
-                v[2] = right[2] * lx + up[2] * ly + fwd[2] * lz + foot_mid[2];
+                let lx = v[0]; let ly = v[1]; let lz = v[2];
+                // Blend weight: 0=lower body, 1=upper body
+                let t = ((ly - blend_lo) / (blend_hi - blend_lo)).clamp(0.0, 1.0);
+
+                if t < 0.01 {
+                    // Pure lower body
+                    v[0] = lower[0][0]*lx + lower[1][0]*ly + lower[2][0]*lz + foot_mid[0];
+                    v[1] = lower[0][1]*lx + lower[1][1]*ly + lower[2][1]*lz + foot_mid[1];
+                    v[2] = lower[0][2]*lx + lower[1][2]*ly + lower[2][2]*lz + foot_mid[2];
+                } else if t > 0.99 {
+                    // Pure upper body — pivot from chest point
+                    let rel_y = ly - blend_hi;
+                    v[0] = upper[0][0]*lx + upper[1][0]*rel_y + upper[2][0]*lz + p[1][0];
+                    v[1] = upper[0][1]*lx + upper[1][1]*rel_y + upper[2][1]*lz + p[1][1];
+                    v[2] = upper[0][2]*lx + upper[1][2]*rel_y + upper[2][2]*lz + p[1][2];
+                } else {
+                    // Blend zone — interpolate between lower and upper transforms
+                    let lo_x = lower[0][0]*lx + lower[1][0]*ly + lower[2][0]*lz + foot_mid[0];
+                    let lo_y = lower[0][1]*lx + lower[1][1]*ly + lower[2][1]*lz + foot_mid[1];
+                    let lo_z = lower[0][2]*lx + lower[1][2]*ly + lower[2][2]*lz + foot_mid[2];
+                    let rel_y = ly - blend_hi;
+                    let hi_x = upper[0][0]*lx + upper[1][0]*rel_y + upper[2][0]*lz + p[1][0];
+                    let hi_y = upper[0][1]*lx + upper[1][1]*rel_y + upper[2][1]*lz + p[1][1];
+                    let hi_z = upper[0][2]*lx + upper[1][2]*rel_y + upper[2][2]*lz + p[1][2];
+                    v[0] = lo_x * (1.0 - t) + hi_x * t;
+                    v[1] = lo_y * (1.0 - t) + hi_y * t;
+                    v[2] = lo_z * (1.0 - t) + hi_z * t;
+                }
             }
-            let nx = tri.normal[0];
-            let ny = tri.normal[1];
-            let nz = tri.normal[2];
-            tri.normal[0] = right[0] * nx + up[0] * ny + fwd[0] * nz;
-            tri.normal[1] = right[1] * nx + up[1] * ny + fwd[1] * nz;
-            tri.normal[2] = right[2] * nx + up[2] * ny + fwd[2] * nz;
+            // Normal: blend rotation only (no translation)
+            let nx = tri.normal[0]; let ny = tri.normal[1]; let nz = tri.normal[2];
+            let avg_y = (tri.v[0][1] + tri.v[1][1] + tri.v[2][1]) / 3.0;
+            let t = ((avg_y - blend_lo) / (blend_hi - blend_lo)).clamp(0.0, 1.0);
+            if t < 0.5 {
+                tri.normal[0] = lower[0][0]*nx + lower[1][0]*ny + lower[2][0]*nz;
+                tri.normal[1] = lower[0][1]*nx + lower[1][1]*ny + lower[2][1]*nz;
+                tri.normal[2] = lower[0][2]*nx + lower[1][2]*ny + lower[2][2]*nz;
+            } else {
+                tri.normal[0] = upper[0][0]*nx + upper[1][0]*ny + upper[2][0]*nz;
+                tri.normal[1] = upper[0][1]*nx + upper[1][1]*ny + upper[2][1]*nz;
+                tri.normal[2] = upper[0][2]*nx + upper[1][2]*ny + upper[2][2]*nz;
+            }
         }
         return;
     }
@@ -3725,10 +3818,20 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         job_hat,
     );
 
-    // Speech bubble (floating above stretched head)
+    // Speech bubble — rounded balloon with pointer tail + "..." dots
     if npc.interacting_with.is_some() {
-        mesh::sphere_tris(tris, 0.0, 2.85, -0.15, 0.12, 0, 0xFFFFFFFF);
-        mesh::sphere_tris(tris, 0.0, 2.70, -0.1, 0.04, 0, 0xFFFFFFFF);
+        // Main balloon (wide oval)
+        mesh::ellipsoid_tris(tris, 0.0, 2.85, -0.18, 0.16, 0.08, 0.10, 1, 0xFFF8F8F0);
+        // Outline/shadow rim (slightly larger, darker)
+        mesh::ellipsoid_tris(tris, 0.0, 2.85, -0.18, 0.165, 0.084, 0.104, 1, 0xFFDDDDCC);
+        // Pointer tail — two diminishing spheres toward mouth
+        mesh::sphere_tris(tris, 0.0, 2.72, -0.12, 0.035, 0, 0xFFF8F8F0);
+        mesh::sphere_tris(tris, 0.0, 2.66, -0.08, 0.018, 0, 0xFFF8F8F0);
+        // Ellipsis dots "..." inside balloon
+        for i in 0..3 {
+            let dx = (i as f32 - 1.0) * 0.055;
+            mesh::sphere_tris(tris, dx, 2.85, -0.28, 0.018, 0, 0xFF666666);
+        }
     }
 
     place_mesh(tris, base, npc.terrain_normal, 25.0, npc.rot_y, npc.x, npc.y, npc.z);
@@ -3904,23 +4007,87 @@ pub fn gen_npc_mesh_mid(npc: &Npc, tris: &mut Vec<WorldTri>) {
     let app = npc_appearance(npc.brain_idx as u32);
     let arm_col = if app.has_coat { app.coat_col } else { shirt };
     let base = tris.len();
+    let n = 8; // reduced subdivision for mid-LOD
+    let sk = app.skin;
 
-    // Head — small sphere (lowered to reduce gap)
-    mesh::sphere_tris(tris, 0.0, 1.52, 0.0, 0.14, 0, app.skin);
-    // Neck — short cylinder connecting torso to head
-    mesh::cylinder_tris(tris, 0.0, 1.30, 0.0, 0.08, 0.30, 4, app.skin);
-    // Torso — tapered cylinder (shirt/coat color)
-    mesh::tapered_cylinder_tris(tris, 0.0, 0.80, 0.0, 0.22, 0.16, 0.80, 5, arm_col);
-    // Arms — two thin cylinders
+    use std::f32::consts::PI;
+    let hp = PI * 0.5;
+
     let swing = npc.walk_phase.sin() * 0.2;
-    mesh::cylinder_tris(tris, -0.24, 1.00, swing * 0.1, 0.06, 0.55, 4, arm_col);
-    mesh::cylinder_tris(tris,  0.24, 1.00, -swing * 0.1, 0.06, 0.55, 4, arm_col);
-    // Legs (F3: thicker)
-    mesh::cylinder_tris(tris, -0.09, 0.30, -swing * 0.15, 0.08, 0.45, 4, npc.pants_color);
-    mesh::cylinder_tris(tris,  0.09, 0.30,  swing * 0.15, 0.08, 0.45, 4, npc.pants_color);
-    // Boots (F6: larger)
-    push_box(tris, -0.09, 0.04, -swing * 0.15, 0.07, 0.06, 0.11, app.boot_col);
-    push_box(tris,  0.09, 0.04,  swing * 0.15, 0.07, 0.06, 0.11, app.boot_col);
+
+    // Head — lofted skull shape (no face detail, no ears)
+    let head_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+        (1.46, body_ring(0.0, -0.04, 0.06, 0.08, &[], n), sk),
+        (1.55, body_ring(0.0, 0.0, 0.14, 0.16, &[], n), sk),
+        (1.65, body_ring(0.0, 0.01, 0.19, 0.22, &[], n), sk),
+        (1.78, body_ring(0.0, 0.02, 0.20, 0.24, &[], n), sk),
+        (1.90, body_ring(0.0, 0.04, 0.18, 0.22, &[], n), sk),
+        (2.00, body_ring(0.0, 0.04, 0.13, 0.16, &[], n), sk),
+        (2.06, body_ring(0.0, 0.03, 0.06, 0.08, &[], n), sk),
+    ];
+    mesh::loft_y_tris(tris, &head_rings);
+
+    // Hair cap (simple, if no hat)
+    if app.hat_type == 0 {
+        mesh::ellipsoid_tris(tris, 0.0, 1.96, 0.02, 0.16, 0.10, 0.18, 1, app.hair);
+    }
+
+    // Neck
+    let neck_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+        (1.42, body_ring(0.0, 0.0, 0.12, 0.11, &[], n), sk),
+        (1.48, body_ring(0.0, 0.0, 0.11, 0.10, &[], n), sk),
+    ];
+    mesh::loft_y_tris(tris, &neck_rings);
+
+    // Torso — lofted with shoulder/hip taper (clothing color)
+    let torso_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+        (0.88, body_ring(0.0, 0.0, 0.18, 0.14, &[], n), npc.pants_color),
+        (0.96, body_ring(0.0, 0.0, 0.16, 0.13, &[], n), arm_col),
+        (1.04, body_ring(0.0, 0.0, 0.17, 0.14, &[], n), arm_col),
+        (1.12, body_ring(0.0, 0.0, 0.20, 0.17, &[], n), arm_col),
+        (1.22, body_ring(0.0, 0.0, 0.24, 0.19, &[], n), arm_col),
+        (1.34, body_ring(0.0, 0.0, 0.28, 0.18, &[
+            (hp, 0.3, 0.03), (PI + hp, 0.3, 0.03), // shoulder width
+        ], n), arm_col),
+        (1.42, body_ring(0.0, 0.0, 0.30, 0.16, &[
+            (hp, 0.3, 0.04), (PI + hp, 0.3, 0.04),
+        ], n), arm_col),
+    ];
+    mesh::loft_y_tris(tris, &torso_rings);
+
+    // Arms — lofted tubes with taper
+    for &side in &[-1.0f32, 1.0] {
+        let arm_fwd = if side < 0.0 { swing * 0.1 } else { -swing * 0.1 };
+        let sx = side * 0.24;
+        let arm_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+            (1.38, body_ring(sx, arm_fwd * 0.1, 0.06, 0.06, &[], n), arm_col),
+            (1.24, body_ring(sx, arm_fwd * 0.3, 0.055, 0.055, &[], n), arm_col),
+            (1.10, body_ring(sx, arm_fwd * 0.5, 0.050, 0.050, &[], n), arm_col),
+            (0.96, body_ring(sx, arm_fwd * 0.7, 0.045, 0.045, &[], n), arm_col),
+            (0.80, body_ring(sx, arm_fwd * 0.9, 0.042, 0.042, &[], n), arm_col),
+            (0.64, body_ring(sx, arm_fwd, 0.036, 0.036, &[], n), sk),
+            (0.54, body_ring(sx, arm_fwd, 0.030, 0.030, &[], n), sk),
+        ];
+        mesh::loft_y_tris(tris, &arm_rings);
+    }
+
+    // Legs — lofted tubes with thigh/calf taper
+    for &side in &[-1.0f32, 1.0] {
+        let leg_fwd = if side < 0.0 { -swing * 0.15 } else { swing * 0.15 };
+        let lx = side * 0.10;
+        let leg_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
+            (0.86, body_ring(lx, leg_fwd * 0.1, 0.10, 0.10, &[], n), npc.pants_color),
+            (0.72, body_ring(lx, leg_fwd * 0.3, 0.11, 0.10, &[], n), npc.pants_color),
+            (0.58, body_ring(lx, leg_fwd * 0.5, 0.09, 0.08, &[], n), npc.pants_color),
+            (0.48, body_ring(lx, leg_fwd * 0.7, 0.08, 0.07, &[], n), npc.pants_color),
+            (0.36, body_ring(lx, leg_fwd * 0.85, 0.08, 0.07, &[], n), npc.pants_color),
+            (0.22, body_ring(lx, leg_fwd, 0.06, 0.05, &[], n), npc.pants_color),
+            (0.10, body_ring(lx, leg_fwd, 0.05, 0.05, &[], n), app.boot_col),
+        ];
+        mesh::loft_y_tris(tris, &leg_rings);
+        // Boot box
+        push_box(tris, lx, 0.04, leg_fwd, 0.06, 0.05, 0.10, app.boot_col);
+    }
 
     // Apply body stretch + world transform
     for tri in &mut tris[base..] { for v in &mut tri.v { v[1] *= BODY_STRETCH; } }
