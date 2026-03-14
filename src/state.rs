@@ -137,6 +137,7 @@ pub const RIVER_CURRENT: f32 = 2.0;
 pub const DROWN_DAMAGE: f32 = 8.0;
 pub const PARKING_LOT_COUNT: usize = 4;
 
+
 pub struct Wall { pub x: f32, pub z: f32, pub hw: f32, pub hd: f32, pub height: f32 }
 
 pub struct RiverSegment { pub x1: f32, pub z1: f32, pub x2: f32, pub z2: f32, pub width: f32 }
@@ -784,6 +785,7 @@ pub struct GameState {
     pub neat_brains: Vec<crate::neat::NeatBrain>,
     pub time_speed: u32, // 1, 10, 100, 1000
     pub walk_grid: WalkGrid,
+    pub zone_map: crate::zone::ZoneMap,
 }
 
 impl GameState {
@@ -859,6 +861,7 @@ impl GameState {
             neat_brains: Vec::new(),
             time_speed: 1,
             walk_grid: WalkGrid::empty(),
+            zone_map: crate::zone::ZoneMap::empty(),
         }
     }
 

@@ -5,6 +5,9 @@ use crate::state::*;
 use crate::rng::Rng;
 use crate::mesh;
 use crate::color::{lerp_color, darken};
+use crate::noise;
+use crate::zone;
+use crate::placement;
 
 const BUILDING_COLORS: [u32; 10] = [
     0xFFCCBB99, 0xFFBBAA88, 0xFFDDCCAA, 0xFFBBBBAA, 0xFFCCBBAA,
@@ -118,7 +121,7 @@ fn sample_segment(seg: &RoadSegment, t: f32) -> (f32, f32) {
     (seg.x0 + (seg.x1 - seg.x0) * t, seg.z0 + (seg.z1 - seg.z0) * t)
 }
 
-fn overlaps_building(x: f32, z: f32, margin: f32, buildings: &[Building]) -> bool {
+pub fn overlaps_building(x: f32, z: f32, margin: f32, buildings: &[Building]) -> bool {
     buildings.iter().any(|b| {
         (x - b.x).abs() < b.w * 0.5 + margin && (z - b.z).abs() < b.d * 0.5 + margin
     })
@@ -158,7 +161,7 @@ pub fn surface_at(x: f32, z: f32, net: &RoadNetwork) -> Surface {
 }
 
 /// Distance to nearest road segment (for heightmap flattening)
-fn road_dist_network(x: f32, z: f32, net: &RoadNetwork) -> (f32, RoadTier) {
+pub fn road_dist_network(x: f32, z: f32, net: &RoadNetwork) -> (f32, RoadTier) {
     let mut best_dist = f32::MAX;
     let mut best_tier = RoadTier::CarRoad;
     for seg in &net.segments {
@@ -197,13 +200,16 @@ pub fn on_any_road(x: f32, z: f32, net: &RoadNetwork) -> bool {
     false
 }
 
-/// Generate an organic radial road network from seed
-fn generate_road_network(rng: &mut Rng) -> RoadNetwork {
+/// Generate an organic radial road network centered on a settlement position
+fn generate_road_network(rng: &mut Rng, settlement_center: [f32; 2]) -> RoadNetwork {
     let mut nodes: Vec<[f32; 2]> = Vec::new();
     let mut segments: Vec<RoadSegment> = Vec::new();
 
-    // Center hub near origin with slight jitter
-    let center = [rng.range(-3.0, 3.0), rng.range(-3.0, 3.0)];
+    // Center hub at settlement position with slight jitter
+    let center = [
+        settlement_center[0] + rng.range(-3.0, 3.0),
+        settlement_center[1] + rng.range(-3.0, 3.0),
+    ];
     nodes.push(center); // index 0
 
     // Ring 1: 4 nodes at radius ~75
@@ -543,31 +549,53 @@ fn add_building_foundation(
     );
 }
 
-/// Generate heightmap from multi-octave sinusoidal waves, flattened near roads/downtown
-fn generate_heightmap(terrain: &mut Terrain, seed: u64, net: &RoadNetwork) {
+/// Generate heightmap from noise-based terrain (replaces sinusoidal waves)
+fn generate_heightmap_noise(terrain: &mut Terrain, seed: u64, roughness: f32) {
     let grid = terrain.grid;
     let stride = grid + 1;
     let cell = terrain.cell_size;
-
-    // Seed-based phase offsets
-    let phase_x = (seed as f32) * 0.1234;
-    let phase_z = (seed as f32) * 0.5678;
 
     for iz in 0..stride {
         for ix in 0..stride {
             let x = -WORLD_HALF + ix as f32 * cell;
             let z = -WORLD_HALF + iz as f32 * cell;
 
-            // Multi-octave sinusoidal terrain (frequencies scaled for 500m map)
+            // Domain-warped fBm for organic natural terrain
+            let (wx, wz) = noise::warp_2d(x, z, 30.0, 0.005, seed + 1111);
+
+            // Base terrain: fBm with 5 octaves, scaled by roughness
+            let mut h = noise::fbm(wx, wz, 5, 0.008, 2.2, 0.45, seed) * 8.0 * roughness;
+
+            // Add ridged noise for occasional dramatic features
+            let ridge = noise::ridged(x, z, 3, 0.005, 2.0, 0.5, seed + 2222);
+            h += ridge * 3.0 * roughness;
+
             // Amplitude increases with distance from center for dramatic outer hills
             let dist = (x * x + z * z).sqrt();
-            let outer_boost = 1.0 + (dist / WORLD_HALF).min(1.0) * 1.5; // up to 2.5x at edges
-            let mut h = 0.0f32;
-            h += ((x * 0.012 + phase_x).sin() * (z * 0.010 + phase_z).sin()) * 4.0 * outer_boost;
-            h += ((x * 0.028 + phase_z).sin() * (z * 0.024 + phase_x).sin()) * 1.5 * outer_boost;
-            h += ((x * 0.060 + phase_x * 2.0).sin() * (z * 0.052 + phase_z * 2.0).sin()) * 0.5;
+            let outer_boost = 1.0 + (dist / WORLD_HALF).min(1.0) * 1.5;
+            h *= outer_boost;
 
-            // Flatten near roads (smooth falloff based on nearest segment)
+            terrain.heights[iz * stride + ix] = h;
+        }
+    }
+}
+
+/// Flatten terrain near roads and settlement centers (runs after road network is built)
+fn flatten_terrain_for_roads(
+    terrain: &mut Terrain, net: &RoadNetwork,
+    settlement_center: [f32; 2], zone_map: &zone::ZoneMap,
+) {
+    let grid = terrain.grid;
+    let stride = grid + 1;
+    let cell = terrain.cell_size;
+
+    for iz in 0..stride {
+        for ix in 0..stride {
+            let x = -WORLD_HALF + ix as f32 * cell;
+            let z = -WORLD_HALF + iz as f32 * cell;
+            let h = terrain.heights[iz * stride + ix];
+
+            // Flatten near roads (smooth falloff)
             let (rd, tier) = road_dist_network(x, z, net);
             let corridor = match tier {
                 RoadTier::CarRoad => CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH,
@@ -582,32 +610,36 @@ fn generate_heightmap(terrain: &mut Terrain, seed: u64, net: &RoadNetwork) {
                 1.0
             };
 
-            // Flatten downtown area (near origin)
-            let downtown_dist = (x * x + z * z).sqrt();
-            let downtown_flatten = if downtown_dist < 37.5 {
+            // Flatten settlement center area
+            let dx = x - settlement_center[0];
+            let dz = z - settlement_center[1];
+            let settle_dist = (dx * dx + dz * dz).sqrt();
+            let settle_flatten = if settle_dist < 37.5 {
                 0.2
-            } else if downtown_dist < 75.0 {
-                0.2 + 0.8 * ((downtown_dist - 37.5) / 37.5)
+            } else if settle_dist < 75.0 {
+                0.2 + 0.8 * ((settle_dist - 37.5) / 37.5)
             } else {
                 1.0
             };
 
-            // Flatten dockyard zone (south edge, approaching water)
-            let dock_flatten = if z > DOCK_Z_START {
-                let t = ((z - DOCK_Z_START) / 15.0).clamp(0.0, 1.0);
-                1.0 - t * 0.9 // flatten to near-zero
-            } else {
-                1.0
+            // Flatten industrial/waterfront zones
+            let zone_cell = zone_map.zone_at(x, z);
+            let zone_flatten = match zone_cell.kind {
+                zone::ZoneKind::Industrial | zone::ZoneKind::Waterfront => {
+                    let t = zone_cell.density;
+                    1.0 - t * 0.7 // flatten proportional to density
+                }
+                _ => 1.0,
             };
 
-            terrain.heights[iz * stride + ix] = h * road_flatten * downtown_flatten * dock_flatten;
+            terrain.heights[iz * stride + ix] = h * road_flatten * settle_flatten * zone_flatten;
         }
     }
 }
 
 /// Generate terrain mesh triangles from heightmap with smoothed vertex normals
-/// to reduce visible flat-shaded triangle faceting.
-fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
+/// and zone-aware coloring.
+fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain, zone_map: &zone::ZoneMap) {
     let grid = terrain.grid;
     let stride = grid + 1;
     let cell = terrain.cell_size;
@@ -703,9 +735,17 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain) {
             let noise = (cell_hash % 3) as i32 - 1; // +-1 max
             let base_green = lerp_color(GROUND_LOW, GROUND_HIGH, t);
             let rocky = lerp_color(base_green, 0xFF6B6455, slope_t);
-            let cell_color = if mid_z > DOCK_Z_START {
-                let dock_t = ((mid_z - DOCK_Z_START) / 20.0).clamp(0.0, 1.0);
-                jitter_color(lerp_color(rocky, DOCK_GROUND, dock_t), noise)
+            // Zone-aware terrain coloring
+            let mid_x = x0 + cell * 0.5;
+            let cell_color = if zone_map.grid_size > 0 {
+                let zone_cell = zone_map.zone_at(mid_x, mid_z);
+                match zone_cell.kind {
+                    zone::ZoneKind::Industrial | zone::ZoneKind::Waterfront => {
+                        let dock_t = zone_cell.density.min(1.0);
+                        jitter_color(lerp_color(rocky, DOCK_GROUND, dock_t), noise)
+                    }
+                    _ => jitter_color(rocky, noise),
+                }
             } else {
                 jitter_color(rocky, noise)
             };
@@ -883,84 +923,78 @@ fn generate_road_strip(
     }
 }
 
-/// Generate the industrial dockyard biome at z > DOCK_Z_START
-fn generate_dockyard(
+/// Generate the industrial dockyard biome at the given zone center
+fn generate_dockyard_at(
     tris: &mut Vec<WorldTri>, terrain: &Terrain, rng: &mut Rng,
     buildings: &mut Vec<Building>, interactibles: &mut Vec<Interactible>,
+    center: [f32; 2], density_scale: f32,
 ) {
-    let dock_z = DOCK_Z_START + 10.0;
+    let cx = center[0];
+    let cz = center[1];
 
-    // Wave water surface — never flat, prevents z-fighting with dock/terrain
-    let x_min = -WORLD_HALF + 10.0;
-    let x_max = WORLD_HALF - 10.0;
-    let z_min = DOCK_Z_START + 15.0;
-    let z_max = WORLD_HALF - 5.0;
-    mesh::wave_surface_tris(tris, x_min, x_max, z_min, z_max,
-        WATER_Y, 0.5, 0.5,
-        ((x_max - x_min) / 5.0) as usize, ((z_max - z_min) / 5.0).max(1.0) as usize,
-        WATER_COLOR);
+    // Wave water surface near the dockyard
+    let x_min = (cx - 60.0).max(-WORLD_HALF + 5.0);
+    let x_max = (cx + 60.0).min(WORLD_HALF - 5.0);
+    let z_min = (cz + 5.0).max(-WORLD_HALF + 5.0);
+    let z_max = (cz + 50.0).min(WORLD_HALF - 5.0);
+    if z_max > z_min && x_max > x_min {
+        mesh::wave_surface_tris(tris, x_min, x_max, z_min, z_max,
+            WATER_Y, 0.5, 0.5,
+            ((x_max - x_min) / 5.0) as usize, ((z_max - z_min) / 5.0).max(1.0) as usize,
+            WATER_COLOR);
+    }
 
-    // 6 Warehouses — beveled with corrugated look
-    for i in 0..6 {
-        let wx = -50.0 + i as f32 * 18.0 + rng.range(-2.0, 2.0);
-        let wz = dock_z + rng.range(0.0, 8.0);
+    // 6 Warehouses
+    for i in 0..(6.0 * density_scale) as usize {
+        let wx = cx - 50.0 + i as f32 * 18.0 + rng.range(-2.0, 2.0);
+        let wz = cz + rng.range(0.0, 8.0);
         let ww = rng.range(8.0, 14.0);
         let wd = rng.range(6.0, 10.0);
         let wh = rng.range(4.0, 7.0);
-        // Use minimum terrain height across footprint so warehouse never floats
         let (min_h, _) = building_ground_height(terrain, wx, wz, ww, wd);
         let gy = min_h;
         let color = WAREHOUSE_COLORS[i % WAREHOUSE_COLORS.len()];
-        // Foundation skirt to seal gap between warehouse base and terrain
         add_building_foundation(tris, terrain, wx, gy, wz, ww, wd, color);
         mesh::beveled_box_tris(tris, wx, gy + wh * 0.5, wz, ww, wh, wd, 0.1, color);
-        // Recessed garage door
         mesh::box_tris(tris, wx, gy + 2.0, wz - wd * 0.5 + 0.08, ww * 0.4, 4.0, 0.16, 0xFF333322);
-        // Pitched roof
         mesh::pitched_roof_tris(tris, wx, gy + wh, wz, ww + 0.2, wd + 0.2, 1.5, darken(color, 0.7));
         buildings.push(Building { x: wx, z: wz, w: ww, d: wd, h: wh, ground_y: gy });
     }
 
-    // 3 Cranes — cylinder lattice structure
-    for i in 0..3 {
-        let cx = -30.0 + i as f32 * 30.0;
-        let cz = dock_z + 22.0;
-        let gy = terrain.height_at(cx, cz);
+    // 3 Cranes
+    for i in 0..(3.0 * density_scale) as usize {
+        let kx = cx - 30.0 + i as f32 * 30.0;
+        let kz = cz + 22.0;
+        let gy = terrain.height_at(kx, kz);
         let crane_h = 25.0;
-        // Main tower — cylinder
-        mesh::cylinder_tris(tris, cx, gy + crane_h * 0.5, cz, 0.35, crane_h, 8, CRANE_COLOR);
-        // Boom arm — cylinder between points
+        mesh::cylinder_tris(tris, kx, gy + crane_h * 0.5, kz, 0.35, crane_h, 8, CRANE_COLOR);
         mesh::cylinder_between(tris,
-            [cx, gy + crane_h, cz],
-            [cx + 11.0, gy + crane_h - 0.5, cz],
+            [kx, gy + crane_h, kz],
+            [kx + 11.0, gy + crane_h - 0.5, kz],
             0.15, 6, CRANE_COLOR);
-        // Counterweight — beveled box
-        mesh::beveled_box_tris(tris, cx - 3.0, gy + crane_h - 1.0, cz, 2.0, 2.0, 1.5, 0.1, CHIMNEY_COLOR);
-        // Cabin — beveled box
-        mesh::beveled_box_tris(tris, cx, gy + crane_h - 2.0, cz, 1.5, 2.0, 1.5, 0.08, 0xFF888833);
+        mesh::beveled_box_tris(tris, kx - 3.0, gy + crane_h - 1.0, kz, 2.0, 2.0, 1.5, 0.1, CHIMNEY_COLOR);
+        mesh::beveled_box_tris(tris, kx, gy + crane_h - 2.0, kz, 1.5, 2.0, 1.5, 0.08, 0xFF888833);
     }
 
-    // 15 Cargo containers — beveled
-    for _ in 0..15 {
-        let cx = rng.range(-40.0, 40.0);
-        let cz = dock_z + rng.range(5.0, 25.0);
-        let gy = terrain.height_at(cx, cz);
+    // 15 Cargo containers
+    for _ in 0..(15.0 * density_scale) as usize {
+        let bx = cx + rng.range(-40.0, 40.0);
+        let bz = cz + rng.range(5.0, 25.0);
+        let gy = terrain.height_at(bx, bz);
         let color = CONTAINER_COLORS[rng.next() as usize % CONTAINER_COLORS.len()];
         let stack = 1 + rng.next() as usize % 3;
         for s in 0..stack {
-            mesh::beveled_box_tris(tris, cx, gy + 1.3 + s as f32 * 2.5, cz, 6.0, 2.5, 2.5, 0.05, color);
+            mesh::beveled_box_tris(tris, bx, gy + 1.3 + s as f32 * 2.5, bz, 6.0, 2.5, 2.5, 0.05, color);
         }
     }
 
-    // 3 Fishing piers — plank deck with cylinder supports
-    for i in 0..3 {
-        let px = -30.0 + i as f32 * 30.0;
-        let pz_start = dock_z + 25.0;
+    // 3 Fishing piers
+    for i in 0..(3.0 * density_scale) as usize {
+        let px = cx - 30.0 + i as f32 * 30.0;
+        let pz_start = cz + 25.0;
         let pier_len = 12.0;
         let gy = terrain.height_at(px, pz_start);
-        // Pier deck (thick enough to not z-fight)
         mesh::box_tris(tris, px, gy + 0.5, pz_start + pier_len * 0.5, 2.0, 0.25, pier_len, PIER_COLOR);
-        // Cylinder pile supports
         for s in 0..3 {
             let sz = pz_start + s as f32 * 4.0 + 2.0;
             mesh::cylinder_tris(tris, px - 0.8, gy * 0.5, sz, 0.08, gy.abs() + 1.0, 5, PIER_COLOR);
@@ -968,29 +1002,28 @@ fn generate_dockyard(
         }
     }
 
-    // Scrap yard — perturbed spheres for scrap piles
-    for si in 0..20 {
-        let sx = rng.range(25.0, 55.0);
-        let sz = dock_z + rng.range(0.0, 12.0);
+    // Scrap yard
+    for si in 0..(20.0 * density_scale) as usize {
+        let sx = cx + rng.range(25.0, 55.0);
+        let sz = cz + rng.range(0.0, 12.0);
         let gy = terrain.height_at(sx, sz);
         let size = rng.range(0.3, 1.5);
         mesh::perturbed_sphere_tris(tris, sx, gy + size * 0.5, sz, size, 0, 0.3, si as u64 * 7777, SCRAP_COLOR);
     }
 
-    // 2 Smokestacks — tall cylinders with cap
-    for i in 0..2 {
-        let sx = -60.0 + i as f32 * 40.0;
-        let sz = dock_z + 5.0;
+    // 2 Smokestacks
+    for i in 0..(2.0 * density_scale).max(1.0) as usize {
+        let sx = cx - 20.0 + i as f32 * 40.0;
+        let sz = cz + 5.0;
         let gy = terrain.height_at(sx, sz);
         mesh::cylinder_tris(tris, sx, gy + 10.0, sz, 0.6, 20.0, 8, CHIMNEY_COLOR);
-        // Rim cap at top
         mesh::cylinder_tris(tris, sx, gy + 20.3, sz, 0.8, 0.6, 8, 0xFF444444);
     }
 
     // Dockyard dumpsters
-    for i in 0..4 {
-        let dx = -40.0 + i as f32 * 25.0;
-        let dz = dock_z + 2.0;
+    for i in 0..(4.0 * density_scale) as usize {
+        let dx = cx - 40.0 + i as f32 * 25.0;
+        let dz = cz + 2.0;
         let dy = terrain.height_at(dx, dz);
         interactibles.push(Interactible {
             x: dx, y: dy, z: dz,
@@ -1004,7 +1037,7 @@ fn generate_dockyard(
 fn generate_interactibles(
     tris: &mut Vec<WorldTri>, terrain: &Terrain, rng: &mut Rng,
     net: &RoadNetwork, buildings: &[Building],
-    interactibles: &mut Vec<Interactible>,
+    interactibles: &mut Vec<Interactible>, density_scale: f32,
 ) {
     let car_segs: Vec<&RoadSegment> = net.segments.iter()
         .filter(|s| s.tier == RoadTier::CarRoad).collect();
@@ -1023,7 +1056,7 @@ fn generate_interactibles(
     };
 
     // Phone Booths (4) — beveled body with cylinder roof
-    for i in 0..4 {
+    for i in 0..(4.0 * density_scale) as usize {
         if i >= net.nodes.len() { break; }
         let node = &net.nodes[i.min(net.nodes.len() - 1)];
         let mut x = node[0] + rng.range(3.0, 5.0);
@@ -1047,7 +1080,7 @@ fn generate_interactibles(
     }
 
     // Vending Machines (20) — beveled body with recessed screen
-    for i in 0..20 {
+    for i in 0..(20.0 * density_scale) as usize {
         let bi = (i * 6 + 1) % buildings.len();
         let b = &buildings[bi];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
@@ -1065,7 +1098,7 @@ fn generate_interactibles(
     }
 
     // Park Benches (8) — slatted seat + back using thin boxes
-    for i in 0..8 {
+    for i in 0..(8.0 * density_scale) as usize {
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
@@ -1093,7 +1126,7 @@ fn generate_interactibles(
     }
 
     // Dumpsters (6) — beveled body with lid
-    for i in 0..6 {
+    for i in 0..(6.0 * density_scale) as usize {
         let bi = (i * 5 + 3) % buildings.len();
         let b = &buildings[bi];
         let x = b.x;
@@ -1109,7 +1142,7 @@ fn generate_interactibles(
     }
 
     // ATMs (3) — beveled body with recessed screen
-    for i in 0..3 {
+    for i in 0..(3.0 * density_scale) as usize {
         let bi = i % buildings.len().min(10);
         let b = &buildings[bi];
         let x = b.x + b.w * 0.5 + 0.4;
@@ -1126,7 +1159,7 @@ fn generate_interactibles(
     }
 
     // Newspaper Stands (4) — beveled box
-    for i in 0..4 {
+    for i in 0..(4.0 * density_scale) as usize {
         let ni = (i + 1) % net.nodes.len().max(1);
         let node = &net.nodes[ni];
         let mut x = node[0] - rng.range(3.0, 5.0);
@@ -1148,7 +1181,7 @@ fn generate_interactibles(
     }
 
     // Mailboxes (8) — beveled box with rounded top
-    for i in 0..8 {
+    for i in 0..(8.0 * density_scale) as usize {
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
@@ -1165,7 +1198,7 @@ fn generate_interactibles(
     }
 
     // Fire Hydrants (6) — lathe profile
-    for i in 0..6 {
+    for i in 0..(6.0 * density_scale) as usize {
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let side = if i % 2 == 0 { 1.0 } else { -1.0 };
@@ -1189,7 +1222,7 @@ fn generate_interactibles(
     }
 
     // Payphones (2) — beveled body with recessed screen
-    for i in 0..2 {
+    for i in 0..(2.0 * density_scale) as usize {
         let ni = (i * 2) % net.nodes.len().max(1);
         let node = &net.nodes[ni];
         let mut x = node[0] + rng.range(-2.0, 2.0);
@@ -1214,8 +1247,17 @@ fn generate_interactibles(
 }
 
 /// River centerline Z at given X
-fn river_z(x: f32) -> f32 {
-    40.0 + 25.0 * (x * 0.02).sin()
+/// River path: noise-warped curve across the map. Entry/exit positions vary by seed.
+fn river_z(x: f32, seed: u64) -> f32 {
+    // Base offset and exit offset determined by seed
+    let entry_z = noise::hash_2d(0, 0, seed.wrapping_add(77777)) * 40.0 + 30.0;
+    let exit_z = noise::hash_2d(1, 0, seed.wrapping_add(77777)) * 40.0 + 30.0;
+    // Linear interpolation from entry to exit
+    let t = (x + WORLD_HALF) / WORLD_SIZE;
+    let base_z = entry_z + (exit_z - entry_z) * t;
+    // Add noise-based meandering
+    let meander = noise::fbm(x * 0.01, 0.0, 3, 1.0, 2.0, 0.5, seed + 77700) * 35.0;
+    base_z + meander
 }
 
 /// Check if a world position is on the river
@@ -1251,7 +1293,7 @@ pub fn on_river_not_bridge(x: f32, z: f32, river_segments: &[RiverSegment], brid
 /// Water surface follows terrain height (pre-carve bank level - 0.5m).
 fn generate_river(
     terrain: &mut Terrain, tris: &mut Vec<WorldTri>,
-    river_segments: &mut Vec<RiverSegment>,
+    river_segments: &mut Vec<RiverSegment>, seed: u64,
 ) {
     let step = 10.0;
     let half = WORLD_HALF;
@@ -1261,8 +1303,8 @@ fn generate_river(
     while x < half {
         let x0 = x;
         let x1 = (x + step).min(half);
-        let z0 = river_z(x0);
-        let z1 = river_z(x1);
+        let z0 = river_z(x0, seed);
+        let z1 = river_z(x1, seed);
         river_segments.push(RiverSegment {
             x1: x0, z1: z0, x2: x1, z2: z1, width: RIVER_WIDTH,
         });
@@ -1798,15 +1840,16 @@ fn generate_parking_lots(
 fn generate_market_stalls(
     tris: &mut Vec<WorldTri>, terrain: &Terrain, rng: &mut Rng,
     net: &RoadNetwork, buildings: &[Building], walls: &mut Vec<Wall>,
+    settlement_center: [f32; 2], density_scale: f32,
 ) {
-    let stall_count = 6 + rng.next() as usize % 3;
+    let stall_count = ((6 + rng.next() as usize % 3) as f32 * density_scale) as usize;
     let angle_step = std::f32::consts::TAU / stall_count as f32;
 
     for i in 0..stall_count {
         let angle = i as f32 * angle_step + rng.range(-0.3, 0.3);
         let radius = rng.range(30.0, 50.0);
-        let sx = angle.cos() * radius;
-        let sz = angle.sin() * radius;
+        let sx = settlement_center[0] + angle.cos() * radius;
+        let sz = settlement_center[1] + angle.sin() * radius;
 
         // Skip if overlapping buildings
         if overlaps_building(sx, sz, 2.0, buildings) { continue; }
@@ -1844,12 +1887,13 @@ fn generate_market_stalls(
 fn generate_bus_stops(
     tris: &mut Vec<WorldTri>, terrain: &Terrain, rng: &mut Rng,
     net: &RoadNetwork, buildings: &[Building], walls: &mut Vec<Wall>,
+    density_scale: f32,
 ) {
     let car_segs: Vec<&RoadSegment> = net.segments.iter()
         .filter(|s| s.tier == RoadTier::CarRoad).collect();
     if car_segs.is_empty() { return; }
 
-    let stop_count = 4 + rng.next() as usize % 3;
+    let stop_count = ((4 + rng.next() as usize % 3) as f32 * density_scale) as usize;
     for i in 0..stop_count {
         let seg = car_segs[i % car_segs.len()];
         let t = rng.range(0.3, 0.7);
@@ -1908,6 +1952,7 @@ fn generate_decorations(
     walls: &mut Vec<Wall>, rocks: &mut Vec<Rock>,
     _street_lights: &mut Vec<StreetLight>,
     clutter: &mut Vec<[f32; 3]>,
+    settlement_center: [f32; 2], density_scale: f32,
 ) {
     let car_segs: Vec<&RoadSegment> = net.segments.iter()
         .filter(|s| s.tier == RoadTier::CarRoad).collect();
@@ -1916,11 +1961,11 @@ fn generate_decorations(
     let town_pos = |rng: &mut Rng| -> (f32, f32) {
         let angle = rng.range(0.0, std::f32::consts::TAU);
         let radius = rng.range(10.0, 150.0);
-        (angle.cos() * radius, angle.sin() * radius)
+        (settlement_center[0] + angle.cos() * radius, settlement_center[1] + angle.sin() * radius)
     };
 
     // Bollards (25) — cylinder posts
-    for _ in 0..25 {
+    for _ in 0..(25.0 * density_scale) as usize {
         let (bx, bz) = town_pos(rng);
         if on_any_road(bx, bz, net) { continue; }
         if overlaps_building(bx, bz, 0.5, buildings) { continue; }
@@ -1932,7 +1977,7 @@ fn generate_decorations(
     }
 
     // Planters (12) — beveled box + sphere shrub
-    for _ in 0..12 {
+    for _ in 0..(12.0 * density_scale) as usize {
         let (px, pz) = town_pos(rng);
         if on_any_road(px, pz, net) { continue; }
         if overlaps_building(px, pz, 0.5, buildings) { continue; }
@@ -1943,7 +1988,7 @@ fn generate_decorations(
     }
 
     // Picnic tables (5) — box top + benches + cylinder legs
-    for _ in 0..5 {
+    for _ in 0..(5.0 * density_scale) as usize {
         let (px, pz) = town_pos(rng);
         if on_any_road(px, pz, net) { continue; }
         if overlaps_building(px, pz, 1.5, buildings) { continue; }
@@ -1961,7 +2006,7 @@ fn generate_decorations(
     }
 
     // Billboards (3) — cylinder post + beveled panel
-    for _ in 0..3 {
+    for _ in 0..(3.0 * density_scale) as usize {
         let (bx, bz) = town_pos(rng);
         if on_any_road(bx, bz, net) { continue; }
         if overlaps_building(bx, bz, 1.0, buildings) { continue; }
@@ -1974,9 +2019,9 @@ fn generate_decorations(
     }
 
     // Water towers (2) — cylinder legs + sphere tank
-    for i in 0..2 {
-        let wx = -30.0 + i as f32 * 60.0;
-        let wz = DOCK_Z_START - 10.0;
+    for i in 0..(2.0 * density_scale) as usize {
+        let wx = settlement_center[0] - 30.0 + i as f32 * 60.0;
+        let wz = settlement_center[1] + 60.0;
         let gy = terrain.height_at(wx, wz);
         // Cylinder legs (4)
         for (lx, lz) in [(-0.5f32, -0.5f32), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)] {
@@ -1988,14 +2033,14 @@ fn generate_decorations(
     }
 
     // Traffic cones (18) — proper cones
-    for _ in 0..18 {
+    for _ in 0..(18.0 * density_scale) as usize {
         let (cx, cz) = town_pos(rng);
         let gy = terrain.height_at(cx, cz);
         mesh::cone_tris(tris, cx, gy + 0.2, cz, 0.1, 0.35, 6, TRAFFIC_CONE_COLOR);
     }
 
     // Benches (10) — slatted seat + back + cylinder legs
-    for _ in 0..10 {
+    for _ in 0..(10.0 * density_scale) as usize {
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let t = rng.range(0.2, 0.8);
@@ -2029,7 +2074,7 @@ fn generate_decorations(
     // --- ACU-style street clutter ---
 
     // Wooden barrels (30) — cylinder with iron rim bands
-    for _ in 0..30 {
+    for _ in 0..(30.0 * density_scale) as usize {
         let (bx, bz) = town_pos(rng);
         if on_any_road(bx, bz, net) { continue; }
         if overlaps_building(bx, bz, 0.5, buildings) { continue; }
@@ -2044,7 +2089,7 @@ fn generate_decorations(
     }
 
     // Wooden crates (25) — with cross-braces
-    for _ in 0..25 {
+    for _ in 0..(25.0 * density_scale) as usize {
         let (cx, cz) = town_pos(rng);
         if on_any_road(cx, cz, net) { continue; }
         if overlaps_building(cx, cz, 0.5, buildings) { continue; }
@@ -2062,7 +2107,7 @@ fn generate_decorations(
     }
 
     // Sacks/grain bags (20)
-    for _ in 0..20 {
+    for _ in 0..(20.0 * density_scale) as usize {
         let (sx, sz) = town_pos(rng);
         if on_any_road(sx, sz, net) { continue; }
         if overlaps_building(sx, sz, 0.5, buildings) { continue; }
@@ -2074,7 +2119,7 @@ fn generate_decorations(
     }
 
     // Wooden planks/debris on streets (15 clusters)
-    for _ in 0..15 {
+    for _ in 0..(15.0 * density_scale) as usize {
         if car_segs.is_empty() { break; }
         let seg = car_segs[rng.next() as usize % car_segs.len()];
         let t = rng.range(0.2, 0.8);
@@ -2090,7 +2135,7 @@ fn generate_decorations(
     }
 
     // Hanging bunting/pennant flags between buildings (8)
-    for _ in 0..8 {
+    for _ in 0..(8.0 * density_scale) as usize {
         if buildings.len() < 2 { break; }
         let b1_idx = rng.next() as usize % buildings.len();
         let b1 = &buildings[b1_idx];
@@ -2124,7 +2169,7 @@ fn generate_decorations(
     }
 
     // Hanging laundry lines (5)
-    for _ in 0..5 {
+    for _ in 0..(5.0 * density_scale) as usize {
         if buildings.len() < 2 { break; }
         let b1_idx = rng.next() as usize % buildings.len();
         let b1 = &buildings[b1_idx];
@@ -2159,9 +2204,9 @@ fn generate_decorations(
     }
 
     // Wooden handcarts (3)
-    for _ in 0..3 {
-        let cx = rng.range(-30.0, 30.0);
-        let cz = rng.range(-30.0, 30.0);
+    for _ in 0..(3.0 * density_scale) as usize {
+        let cx = settlement_center[0] + rng.range(-30.0, 30.0);
+        let cz = settlement_center[1] + rng.range(-30.0, 30.0);
         if on_any_road(cx, cz, net) { continue; }
         if overlaps_building(cx, cz, 1.5, buildings) { continue; }
         let gy = terrain.height_at(cx, cz);
@@ -2201,7 +2246,7 @@ fn generate_suburbs(
     tris: &mut Vec<WorldTri>, terrain: &Terrain, rng: &mut Rng,
     net: &RoadNetwork, buildings: &mut Vec<Building>,
     _walls: &mut Vec<Wall>, parking_spots: &mut Vec<ParkingSpot>,
-    river_segments: &[RiverSegment],
+    river_segments: &[RiverSegment], settlement_center: [f32; 2],
 ) {
     for seg in &net.segments {
         if seg.tier != RoadTier::CarRoad { continue; }
@@ -2211,10 +2256,10 @@ fn generate_suburbs(
 
         let mid_x = (seg.x0 + seg.x1) * 0.5;
         let mid_z = (seg.z0 + seg.z1) * 0.5;
-        let dist_from_center = (mid_x * mid_x + mid_z * mid_z).sqrt();
+        let dist_from_center = ((mid_x - settlement_center[0]).powi(2) + (mid_z - settlement_center[1]).powi(2)).sqrt();
         // Only place suburbs in outer ring, away from dockyard
         if dist_from_center < 50.0 || dist_from_center > 170.0 { continue; }
-        if mid_z > DOCK_Z_START - 10.0 { continue; }
+        if mid_z > WORLD_HALF - 30.0 { continue; }
 
         let houses_per_side = ((len - 10.0) / 25.0).ceil() as i32;
         let houses_per_side = houses_per_side.min(3);
@@ -2527,707 +2572,163 @@ fn apply_building_base_ao(tris: &mut Vec<WorldTri>, buildings: &[Building]) {
 }
 
 pub fn generate_world(game: &mut GameState) {
-    let mut rng = Rng::new(game.world_seed);
+    let seed = game.world_seed;
+    let mut rng = Rng::new(seed);
     let mut tris = Vec::with_capacity(500_000);
 
-    // Generate organic road network
-    let net = generate_road_network(&mut rng);
-    game.road_network = net;
+    // === Layer 1: Terrain from noise (before any flattening) ===
+    // Roughness is seed-derived: each world has unique terrain character
+    let roughness = {
+        let mut r = Rng::new(seed.wrapping_add(77777));
+        0.6 + r.range(0.0, 0.8)  // 0.6 to 1.4
+    };
+    generate_heightmap_noise(&mut game.terrain, seed, roughness);
 
-    // Generate heightmap (needs road network for flattening)
-    generate_heightmap(&mut game.terrain, game.world_seed, &game.road_network);
+    // === Layer 2: River (carved into terrain, path varies by seed) ===
+    generate_river(&mut game.terrain, &mut tris, &mut game.world.river_segments, seed);
 
-    // River: carve heightmap BEFORE terrain mesh
-    generate_river(&mut game.terrain, &mut tris, &mut game.world.river_segments);
+    // === Layer 3: Zone map from terrain analysis ===
+    let zone_map = zone::ZoneMap::generate(
+        &game.terrain, &game.world.river_segments, seed,
+    );
+    let settlement_center = zone_map.main_settlement();
+    eprintln!("{} settlements, main at ({:.0}, {:.0}), {} zones classified",
+        zone_map.settlement_centers.len(),
+        settlement_center[0], settlement_center[1],
+        zone_map.cells.iter().filter(|c| c.kind != zone::ZoneKind::Wilderness).count());
 
-    // Bridges: restore heightmap under bridges BEFORE terrain mesh
+    // === Layer 4: Road network centered on settlement ===
+    game.road_network = generate_road_network(&mut rng, settlement_center);
+
+    // === Flatten terrain under roads + settlement + zones ===
+    flatten_terrain_for_roads(
+        &mut game.terrain, &game.road_network, settlement_center, &zone_map,
+    );
+
+    // === Bridges over river ===
     generate_bridges(&mut tris, &mut game.terrain,
         &game.road_network, &game.world.river_segments, &mut game.world.walls,
         &mut game.world.bridges);
 
-    // Terrain mesh (after river carving + bridge restoration)
-    generate_terrain_mesh(&mut tris, &game.terrain);
+    // === Terrain mesh (after all terrain modifications) ===
+    generate_terrain_mesh(&mut tris, &game.terrain, &zone_map);
 
-    // Road geometry
-    for seg in &game.road_network.segments {
-        match seg.tier {
-            RoadTier::CarRoad => {
-                let hw = CAR_ROAD_WIDTH * 0.5;
-                // Road surface
-                generate_road_strip(&mut tris, &game.terrain,
-                    seg.x0, seg.z0, seg.x1, seg.z1, hw, 0.05, ROAD_COLOR);
-                // Center line (yellow) — raised well above road to prevent Z-fighting
-                generate_road_strip(&mut tris, &game.terrain,
-                    seg.x0, seg.z0, seg.x1, seg.z1, 0.15, 0.08, ROAD_LINE_COLOR);
+    // === Road geometry ===
+    emit_road_geometry(&mut tris, &game.terrain, &game.road_network);
 
-                // Direction for edge lines + sidewalks
-                if let Some((perp_x, perp_z, _dir_x, _dir_z, _len)) = segment_perp(seg) {
+    // === Asset placement via zone-driven rules ===
 
-                    // White edge lines along both sides of road
-                    let edge_offset = hw - 0.2;
-                    let el_x0 = seg.x0 + perp_x * edge_offset;
-                    let el_z0 = seg.z0 + perp_z * edge_offset;
-                    let el_x1 = seg.x1 + perp_x * edge_offset;
-                    let el_z1 = seg.z1 + perp_z * edge_offset;
-                    generate_road_strip(&mut tris, &game.terrain,
-                        el_x0, el_z0, el_x1, el_z1, 0.08, 0.11, ROAD_EDGE_COLOR);
-                    let er_x0 = seg.x0 - perp_x * edge_offset;
-                    let er_z0 = seg.z0 - perp_z * edge_offset;
-                    let er_x1 = seg.x1 - perp_x * edge_offset;
-                    let er_z1 = seg.z1 - perp_z * edge_offset;
-                    generate_road_strip(&mut tris, &game.terrain,
-                        er_x0, er_z0, er_x1, er_z1, 0.08, 0.11, ROAD_EDGE_COLOR);
-
-                    let sw_hw = SIDEWALK_WIDTH * 0.5;
-                    let sw_offset = hw + sw_hw;
-
-                    // Curb strips — raised concrete edges between road and sidewalk
-                    let curb_hw = 0.12; // curb half-width
-                    let curb_offset = hw + curb_hw; // just outside road edge
-                    // Left curb
-                    let cl_x0 = seg.x0 + perp_x * curb_offset;
-                    let cl_z0 = seg.z0 + perp_z * curb_offset;
-                    let cl_x1 = seg.x1 + perp_x * curb_offset;
-                    let cl_z1 = seg.z1 + perp_z * curb_offset;
-                    generate_road_strip(&mut tris, &game.terrain,
-                        cl_x0, cl_z0, cl_x1, cl_z1, curb_hw, 0.18, CURB_COLOR);
-                    // Right curb
-                    let cr_x0 = seg.x0 - perp_x * curb_offset;
-                    let cr_z0 = seg.z0 - perp_z * curb_offset;
-                    let cr_x1 = seg.x1 - perp_x * curb_offset;
-                    let cr_z1 = seg.z1 - perp_z * curb_offset;
-                    generate_road_strip(&mut tris, &game.terrain,
-                        cr_x0, cr_z0, cr_x1, cr_z1, curb_hw, 0.18, CURB_COLOR);
-
-                    // Left sidewalk — raised above curb
-                    let lx0 = seg.x0 + perp_x * sw_offset;
-                    let lz0 = seg.z0 + perp_z * sw_offset;
-                    let lx1 = seg.x1 + perp_x * sw_offset;
-                    let lz1 = seg.z1 + perp_z * sw_offset;
-                    generate_road_strip(&mut tris, &game.terrain,
-                        lx0, lz0, lx1, lz1, sw_hw, 0.15, SIDEWALK_COLOR);
-
-                    // Right sidewalk — raised above curb
-                    let rx0 = seg.x0 - perp_x * sw_offset;
-                    let rz0 = seg.z0 - perp_z * sw_offset;
-                    let rx1 = seg.x1 - perp_x * sw_offset;
-                    let rz1 = seg.z1 - perp_z * sw_offset;
-                    generate_road_strip(&mut tris, &game.terrain,
-                        rx0, rz0, rx1, rz1, sw_hw, 0.15, SIDEWALK_COLOR);
-                }
-            }
-            RoadTier::FieldRoad => {
-                generate_road_strip(&mut tris, &game.terrain,
-                    seg.x0, seg.z0, seg.x1, seg.z1,
-                    FIELD_ROAD_WIDTH * 0.5, 0.04, FIELD_ROAD_COLOR);
-            }
-        }
+    // Buildings: placed by zone density, near roads
+    let building_spots = placement::place_assets(
+        &placement::BUILDING_RULE, &zone_map, &game.terrain,
+        &game.road_network, &game.world.river_segments,
+        &game.world.buildings, &mut rng,
+    );
+    for (bi, spot) in building_spots.iter().enumerate() {
+        emit_building(&mut tris, &mut game.world.buildings, &game.terrain,
+            &mut rng, spot.x, spot.z, bi);
     }
 
-    // Buildings — all placed near roads, last 30% with wider offset for visual variety
-    for bi in 0..NUM_BUILDINGS {
-        let w = rng.range(3.0, 8.0);
-        let d = rng.range(3.0, 8.0);
-        let h = rng.range(3.0, 20.0);
-        let mut x = 0.0f32;
-        let mut z = 0.0f32;
-        let mut attempts = 0;
-        let mut placed = false;
-        loop {
-            attempts += 1;
-            if attempts > 200 { break; }
-            if !game.road_network.segments.is_empty() {
-                // Near-road placement: pick random road segment, offset perpendicular
-                let seg_idx = rng.next() as usize % game.road_network.segments.len();
-                let seg = &game.road_network.segments[seg_idx];
-                let t = rng.range(0.1, 0.9);
-                let Some((perp_x, perp_z, _dir_x, _dir_z, len)) = segment_perp(seg) else { continue };
-                if len < 1.0 { continue; }
-                let (sx, sz) = sample_segment(seg, t);
-                let road_hw = if seg.tier == RoadTier::CarRoad { CAR_ROAD_WIDTH } else { FIELD_ROAD_WIDTH };
-                let offset = if bi < NUM_BUILDINGS * 7 / 10 {
-                    road_hw * 0.5 + SIDEWALK_WIDTH + rng.range(3.0, 15.0)
-                } else {
-                    road_hw * 0.5 + SIDEWALK_WIDTH + rng.range(8.0, 25.0)
-                };
-                let side = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
-                x = sx + perp_x * offset * side;
-                z = sz + perp_z * offset * side;
-            } else {
-                x = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-                z = rng.range(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
-            }
-            // Check: not on road, not on river, not in dock zone, not overlapping existing buildings
-            if !on_any_road(x, z, &game.road_network)
-                && !on_river(x, z, &game.world.river_segments)
-                && z < DOCK_Z_START - 5.0
-                && !game.world.buildings.iter().any(|b| {
-                    (x - b.x).abs() < (w + b.w) * 0.5 + 3.5
-                    && (z - b.z).abs() < (d + b.d) * 0.5 + 3.5
-                })
-            { placed = true; break; }
-        }
-        if !placed { continue; } // skip building if couldn't find valid spot
-        // Use minimum terrain height across footprint so building never floats
-        let (min_h, _max_h) = building_ground_height(&game.terrain, x, z, w, d);
-        let ground_y = min_h;
-        let color = rng.pick(&BUILDING_COLORS);
-
-        // Foundation skirt to seal gap between building base and terrain
-        add_building_foundation(&mut tris, &game.terrain, x, ground_y, z, w, d, color);
-
-        // --- ACU-style building with rich facade detail ---
-        let bevel = 0.15_f32.min(w * 0.1).min(d * 0.1);
-        let recess_depth = 0.15;
-        // Shrink inner box so wall faces sit behind window glass panels.
-        // wall_with_holes_tris facades cover the exterior at full dimensions.
-        let wall_inset = recess_depth + 0.02;
-        mesh::beveled_box_tris(&mut tris, x, ground_y + h * 0.5, z,
-            w - wall_inset * 2.0, h, d - wall_inset * 2.0, bevel, color);
-
-        let win_h = 1.2;
-        let win_w = 0.8;
-        let floor_height = 3.0;
-        let floors = ((h - 1.0) / floor_height) as i32;
-        let cols = ((w - 1.0) / 2.0) as i32;
-        let is_timber = bi % 4 == 0; // ~25% half-timbered facades
-        let has_shop = bi % 3 != 2 && floors > 1; // ~66% have ground floor shop
-        let has_balcony = bi % 5 == 0 && floors > 1; // ~20% have balconies
-        let shutter_color = SHUTTER_COLORS[bi % SHUTTER_COLORS.len()];
-
-        // Per-window color: ~65% lit with color variation, ~35% dark
-        const WIN_LIT_COLORS: [u32; 4] = [
-            0x00AA7722, // warm amber
-            0x00BB8833, // golden
-            0x00997722, // dimmer amber
-            0x00CCAA44, // bright warm white
-        ];
-        const WIN_DARK: u32 = 0xFF1A1A2A; // dark glass (non-emissive)
-
-        // Window holes for front/back
-        let mut win_holes: Vec<mesh::WallHole> = Vec::new();
-        let first_window_floor = if has_shop { 1 } else { 0 };
-        for floor in first_window_floor..floors {
-            let wy = 2.0 + floor as f32 * floor_height;
-            for col in 0..cols {
-                let wx = 1.2 + col as f32 * 2.0;
-                win_holes.push(mesh::WallHole { x: wx, y: wy, w: win_w, h: win_h });
-            }
-        }
-
-        // Generate per-window colors for front/back (hash-based randomization)
-        let front_colors: Vec<u32> = win_holes.iter().enumerate().map(|(i, _)| {
-            let h = (bi as u32).wrapping_mul(2654435761).wrapping_add(i as u32 * 1013904223);
-            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
-            else { WIN_DARK }
-        }).collect();
-        // Back face uses shifted hash for different pattern
-        let back_colors: Vec<u32> = win_holes.iter().enumerate().map(|(i, _)| {
-            let h = (bi as u32).wrapping_mul(1597334677).wrapping_add(i as u32 * 741103597);
-            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
-            else { WIN_DARK }
-        }).collect();
-
-        let zf = 0.01_f32;
-        // Front face (z+) with recessed windows
-        mesh::wall_with_holes_tris(
-            &mut tris,
-            x - w * 0.5, ground_y, z + d * 0.5 + zf,
-            w, h, &win_holes, recess_depth,
-            color, &front_colors, 1.0, 1.0, false,
-        );
-        // Back face (z-)
-        mesh::wall_with_holes_tris(
-            &mut tris,
-            x + w * 0.5, ground_y, z - d * 0.5 - zf,
-            w, h, &win_holes, recess_depth,
-            color, &back_colors, -1.0, -1.0, false,
-        );
-
-        // Side windows
-        let side_cols = ((d - 1.0) / 2.5) as i32;
-        let mut side_holes: Vec<mesh::WallHole> = Vec::new();
-        for floor in first_window_floor..floors {
-            let wy = 2.0 + floor as f32 * floor_height;
-            for col in 0..side_cols {
-                let wz = 1.5 + col as f32 * 2.5;
-                side_holes.push(mesh::WallHole { x: wz, y: wy, w: win_w, h: win_h });
-            }
-        }
-        let side_l_colors: Vec<u32> = side_holes.iter().enumerate().map(|(i, _)| {
-            let h = (bi as u32).wrapping_mul(3266489917).wrapping_add(i as u32 * 668265263);
-            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
-            else { WIN_DARK }
-        }).collect();
-        let side_r_colors: Vec<u32> = side_holes.iter().enumerate().map(|(i, _)| {
-            let h = (bi as u32).wrapping_mul(2246822519).wrapping_add(i as u32 * 387276957);
-            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
-            else { WIN_DARK }
-        }).collect();
-        mesh::wall_with_holes_tris(
-            &mut tris,
-            z - d * 0.5, ground_y, x + w * 0.5 + zf,
-            d, h, &side_holes, recess_depth,
-            color, &side_l_colors, -1.0, 1.0, true,
-        );
-        mesh::wall_with_holes_tris(
-            &mut tris,
-            z + d * 0.5, ground_y, x - w * 0.5 - zf,
-            d, h, &side_holes, recess_depth,
-            color, &side_r_colors, 1.0, -1.0, true,
-        );
-
-        // --- Window shutters (thin boxes flanking each window on front face) ---
-        let front_z = z + d * 0.5 + 0.02;
-        for floor in first_window_floor..floors {
-            let wy = ground_y + 2.0 + floor as f32 * floor_height;
-            for col in 0..cols {
-                let wx = x - w * 0.5 + 1.2 + col as f32 * 2.0;
-                // Left shutter
-                mesh::box_tris(&mut tris, wx - win_w * 0.5 - 0.08, wy + win_h * 0.5, front_z,
-                    0.12, win_h, 0.04, shutter_color);
-                // Right shutter
-                mesh::box_tris(&mut tris, wx + win_w * 0.5 + win_w + 0.08, wy + win_h * 0.5, front_z,
-                    0.12, win_h, 0.04, shutter_color);
-                // Window sill (small ledge under window)
-                mesh::box_tris(&mut tris, wx + win_w * 0.5, wy - 0.02, front_z + 0.04,
-                    win_w + 0.2, 0.06, 0.08, darken(color, 0.8));
-            }
-        }
-
-        // --- Timber framing on ~25% of buildings (half-timbered ACU facade) ---
-        if is_timber {
-            let tw = 0.08; // timber beam thickness
-            let front_tz = z + d * 0.5 + 0.03;
-            let timber_c = TIMBER_COLOR;
-            // Horizontal beams at each floor line
-            for floor in 0..=floors {
-                let by = ground_y + 2.0 + floor as f32 * floor_height - 0.5;
-                mesh::box_tris(&mut tris, x, by, front_tz, w - 0.2, tw, tw, timber_c);
-            }
-            // Vertical beams between windows
-            for col in 0..=cols {
-                let bx = x - w * 0.5 + 0.6 + col as f32 * 2.0;
-                mesh::box_tris(&mut tris, bx, ground_y + h * 0.5, front_tz,
-                    tw, h - 1.0, tw, timber_c);
-            }
-            // Diagonal braces (X-pattern between some windows)
-            if floors > 1 {
-                for col in 0..cols.min(3) {
-                    let bx = x - w * 0.5 + 1.6 + col as f32 * 2.0;
-                    let by = ground_y + 2.0 + floor_height;
-                    // Diagonal beam as a thin rotated box
-                    let diag_len = (1.6_f32 * 1.6 + floor_height * floor_height).sqrt();
-                    let _diag_angle = (floor_height).atan2(1.6);
-                    // Approximate with a thin box (slight tilt baked in position)
-                    mesh::box_tris(&mut tris, bx, by + floor_height * 0.5, front_tz,
-                        tw, diag_len * 0.8, tw, timber_c);
-                }
-            }
-        }
-
-        // --- Ground-floor shop front with awning ---
-        if has_shop {
-            let shop_h = 2.5;
-            let shop_front_z = z + d * 0.5 + 0.03;
-            // Shop front panel (darker wood, full width)
-            mesh::box_tris(&mut tris, x, ground_y + shop_h * 0.5, shop_front_z,
-                w - 0.4, shop_h, 0.06, SHOP_FRONT_COLOR);
-            // Shop window (large glass, recessed)
-            let shop_win_w = (w - 2.0).max(1.0);
-            mesh::box_tris(&mut tris, x + 0.5, ground_y + 1.4, shop_front_z - 0.04,
-                shop_win_w * 0.5, 1.2, 0.04, 0x00BBAA44); // emissive shop (cooler white)
-            // Door opening
-            mesh::box_tris(&mut tris, x - w * 0.25, ground_y + 1.1, shop_front_z - 0.04,
-                0.9, 2.0, 0.06, 0xFF332211);
-            // Awning (angled box protruding outward)
-            let awning_color = AWNING_COLORS[bi % AWNING_COLORS.len()];
-            mesh::box_tris(&mut tris, x, ground_y + shop_h + 0.1, shop_front_z + 0.6,
-                w - 0.2, 0.06, 1.2, awning_color);
-            // Awning underside brace
-            mesh::box_tris(&mut tris, x, ground_y + shop_h + 0.05, shop_front_z + 0.6,
-                w - 0.3, 0.02, 1.1, darken(awning_color, 0.6));
-            // Hanging shop sign (on bracket from facade)
-            let sign_color = SIGN_COLORS[bi % SIGN_COLORS.len()];
-            let sign_x = x + w * 0.25;
-            // Iron bracket (horizontal cylinder)
-            mesh::cylinder_between(&mut tris,
-                [sign_x, ground_y + shop_h + 1.5, shop_front_z],
-                [sign_x, ground_y + shop_h + 1.5, shop_front_z + 0.5],
-                0.02, 4, BALCONY_RAIL_COLOR);
-            // Sign board
-            mesh::box_tris(&mut tris, sign_x, ground_y + shop_h + 1.0, shop_front_z + 0.5,
-                0.6, 0.5, 0.04, sign_color);
-        } else {
-            // Simple door for non-shop buildings
-            mesh::box_tris(&mut tris, x, ground_y + 1.1, z + d * 0.5 - recess_depth * 0.5,
-                1.0, 2.2, recess_depth, 0xFF443322);
-        }
-
-        // --- Balconies (on ~20% of buildings, 2nd floor front face) ---
-        if has_balcony {
-            let bal_y = ground_y + 2.0 + floor_height; // 2nd floor
-            let bal_z = z + d * 0.5;
-            let bal_depth = 0.8;
-            let bal_w = w * 0.6;
-            // Platform
-            mesh::box_tris(&mut tris, x, bal_y - 0.04, bal_z + bal_depth * 0.5,
-                bal_w, 0.08, bal_depth, darken(color, 0.75));
-            // Railing posts
-            let num_posts = ((bal_w / 0.4) as i32).max(2);
-            for pi in 0..=num_posts {
-                let t = pi as f32 / num_posts as f32;
-                let px = x - bal_w * 0.5 + t * bal_w;
-                mesh::cylinder_tris(&mut tris, px, bal_y + 0.3, bal_z + bal_depth,
-                    0.02, 0.6, 4, BALCONY_RAIL_COLOR);
-            }
-            // Top rail
-            mesh::cylinder_between(&mut tris,
-                [x - bal_w * 0.5, bal_y + 0.6, bal_z + bal_depth],
-                [x + bal_w * 0.5, bal_y + 0.6, bal_z + bal_depth],
-                0.02, 4, BALCONY_RAIL_COLOR);
-            // Front railing bottom
-            mesh::cylinder_between(&mut tris,
-                [x - bal_w * 0.5, bal_y + 0.02, bal_z + bal_depth],
-                [x + bal_w * 0.5, bal_y + 0.02, bal_z + bal_depth],
-                0.015, 4, BALCONY_RAIL_COLOR);
-        }
-
-        // --- Flower boxes under some windows ---
-        if bi % 3 == 0 && floors > 1 {
-            let flower_floor = 1 + (bi % floors.max(1) as usize) as i32;
-            if flower_floor < floors {
-                let fy = ground_y + 2.0 + flower_floor as f32 * floor_height - 0.15;
-                let fz_pos = z + d * 0.5 + 0.12;
-                for col in 0..cols.min(2) {
-                    let fx = x - w * 0.5 + 1.2 + col as f32 * 2.0 + win_w * 0.5;
-                    mesh::box_tris(&mut tris, fx, fy, fz_pos, win_w + 0.1, 0.12, 0.15, FLOWER_BOX_COLOR);
-                    // Flowers
-                    let fc = FLOWER_COLORS[col as usize % FLOWER_COLORS.len()];
-                    mesh::sphere_tris(&mut tris, fx - 0.12, fy + 0.12, fz_pos + 0.02, 0.08, 0, fc);
-                    mesh::sphere_tris(&mut tris, fx + 0.12, fy + 0.12, fz_pos + 0.02, 0.08, 0, fc);
-                }
-            }
-        }
-
-        // --- Roof (3 varieties) ---
-        let roof_type = (bi + (color & 0xFF) as usize) % 3;
-        let roof_color = darken(color, 0.55);
-        match roof_type {
-            0 => {
-                // Flat roof with parapet
-                mesh::box_tris(&mut tris, x, ground_y + h + 0.15, z,
-                    w + 0.2, 0.3, d + 0.2, roof_color);
-            }
-            1 => {
-                let peak = h * 0.15 + 1.0;
-                mesh::pitched_roof_tris(&mut tris, x, ground_y + h, z, w + 0.3, d + 0.3, peak, roof_color);
-                // Dormer window on pitched roof
-                if w > 4.0 {
-                    let dorm_y = ground_y + h + peak * 0.35;
-                    let dorm_z = z + d * 0.5 + 0.1;
-                    mesh::box_tris(&mut tris, x, dorm_y, dorm_z, 1.0, 0.8, 0.5, color);
-                    mesh::pitched_roof_tris(&mut tris, x, dorm_y + 0.4, dorm_z, 1.2, 0.7, 0.4, roof_color);
-                    mesh::box_tris(&mut tris, x, dorm_y, dorm_z + 0.26, 0.5, 0.5, 0.04, 0x00AA7722);
-                }
-            }
-            _ => {
-                let peak = h * 0.12 + 0.8;
-                mesh::hip_roof_tris(&mut tris, x, ground_y + h, z, w + 0.3, d + 0.3, peak, roof_color);
-            }
-        }
-
-        // Cornice with more detail (double ledge)
-        let cornice_color = darken(color, 0.8);
-        mesh::cornice_tris(&mut tris, x, ground_y + h - 0.1, z,
-            w, d, 0.12, 0.175, cornice_color);
-        mesh::cornice_tris(&mut tris, x, ground_y + h - 0.25, z,
-            w, d, 0.08, 0.125, cornice_color);
-
-        // Belt course on taller buildings
-        if h > 8.0 {
-            mesh::cornice_tris(&mut tris, x, ground_y + h * 0.5, z,
-                w, d, 0.15, 0.075, cornice_color);
-        }
-
-        // Chimney (40% of buildings)
-        if bi % 5 < 2 && h > 4.0 {
-            let chim_x = x + w * 0.3;
-            let chim_z = z - d * 0.3;
-            mesh::box_tris(&mut tris, chim_x, ground_y + h + 1.2, chim_z,
-                0.4, 2.4, 0.4, darken(color, 0.5));
-            // Chimney cap
-            mesh::box_tris(&mut tris, chim_x, ground_y + h + 2.5, chim_z,
-                0.5, 0.1, 0.5, darken(color, 0.4));
-        }
-
-        game.world.buildings.push(Building { x, z, w, d, h, ground_y });
+    // Trees: dense in wilderness, sparse in town
+    let tree_spots = placement::place_assets(
+        &placement::TREE_RULE, &zone_map, &game.terrain,
+        &game.road_network, &game.world.river_segments,
+        &game.world.buildings, &mut rng,
+    );
+    for (ti, spot) in tree_spots.iter().enumerate() {
+        emit_tree(&mut tris, &mut game.world.trees, &game.terrain,
+            &mut rng, spot.x, spot.z, ti, seed);
     }
 
-    // Trees — visible bark trunk + branch splits + raised leaf canopies
-    const LEAF_COLORS: [u32; 8] = [
-        0xFF38883A, 0xFF44AA44, 0xFF2D8830, 0xFF55BB55,
-        0xFF3A9A3A, 0xFF48B048, 0xFF2A7A2C, 0xFF40A840,
-    ];
-    const BARK_COLOR: u32 = 0xFF443322;
-    const BARK_RIDGE_COLOR: u32 = 0xFF332211;
-    for ti in 0..NUM_TREES {
-        let mut x;
-        let mut z;
-        loop {
-            x = rng.range(-WORLD_HALF + 2.0, WORLD_HALF - 2.0);
-            z = rng.range(-WORLD_HALF + 2.0, WORLD_HALF - 2.0);
-            if !on_any_road(x, z, &game.road_network)
-                && !on_river(x, z, &game.world.river_segments) { break; }
-        }
-        let ground_y = game.terrain.height_at(x, z);
-        let trunk_h = rng.range(3.5, 6.0);   // taller trunks so they're visible
-        let trunk_r = rng.range(0.18, 0.35);
-        let canopy_r = rng.range(1.3, 2.5);  // slightly smaller canopy radius
-        let tree_seed = ti as u64 * 7919 + game.world_seed as u64;
-
-        // Bark trunk with ridges — full visible trunk
-        mesh::bark_cylinder_tris(&mut tris, x, ground_y + trunk_h * 0.5, z,
-            trunk_r, trunk_h, 10, trunk_r * 0.15, tree_seed, BARK_COLOR, BARK_RIDGE_COLOR);
-
-        // Exposed root bumps at base (2-3 small mounds)
-        let root_count = 2 + (ti % 2);
-        for ri in 0..root_count {
-            let ra = (ri as f32 / root_count as f32) * std::f32::consts::TAU + (ti as f32 * 2.1);
-            let rx = x + ra.cos() * trunk_r * 1.5;
-            let rz = z + ra.sin() * trunk_r * 1.5;
-            mesh::sphere_tris(&mut tris, rx, ground_y + 0.05, rz, trunk_r * 0.5, 0, BARK_COLOR);
-        }
-
-        // 2-4 branch forks starting at 70% trunk height, extending outward+up
-        let num_branches = 2 + (ti % 3);
-        let branch_base_y = ground_y + trunk_h * 0.7;
-        for bi in 0..num_branches {
-            let angle = (bi as f32 / num_branches as f32) * std::f32::consts::TAU + (ti as f32 * 1.23);
-            let blen = canopy_r * 0.7;
-            let bx = x + angle.cos() * blen * 0.6;
-            let bz = z + angle.sin() * blen * 0.6;
-            let by = branch_base_y + blen * 0.5;
-            mesh::cylinder_between(&mut tris,
-                [x, branch_base_y, z], [bx, by, bz],
-                trunk_r * 0.45, 5, BARK_COLOR);
-
-            // Sub-branches (smaller twigs from each main branch)
-            if bi < 2 {
-                let sub_angle = angle + 0.6;
-                let sbx = bx + sub_angle.cos() * blen * 0.3;
-                let sbz = bz + sub_angle.sin() * blen * 0.3;
-                let sby = by + blen * 0.25;
-                mesh::cylinder_between(&mut tris,
-                    [bx, by, bz], [sbx, sby, sbz],
-                    trunk_r * 0.2, 3, BARK_COLOR);
-            }
-        }
-
-        // Canopy sits near trunk top — overlaps branches for natural connection
-        let num_canopies = 3 + (ti % 3);
-        let canopy_base_y = ground_y + trunk_h + canopy_r * 0.2;
-
-        // Central cluster — fills the core of the crown
-        let central_cr = canopy_r * 0.5;
-        mesh::leaf_canopy_tris(&mut tris, x, canopy_base_y + canopy_r * 0.1, z,
-            central_cr, 60 + (ti * 5) % 20, central_cr * 0.2,
-            tree_seed.wrapping_add(9999), &LEAF_COLORS);
-
-        // Surrounding clusters — overlap to form a natural-looking crown
-        for ci in 0..num_canopies {
-            let angle = (ci as f32 / num_canopies as f32) * std::f32::consts::TAU + (ti as f32 * 0.77);
-            let spread = canopy_r * 0.5;
-            let clx = x + angle.cos() * spread;
-            let clz = z + angle.sin() * spread;
-            let cly = canopy_base_y + (ci as f32 * 0.15);
-            let cr = canopy_r * rng.range(0.35, 0.55);
-            let leaves_per_cluster = 50 + (ti * 7 + ci) % 25;
-            let leaf_sz = cr * 0.2;
-            mesh::leaf_canopy_tris(&mut tris, clx, cly, clz, cr,
-                leaves_per_cluster, leaf_sz,
-                tree_seed.wrapping_add(ci as u64 * 3571), &LEAF_COLORS);
-        }
-
-        game.world.trees.push(Tree { x, z, trunk_radius: trunk_r + 0.1 });
+    // Bushes
+    let bush_spots = placement::place_assets(
+        &placement::BUSH_RULE, &zone_map, &game.terrain,
+        &game.road_network, &game.world.river_segments,
+        &game.world.buildings, &mut rng,
+    );
+    for (bi, spot) in bush_spots.iter().enumerate() {
+        emit_bush(&mut tris, &game.terrain, spot.x, spot.z, bi, seed);
     }
 
-    // Bushes — scattered around terrain (40-60 bushes)
-    const BUSH_LEAF_COLORS: [u32; 6] = [
-        0xFF2D6B2D, 0xFF336633, 0xFF225522, 0xFF3A7A3A, 0xFF1F5F1F, 0xFF2A6A2A,
-    ];
-    let num_bushes = 50;
-    for bi in 0..num_bushes {
-        let mut bx;
-        let mut bz;
-        loop {
-            bx = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
-            bz = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
-            if !on_any_road(bx, bz, &game.road_network)
-                && !on_river(bx, bz, &game.world.river_segments) { break; }
-        }
-        let gy = game.terrain.height_at(bx, bz);
-        let br = rng.range(0.4, 0.9);
-        let bh = rng.range(0.5, 1.0);
-        mesh::bush_tris(&mut tris, bx, gy, bz, br, bh,
-            bi as u64 * 6131 + game.world_seed as u64, &BUSH_LEAF_COLORS, BARK_COLOR);
+    // Grass patches
+    let grass_spots = placement::place_assets(
+        &placement::GRASS_RULE, &zone_map, &game.terrain,
+        &game.road_network, &game.world.river_segments,
+        &game.world.buildings, &mut rng,
+    );
+    for (gi, spot) in grass_spots.iter().enumerate() {
+        emit_grass(&mut tris, &game.terrain, &mut rng, spot.x, spot.z, gi, seed);
     }
 
-    // Grass patches — scattered across terrain, denser near roads/buildings
-    // Brighter, more varied greens with yellow-green highlights
-    const GRASS_COLORS: [u32; 8] = [
-        0xFF55BB55, 0xFF66CC55, 0xFF44AA44, 0xFF5DBB4D,
-        0xFF77CC66, 0xFF55AA55, 0xFF6BC060, 0xFF88DD77,
-    ];
-    let num_grass_patches = 400;
-    for gi in 0..num_grass_patches {
-        let gx = rng.range(-WORLD_HALF + 2.0, WORLD_HALF - 2.0);
-        let gz = rng.range(-WORLD_HALF + 2.0, WORLD_HALF - 2.0);
-        if on_any_road(gx, gz, &game.road_network)
-            || on_river(gx, gz, &game.world.river_segments) { continue; }
-        let gy = game.terrain.height_at(gx, gz);
-        let patch_r = rng.range(1.5, 3.5);
-        let blade_count = 20 + (gi % 20);  // fewer blades but each wider/taller
-        let blade_h = rng.range(0.2, 0.45);   // taller blades (was 0.08-0.25)
-        let blade_w = rng.range(0.06, 0.12);  // much wider blades (was 0.015-0.04)
-        let terrain_ref = &game.terrain;
-        mesh::grass_patch_tris(&mut tris, gx, gy, gz, patch_r, blade_count,
-            blade_h, blade_w, gi as u64 * 4877 + game.world_seed as u64,
-            &GRASS_COLORS, Some(&|x, z| terrain_ref.height_at(x, z)));
+    // Rocks
+    let rock_spots = placement::place_assets(
+        &placement::ROCK_RULE, &zone_map, &game.terrain,
+        &game.road_network, &game.world.river_segments,
+        &game.world.buildings, &mut rng,
+    );
+    for (ri, spot) in rock_spots.iter().enumerate() {
+        emit_rock(&mut tris, &mut game.world.rocks, &game.terrain,
+            spot.x, spot.z, spot.scale, ri, seed);
     }
 
-    // Rocks — perturbed icospheres
-    for ri in 0..NUM_ROCKS {
-        let mut x = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
-        let mut z = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
-        for _ in 0..20 {
-            if !on_any_road(x, z, &game.road_network) { break; }
-            x = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
-            z = rng.range(-WORLD_HALF + 3.0, WORLD_HALF - 3.0);
-        }
-        let ground_y = game.terrain.height_at(x, z);
-        let size = rng.range(0.5, 1.5);
-        mesh::perturbed_sphere_tris(&mut tris, x, ground_y + size * 0.4, z,
-            size, 1, 0.25, ri as u64 * 12345, ROCK_COLOR);
-        game.world.rocks.push(Rock { x, z, size });
+    // Street lights: along roads in developed zones
+    let light_spots = placement::place_assets(
+        &placement::STREET_LIGHT_RULE, &zone_map, &game.terrain,
+        &game.road_network, &game.world.river_segments,
+        &game.world.buildings, &mut rng,
+    );
+    for spot in &light_spots {
+        emit_street_light(&mut tris, &mut game.world.street_lights, &game.terrain,
+            spot.x, spot.z, seed);
     }
 
-    // Street lights — cylinder pole + curved arm + glass globe
-    let car_segments: Vec<RoadSegment> = game.road_network.segments.iter()
-        .filter(|s| s.tier == RoadTier::CarRoad).cloned().collect();
-    for _ in 0..NUM_STREET_LIGHTS {
-        let seg_idx = rng.next() as usize % car_segments.len().max(1);
-        if car_segments.is_empty() { break; }
-        let seg = &car_segments[seg_idx];
-        let t = rng.range(0.1, 0.9);
-        let (sx, sz) = sample_segment(seg, t);
-        let Some((perp_x, perp_z, _dir_x, _dir_z, _len)) = segment_perp(seg) else { continue };
-        let offset = CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH + 0.5;
-        let side = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
-        let x = sx + perp_x * offset * side;
-        let z = sz + perp_z * offset * side;
-        let ground_y = game.terrain.height_at(x, z);
-
-        // Base mounting plate — flat disc at ground level
-        let base_y = ground_y + 0.04;
-        for pi in 0..8u32 {
-            let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
-            let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
-            mesh::push_tri(&mut tris, [x, base_y, z], [x + a1.cos() * 0.25, base_y, z + a1.sin() * 0.25], [x + a0.cos() * 0.25, base_y, z + a0.sin() * 0.25], [0.0, 1.0, 0.0], LAMP_BASE_COLOR);
-        }
-        // Wider base section — tapered cylinder at bottom of pole
-        mesh::cylinder_tris(&mut tris, x, ground_y + 0.2, z, 0.12, 0.4, 6, LAMP_BASE_COLOR);
-        // Main cylinder pole (8 segments for rounder appearance)
-        mesh::cylinder_tris(&mut tris, x, ground_y + 2.7, z, 0.06, 4.6, 8, LAMP_POLE_COLOR);
-
-        // Curved arm — short cylinder from pole top toward road
-        let arm_dx = -perp_x * side * 0.8;
-        let arm_dz = -perp_z * side * 0.8;
-        mesh::cylinder_between(&mut tris,
-            [x, ground_y + 5.0, z],
-            [x + arm_dx, ground_y + 5.1, z + arm_dz],
-            0.03, 4, LAMP_POLE_COLOR);
-
-        // Glass globe at arm tip
-        mesh::sphere_tris(&mut tris, x + arm_dx, ground_y + 5.1, z + arm_dz,
-            0.2, 1, LAMP_GLOW_COLOR);
-        // (glow halo removed — too large, creates dark umbrella shapes in daylight)
-
-        // Ground light pool — warm emissive disc beneath the lamp
-        let pool_x = x + arm_dx;
-        let pool_z = z + arm_dz;
-        let pool_y = ground_y + 0.03; // just above ground to avoid z-fighting
-        let pool_r = 3.0;
-        let pool_color: u32 = 0x00553810; // warm emissive ground glow
-        for pi in 0..8u32 {
-            let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
-            let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
-            mesh::push_tri(&mut tris, [pool_x, pool_y, pool_z], [pool_x + a1.cos() * pool_r, pool_y, pool_z + a1.sin() * pool_r], [pool_x + a0.cos() * pool_r, pool_y, pool_z + a0.sin() * pool_r], [0.0, 1.0, 0.0], pool_color);
-        }
-
-        game.world.street_lights.push(StreetLight { x, z, ground_y });
-    }
-
-    // Trash bins at road network nodes (intersections), then along road segments
-    let mut bin_count = 0;
-    for node in &game.road_network.nodes {
-        if bin_count >= NUM_TRASH_BINS { break; }
-        let mut bx = node[0] + 4.0;
-        let mut bz = node[1] + 4.0;
-        for _ in 0..20 {
-            if !on_road_surface(bx, bz, &game.road_network) { break; }
-            let angle = rng.range(0.0, std::f32::consts::TAU);
-            let dist = rng.range(5.0, 10.0);
-            bx = node[0] + angle.cos() * dist;
-            bz = node[1] + angle.sin() * dist;
-        }
-        if on_road_surface(bx, bz, &game.road_network) { continue; }
-        let by = game.terrain.height_at(bx, bz);
+    // Trash bins: along roads in town/industrial zones
+    let bin_spots = placement::place_assets(
+        &placement::TRASH_BIN_RULE, &zone_map, &game.terrain,
+        &game.road_network, &game.world.river_segments,
+        &game.world.buildings, &mut rng,
+    );
+    for spot in &bin_spots {
         game.world.trash_bins.push(TrashBin {
-            x: bx, y: by, z: bz, items_held: 0, carried_by: None, terrain_normal: [0.0, 1.0, 0.0],
+            x: spot.x,
+            y: game.terrain.height_at(spot.x, spot.z),
+            z: spot.z,
+            items_held: 0,
+            carried_by: None,
+            terrain_normal: [0.0, 1.0, 0.0],
         });
-        bin_count += 1;
-    }
-    // Fill remaining bins along road segments
-    let mut seg_attempts = 0;
-    while bin_count < NUM_TRASH_BINS && !car_segments.is_empty() && seg_attempts < 200 {
-        seg_attempts += 1;
-        let seg_idx = rng.next() as usize % car_segments.len();
-        let seg = &car_segments[seg_idx];
-        let t = rng.range(0.2, 0.8);
-        let (sx, sz) = sample_segment(seg, t);
-        let Some((perp_x, perp_z, _dir_x, _dir_z, _len)) = segment_perp(seg) else { continue };
-        let offset = CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH + 0.3;
-        let side = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
-        let bx = sx + perp_x * offset * side;
-        let bz = sz + perp_z * offset * side;
-        if on_road_surface(bx, bz, &game.road_network) { continue; }
-        let by = game.terrain.height_at(bx, bz);
-        game.world.trash_bins.push(TrashBin {
-            x: bx, y: by, z: bz, items_held: 0, carried_by: None, terrain_normal: [0.0, 1.0, 0.0],
-        });
-        bin_count += 1;
     }
 
-    // Suburban houses along outer road segments
+    // === Zone-specific features ===
+    // Density scale derived from zone map: average Town zone density near settlement
+    let d = zone_map.zone_at(settlement_center[0], settlement_center[1]).density.max(0.5);
+
+    // Suburban houses along outer roads
     {
         let mut suburb_spots = Vec::new();
         generate_suburbs(&mut tris, &game.terrain, &mut rng,
             &game.road_network, &mut game.world.buildings,
             &mut game.world.walls, &mut suburb_spots,
-            &game.world.river_segments);
+            &game.world.river_segments, settlement_center);
         game.road_network.parking_spots.extend(suburb_spots);
     }
 
-    // Industrial dockyard biome
-    generate_dockyard(&mut tris, &game.terrain, &mut rng,
-        &mut game.world.buildings, &mut game.world.interactibles);
+    // Industrial dockyard — position from zone map
+    if let Some(dock_center) = zone_map.find_zone_center(zone::ZoneKind::Industrial) {
+        generate_dockyard_at(&mut tris, &game.terrain, &mut rng,
+            &mut game.world.buildings, &mut game.world.interactibles,
+            dock_center, d);
+    } else if let Some(water_center) = zone_map.find_zone_center(zone::ZoneKind::Waterfront) {
+        generate_dockyard_at(&mut tris, &game.terrain, &mut rng,
+            &mut game.world.buildings, &mut game.world.interactibles,
+            water_center, d);
+    }
 
-    // Interactible objects (phone booths, vending machines, benches, etc.)
+    // Interactibles (phone booths, vending machines, benches, etc.)
     generate_interactibles(&mut tris, &game.terrain, &mut rng,
-        &game.road_network, &game.world.buildings, &mut game.world.interactibles);
+        &game.road_network, &game.world.buildings, &mut game.world.interactibles, d);
 
-    // Parking lots near ring-1 intersections
+    // Parking lots near intersections
     {
         let mut lot_spots = Vec::new();
         generate_parking_lots(&mut tris, &game.terrain, &mut rng,
@@ -3238,30 +2739,34 @@ pub fn generate_world(game: &mut GameState) {
         game.road_network.parking_spots.extend(lot_spots);
     }
 
-    // Generate roadside parking spots (needs buildings for overlap check)
-    let roadside_spots = generate_parking_spots(&game.road_network, &game.world.buildings, &game.terrain, &game.world.river_segments);
+    // Roadside parking spots
+    let roadside_spots = generate_parking_spots(
+        &game.road_network, &game.world.buildings,
+        &game.terrain, &game.world.river_segments,
+    );
     game.road_network.parking_spots.extend(roadside_spots);
 
-    // Market stalls near town center
+    // Market stalls near town center (using settlement center, not origin)
     generate_market_stalls(&mut tris, &game.terrain, &mut rng,
-        &game.road_network, &game.world.buildings, &mut game.world.walls);
+        &game.road_network, &game.world.buildings, &mut game.world.walls,
+        settlement_center, d);
 
     // Bus stops along major roads
     generate_bus_stops(&mut tris, &game.terrain, &mut rng,
-        &game.road_network, &game.world.buildings, &mut game.world.walls);
+        &game.road_network, &game.world.buildings, &mut game.world.walls, d);
 
-    // Decorative objects throughout town
+    // Decorations throughout developed areas (using settlement center, not origin)
     generate_decorations(&mut tris, &game.terrain, &mut rng,
         &game.road_network, &game.world.buildings,
         &mut game.world.walls, &mut game.world.rocks, &mut game.world.street_lights,
-        &mut game.world.clutter);
+        &mut game.world.clutter, settlement_center, d);
 
-    // Building ground shadows — subtle darkened patch at base
+    // Building ground shadows
     for b in &game.world.buildings {
         let shadow_y = b.ground_y + 0.05;
         let shadow_hw = b.w * 0.5 + 0.3;
         let shadow_hd = b.d * 0.5 + 0.3;
-        let shadow_color: u32 = 0xFF1E3E1E; // darkened green, blends with terrain
+        let shadow_color: u32 = 0xFF1E3E1E;
         let v0 = [b.x - shadow_hw, shadow_y, b.z - shadow_hd];
         let v1 = [b.x + shadow_hw, shadow_y, b.z - shadow_hd];
         let v2 = [b.x + shadow_hw, shadow_y, b.z + shadow_hd];
@@ -3269,7 +2774,7 @@ pub fn generate_world(game: &mut GameState) {
         mesh::push_quad_n(&mut tris, v0, v3, v2, v1, [0.0, 1.0, 0.0], shadow_color);
     }
 
-    // NPC-owned vehicles — one per NPC, all start parked
+    // === NPC-owned vehicles (100 — fixed count for NEAT compatibility) ===
     let total_spots = game.road_network.parking_spots.len();
     for i in 0..NUM_NPCS {
         let spot_offset = i;
@@ -3277,11 +2782,17 @@ pub fn generate_world(game: &mut GameState) {
             let spot = &game.road_network.parking_spots[spot_offset];
             (spot.x, game.terrain.height_at(spot.x, spot.z) + VEHICLE_GROUND_OFFSET, spot.z, spot.rot_y, Some(spot_offset))
         } else {
-            let home_idx = i % game.world.buildings.len();
-            let b = &game.world.buildings[home_idx];
-            let px = b.x + b.w * 0.5 + 2.0;
-            let pz = b.z;
-            (px, game.terrain.height_at(px, pz) + VEHICLE_GROUND_OFFSET, pz, 0.0, None)
+            let home_idx = i % game.world.buildings.len().max(1);
+            if !game.world.buildings.is_empty() {
+                let b = &game.world.buildings[home_idx];
+                let px = b.x + b.w * 0.5 + 2.0;
+                let pz = b.z;
+                (px, game.terrain.height_at(px, pz) + VEHICLE_GROUND_OFFSET, pz, 0.0, None)
+            } else {
+                let px = settlement_center[0] + rng.range(-20.0, 20.0);
+                let pz = settlement_center[1] + rng.range(-20.0, 20.0);
+                (px, game.terrain.height_at(px, pz) + VEHICLE_GROUND_OFFSET, pz, 0.0, None)
+            }
         };
 
         let vi = game.world.vehicles.len();
@@ -3315,7 +2826,7 @@ pub fn generate_world(game: &mut GameState) {
         });
     }
 
-    // NPCs — assign homes to accessible buildings closest to center
+    // === NPCs (100 — fixed count for NEAT brain compatibility) ===
     let npc_jobs = [
         NpcJob::Collector, NpcJob::GarbageCollector, NpcJob::TaxiDriver,
         NpcJob::DeliveryCourier, NpcJob::MailCarrier, NpcJob::Paramedic,
@@ -3323,40 +2834,44 @@ pub fn generate_world(game: &mut GameState) {
         NpcJob::Mechanic, NpcJob::ConstructionWorker, NpcJob::Fisherman,
         NpcJob::Farmer, NpcJob::Lumberjack, NpcJob::Scavenger,
     ];
-    // Filter: only buildings reachable from a road node (8-direction probe)
     let reachable = validate_building_accessibility(&game.world, &game.road_network);
-    // Sort reachable building indices by distance from center
     let mut building_by_dist: Vec<usize> = (0..game.world.buildings.len())
         .filter(|&bi| reachable[bi])
         .collect();
+    // Sort by distance from settlement center (not origin)
     building_by_dist.sort_by(|&a, &b| {
         let ba = &game.world.buildings[a];
         let bb = &game.world.buildings[b];
-        let da = ba.x * ba.x + ba.z * ba.z;
-        let db = bb.x * bb.x + bb.z * bb.z;
+        let da = (ba.x - settlement_center[0]).powi(2) + (ba.z - settlement_center[1]).powi(2);
+        let db = (bb.x - settlement_center[0]).powi(2) + (bb.z - settlement_center[1]).powi(2);
         da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
     });
     if building_by_dist.is_empty() {
-        // Fallback: use all buildings if none are reachable
         building_by_dist = (0..game.world.buildings.len()).collect();
     }
     for i in 0..NUM_NPCS {
-        let home_idx = building_by_dist[i % building_by_dist.len()];
+        let home_idx = if !building_by_dist.is_empty() {
+            building_by_dist[i % building_by_dist.len()]
+        } else { 0 };
         let car_idx = i;
-        let b = &game.world.buildings[home_idx];
+        let (bx, bz, bw, bd) = if !game.world.buildings.is_empty() {
+            let b = &game.world.buildings[home_idx];
+            (b.x, b.z, b.w, b.d)
+        } else {
+            (settlement_center[0], settlement_center[1], 4.0, 4.0)
+        };
 
-        // Try 8 spawn positions around the building, fallback to nearest road node
-        let mut x = b.x + (b.w * 0.5 + 2.0);
-        let mut z = b.z;
+        let mut x = bx + (bw * 0.5 + 2.0);
+        let mut z = bz;
         let spawn_angles: [f32; 8] = [0.0, std::f32::consts::FRAC_PI_4, std::f32::consts::FRAC_PI_2,
             3.0 * std::f32::consts::FRAC_PI_4, std::f32::consts::PI,
             5.0 * std::f32::consts::FRAC_PI_4, 3.0 * std::f32::consts::FRAC_PI_2,
             7.0 * std::f32::consts::FRAC_PI_4];
         let mut spawn_ok = false;
         for &angle in &spawn_angles {
-            let extent = b.w.max(b.d) * 0.5 + 1.5 + rng.range(0.0, 2.0);
-            let sx = b.x + angle.cos() * extent;
-            let sz = b.z + angle.sin() * extent;
+            let extent = bw.max(bd) * 0.5 + 1.5 + rng.range(0.0, 2.0);
+            let sx = bx + angle.cos() * extent;
+            let sz = bz + angle.sin() * extent;
             if !check_walk_collision(&game.world, sx, sz, 0.4, Some(home_idx))
                 && !on_river_not_bridge(sx, sz, &game.world.river_segments, &game.world.bridges)
             {
@@ -3364,10 +2879,9 @@ pub fn generate_world(game: &mut GameState) {
             }
         }
         if !spawn_ok {
-            // Fallback: nearest road node
             let mut best_d = f32::MAX;
             for node in &game.road_network.nodes {
-                let d = (node[0] - b.x).powi(2) + (node[1] - b.z).powi(2);
+                let d = (node[0] - bx).powi(2) + (node[1] - bz).powi(2);
                 if d < best_d {
                     best_d = d;
                     x = node[0]; z = node[1];
@@ -3438,7 +2952,6 @@ pub fn generate_world(game: &mut GameState) {
             fitness_proximity: 0.0,
             ragdoll_active: false,
             ragdoll_points: [[0.0; 3]; 7],
-
             ragdoll_timer: 0.0,
             skeleton: crate::skeleton::Skeleton::new_humanoid(),
             body: {
@@ -3456,15 +2969,13 @@ pub fn generate_world(game: &mut GameState) {
         });
     }
 
-    // Items: all 5 kinds spawn in the wild
-    // Spawn on walkable terrain — not on roads, not in collision zones, not on river
+    // === Items (250 — fixed count for gameplay balance) ===
     let item_kinds = [ItemKind::Health, ItemKind::Money, ItemKind::Stamina, ItemKind::Food, ItemKind::Water];
     for _ in 0..NUM_ITEMS {
         let mut x;
         let mut z;
         let mut attempts = 0;
         loop {
-            // After many failures, spawn near a road node but off the road itself
             if attempts > 50 && !game.road_network.nodes.is_empty() {
                 let ni = rng.next() as usize % game.road_network.nodes.len();
                 let angle = rng.range(0.0, std::f32::consts::TAU);
@@ -3493,14 +3004,16 @@ pub fn generate_world(game: &mut GameState) {
         });
     }
 
-    // Set player spawn height
+    // Set player spawn at settlement center
+    game.player.x = settlement_center[0];
+    game.player.z = settlement_center[1] + 10.0;
     game.player.y = game.terrain.height_at(game.player.x, game.player.z);
+    game.player.body.pos = [game.player.x, game.player.y, game.player.z];
 
-    // Ambient occlusion: darken ground triangles near building bases
-    // Creates contact shadow at building-ground interface
+    // Ambient occlusion
     apply_building_base_ao(&mut tris, &game.world.buildings);
 
-    // Build navigation grid for A* pathfinding
+    // Build navigation grid
     game.walk_grid = crate::navmesh::build_walk_grid(
         &game.world.buildings, &game.world.rocks, &game.world.trees,
         &game.world.walls, &game.world.clutter,
@@ -3508,12 +3021,538 @@ pub fn generate_world(game: &mut GameState) {
     );
     eprintln!("Walk grid: {}x{} ({}m cells)", game.walk_grid.grid_w, game.walk_grid.grid_h, game.walk_grid.cell_size);
 
-    eprintln!("World: {} tris, {} road segs ({} nodes), {} vehicles ({} NPC-owned), {} npcs, {} items, {} bins, {} interactibles, {} walls, {} river segs, {} parking spots",
+    // Store zone map for runtime use (jobs, particle effects, etc.)
+    game.zone_map = zone_map;
+
+    eprintln!("World: {} tris, {} road segs ({} nodes), {} buildings, {} trees, {} rocks, {} lights, {} vehicles, {} npcs, {} items, {} bins, {} parking",
         tris.len(), game.road_network.segments.len(), game.road_network.nodes.len(),
-        game.world.vehicles.len(), NUM_NPCS, game.world.npcs.len(),
-        game.world.items.len(), game.world.trash_bins.len(), game.world.interactibles.len(),
-        game.world.walls.len(), game.world.river_segments.len(), game.road_network.parking_spots.len());
+        game.world.buildings.len(), game.world.trees.len(), game.world.rocks.len(),
+        game.world.street_lights.len(),
+        game.world.vehicles.len(), game.world.npcs.len(),
+        game.world.items.len(), game.world.trash_bins.len(), game.road_network.parking_spots.len());
     game.world.static_tris = tris;
+}
+
+// ==================== Road Geometry ====================
+
+fn emit_road_geometry(tris: &mut Vec<WorldTri>, terrain: &Terrain, net: &RoadNetwork) {
+    for seg in &net.segments {
+        match seg.tier {
+            RoadTier::CarRoad => {
+                let hw = CAR_ROAD_WIDTH * 0.5;
+                generate_road_strip(tris, terrain,
+                    seg.x0, seg.z0, seg.x1, seg.z1, hw, 0.05, ROAD_COLOR);
+                generate_road_strip(tris, terrain,
+                    seg.x0, seg.z0, seg.x1, seg.z1, 0.15, 0.08, ROAD_LINE_COLOR);
+                if let Some((perp_x, perp_z, _dir_x, _dir_z, _len)) = segment_perp(seg) {
+                    let edge_offset = hw - 0.2;
+                    let el_x0 = seg.x0 + perp_x * edge_offset;
+                    let el_z0 = seg.z0 + perp_z * edge_offset;
+                    let el_x1 = seg.x1 + perp_x * edge_offset;
+                    let el_z1 = seg.z1 + perp_z * edge_offset;
+                    generate_road_strip(tris, terrain, el_x0, el_z0, el_x1, el_z1, 0.08, 0.11, ROAD_EDGE_COLOR);
+                    let er_x0 = seg.x0 - perp_x * edge_offset;
+                    let er_z0 = seg.z0 - perp_z * edge_offset;
+                    let er_x1 = seg.x1 - perp_x * edge_offset;
+                    let er_z1 = seg.z1 - perp_z * edge_offset;
+                    generate_road_strip(tris, terrain, er_x0, er_z0, er_x1, er_z1, 0.08, 0.11, ROAD_EDGE_COLOR);
+                    let sw_hw = SIDEWALK_WIDTH * 0.5;
+                    let sw_offset = hw + sw_hw;
+                    let curb_hw = 0.12;
+                    let curb_offset = hw + curb_hw;
+                    let cl_x0 = seg.x0 + perp_x * curb_offset;
+                    let cl_z0 = seg.z0 + perp_z * curb_offset;
+                    let cl_x1 = seg.x1 + perp_x * curb_offset;
+                    let cl_z1 = seg.z1 + perp_z * curb_offset;
+                    generate_road_strip(tris, terrain, cl_x0, cl_z0, cl_x1, cl_z1, curb_hw, 0.18, CURB_COLOR);
+                    let cr_x0 = seg.x0 - perp_x * curb_offset;
+                    let cr_z0 = seg.z0 - perp_z * curb_offset;
+                    let cr_x1 = seg.x1 - perp_x * curb_offset;
+                    let cr_z1 = seg.z1 - perp_z * curb_offset;
+                    generate_road_strip(tris, terrain, cr_x0, cr_z0, cr_x1, cr_z1, curb_hw, 0.18, CURB_COLOR);
+                    let lx0 = seg.x0 + perp_x * sw_offset;
+                    let lz0 = seg.z0 + perp_z * sw_offset;
+                    let lx1 = seg.x1 + perp_x * sw_offset;
+                    let lz1 = seg.z1 + perp_z * sw_offset;
+                    generate_road_strip(tris, terrain, lx0, lz0, lx1, lz1, sw_hw, 0.15, SIDEWALK_COLOR);
+                    let rx0 = seg.x0 - perp_x * sw_offset;
+                    let rz0 = seg.z0 - perp_z * sw_offset;
+                    let rx1 = seg.x1 - perp_x * sw_offset;
+                    let rz1 = seg.z1 - perp_z * sw_offset;
+                    generate_road_strip(tris, terrain, rx0, rz0, rx1, rz1, sw_hw, 0.15, SIDEWALK_COLOR);
+                }
+            }
+            RoadTier::FieldRoad => {
+                generate_road_strip(tris, terrain,
+                    seg.x0, seg.z0, seg.x1, seg.z1,
+                    FIELD_ROAD_WIDTH * 0.5, 0.04, FIELD_ROAD_COLOR);
+            }
+        }
+    }
+}
+
+// ==================== Emit Functions ====================
+// Each emit_* function generates mesh geometry for a single placed asset.
+
+fn emit_building(
+    tris: &mut Vec<WorldTri>, buildings: &mut Vec<Building>,
+    terrain: &Terrain, rng: &mut Rng, x: f32, z: f32, bi: usize,
+) {
+    let w = rng.range(3.0, 8.0);
+    let d = rng.range(3.0, 8.0);
+    let h = rng.range(3.0, 20.0);
+    let (min_h, _max_h) = building_ground_height(terrain, x, z, w, d);
+    let ground_y = min_h;
+    let color = rng.pick(&BUILDING_COLORS);
+
+    add_building_foundation(tris, terrain, x, ground_y, z, w, d, color);
+
+    let bevel = 0.15_f32.min(w * 0.1).min(d * 0.1);
+    let recess_depth = 0.15;
+    let wall_inset = recess_depth + 0.02;
+    mesh::beveled_box_tris(tris, x, ground_y + h * 0.5, z,
+        w - wall_inset * 2.0, h, d - wall_inset * 2.0, bevel, color);
+
+    let win_h = 1.2;
+    let win_w = 0.8;
+    let floor_height = 3.0;
+    let floors = ((h - 1.0) / floor_height) as i32;
+    let cols = ((w - 1.0) / 2.0) as i32;
+    let is_timber = bi % 4 == 0;
+    let has_shop = bi % 3 != 2 && floors > 1;
+    let has_balcony = bi % 5 == 0 && floors > 1;
+    let shutter_color = SHUTTER_COLORS[bi % SHUTTER_COLORS.len()];
+
+    const WIN_LIT_COLORS: [u32; 4] = [
+        0x00AA7722, 0x00BB8833, 0x00997722, 0x00CCAA44,
+    ];
+        const WIN_DARK: u32 = 0xFF1A1A2A; // dark glass (non-emissive)
+
+        // Window holes for front/back
+        let mut win_holes: Vec<mesh::WallHole> = Vec::new();
+        let first_window_floor = if has_shop { 1 } else { 0 };
+        for floor in first_window_floor..floors {
+            let wy = 2.0 + floor as f32 * floor_height;
+            for col in 0..cols {
+                let wx = 1.2 + col as f32 * 2.0;
+                win_holes.push(mesh::WallHole { x: wx, y: wy, w: win_w, h: win_h });
+            }
+        }
+
+        // Generate per-window colors for front/back (hash-based randomization)
+        let front_colors: Vec<u32> = win_holes.iter().enumerate().map(|(i, _)| {
+            let h = (bi as u32).wrapping_mul(2654435761).wrapping_add(i as u32 * 1013904223);
+            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
+            else { WIN_DARK }
+        }).collect();
+        // Back face uses shifted hash for different pattern
+        let back_colors: Vec<u32> = win_holes.iter().enumerate().map(|(i, _)| {
+            let h = (bi as u32).wrapping_mul(1597334677).wrapping_add(i as u32 * 741103597);
+            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
+            else { WIN_DARK }
+        }).collect();
+
+        let zf = 0.01_f32;
+        // Front face (z+) with recessed windows
+        mesh::wall_with_holes_tris(
+            tris,
+            x - w * 0.5, ground_y, z + d * 0.5 + zf,
+            w, h, &win_holes, recess_depth,
+            color, &front_colors, 1.0, 1.0, false,
+        );
+        // Back face (z-)
+        mesh::wall_with_holes_tris(
+            tris,
+            x + w * 0.5, ground_y, z - d * 0.5 - zf,
+            w, h, &win_holes, recess_depth,
+            color, &back_colors, -1.0, -1.0, false,
+        );
+
+        // Side windows
+        let side_cols = ((d - 1.0) / 2.5) as i32;
+        let mut side_holes: Vec<mesh::WallHole> = Vec::new();
+        for floor in first_window_floor..floors {
+            let wy = 2.0 + floor as f32 * floor_height;
+            for col in 0..side_cols {
+                let wz = 1.5 + col as f32 * 2.5;
+                side_holes.push(mesh::WallHole { x: wz, y: wy, w: win_w, h: win_h });
+            }
+        }
+        let side_l_colors: Vec<u32> = side_holes.iter().enumerate().map(|(i, _)| {
+            let h = (bi as u32).wrapping_mul(3266489917).wrapping_add(i as u32 * 668265263);
+            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
+            else { WIN_DARK }
+        }).collect();
+        let side_r_colors: Vec<u32> = side_holes.iter().enumerate().map(|(i, _)| {
+            let h = (bi as u32).wrapping_mul(2246822519).wrapping_add(i as u32 * 387276957);
+            if h % 100 < 65 { WIN_LIT_COLORS[(h / 100) as usize % WIN_LIT_COLORS.len()] }
+            else { WIN_DARK }
+        }).collect();
+        mesh::wall_with_holes_tris(
+            tris,
+            z - d * 0.5, ground_y, x + w * 0.5 + zf,
+            d, h, &side_holes, recess_depth,
+            color, &side_l_colors, -1.0, 1.0, true,
+        );
+        mesh::wall_with_holes_tris(
+            tris,
+            z + d * 0.5, ground_y, x - w * 0.5 - zf,
+            d, h, &side_holes, recess_depth,
+            color, &side_r_colors, 1.0, -1.0, true,
+        );
+
+        // --- Window shutters (thin boxes flanking each window on front face) ---
+        let front_z = z + d * 0.5 + 0.02;
+        for floor in first_window_floor..floors {
+            let wy = ground_y + 2.0 + floor as f32 * floor_height;
+            for col in 0..cols {
+                let wx = x - w * 0.5 + 1.2 + col as f32 * 2.0;
+                // Left shutter
+                mesh::box_tris(tris, wx - win_w * 0.5 - 0.08, wy + win_h * 0.5, front_z,
+                    0.12, win_h, 0.04, shutter_color);
+                // Right shutter
+                mesh::box_tris(tris, wx + win_w * 0.5 + win_w + 0.08, wy + win_h * 0.5, front_z,
+                    0.12, win_h, 0.04, shutter_color);
+                // Window sill (small ledge under window)
+                mesh::box_tris(tris, wx + win_w * 0.5, wy - 0.02, front_z + 0.04,
+                    win_w + 0.2, 0.06, 0.08, darken(color, 0.8));
+            }
+        }
+
+        // --- Timber framing on ~25% of buildings (half-timbered ACU facade) ---
+        if is_timber {
+            let tw = 0.08; // timber beam thickness
+            let front_tz = z + d * 0.5 + 0.03;
+            let timber_c = TIMBER_COLOR;
+            // Horizontal beams at each floor line
+            for floor in 0..=floors {
+                let by = ground_y + 2.0 + floor as f32 * floor_height - 0.5;
+                mesh::box_tris(tris, x, by, front_tz, w - 0.2, tw, tw, timber_c);
+            }
+            // Vertical beams between windows
+            for col in 0..=cols {
+                let bx = x - w * 0.5 + 0.6 + col as f32 * 2.0;
+                mesh::box_tris(tris, bx, ground_y + h * 0.5, front_tz,
+                    tw, h - 1.0, tw, timber_c);
+            }
+            // Diagonal braces (X-pattern between some windows)
+            if floors > 1 {
+                for col in 0..cols.min(3) {
+                    let bx = x - w * 0.5 + 1.6 + col as f32 * 2.0;
+                    let by = ground_y + 2.0 + floor_height;
+                    // Diagonal beam as a thin rotated box
+                    let diag_len = (1.6_f32 * 1.6 + floor_height * floor_height).sqrt();
+                    let _diag_angle = (floor_height).atan2(1.6);
+                    // Approximate with a thin box (slight tilt baked in position)
+                    mesh::box_tris(tris, bx, by + floor_height * 0.5, front_tz,
+                        tw, diag_len * 0.8, tw, timber_c);
+                }
+            }
+        }
+
+        // --- Ground-floor shop front with awning ---
+        if has_shop {
+            let shop_h = 2.5;
+            let shop_front_z = z + d * 0.5 + 0.03;
+            // Shop front panel (darker wood, full width)
+            mesh::box_tris(tris, x, ground_y + shop_h * 0.5, shop_front_z,
+                w - 0.4, shop_h, 0.06, SHOP_FRONT_COLOR);
+            // Shop window (large glass, recessed)
+            let shop_win_w = (w - 2.0).max(1.0);
+            mesh::box_tris(tris, x + 0.5, ground_y + 1.4, shop_front_z - 0.04,
+                shop_win_w * 0.5, 1.2, 0.04, 0x00BBAA44); // emissive shop (cooler white)
+            // Door opening
+            mesh::box_tris(tris, x - w * 0.25, ground_y + 1.1, shop_front_z - 0.04,
+                0.9, 2.0, 0.06, 0xFF332211);
+            // Awning (angled box protruding outward)
+            let awning_color = AWNING_COLORS[bi % AWNING_COLORS.len()];
+            mesh::box_tris(tris, x, ground_y + shop_h + 0.1, shop_front_z + 0.6,
+                w - 0.2, 0.06, 1.2, awning_color);
+            // Awning underside brace
+            mesh::box_tris(tris, x, ground_y + shop_h + 0.05, shop_front_z + 0.6,
+                w - 0.3, 0.02, 1.1, darken(awning_color, 0.6));
+            // Hanging shop sign (on bracket from facade)
+            let sign_color = SIGN_COLORS[bi % SIGN_COLORS.len()];
+            let sign_x = x + w * 0.25;
+            // Iron bracket (horizontal cylinder)
+            mesh::cylinder_between(tris,
+                [sign_x, ground_y + shop_h + 1.5, shop_front_z],
+                [sign_x, ground_y + shop_h + 1.5, shop_front_z + 0.5],
+                0.02, 4, BALCONY_RAIL_COLOR);
+            // Sign board
+            mesh::box_tris(tris, sign_x, ground_y + shop_h + 1.0, shop_front_z + 0.5,
+                0.6, 0.5, 0.04, sign_color);
+        } else {
+            // Simple door for non-shop buildings
+            mesh::box_tris(tris, x, ground_y + 1.1, z + d * 0.5 - recess_depth * 0.5,
+                1.0, 2.2, recess_depth, 0xFF443322);
+        }
+
+        // --- Balconies (on ~20% of buildings, 2nd floor front face) ---
+        if has_balcony {
+            let bal_y = ground_y + 2.0 + floor_height; // 2nd floor
+            let bal_z = z + d * 0.5;
+            let bal_depth = 0.8;
+            let bal_w = w * 0.6;
+            // Platform
+            mesh::box_tris(tris, x, bal_y - 0.04, bal_z + bal_depth * 0.5,
+                bal_w, 0.08, bal_depth, darken(color, 0.75));
+            // Railing posts
+            let num_posts = ((bal_w / 0.4) as i32).max(2);
+            for pi in 0..=num_posts {
+                let t = pi as f32 / num_posts as f32;
+                let px = x - bal_w * 0.5 + t * bal_w;
+                mesh::cylinder_tris(tris, px, bal_y + 0.3, bal_z + bal_depth,
+                    0.02, 0.6, 4, BALCONY_RAIL_COLOR);
+            }
+            // Top rail
+            mesh::cylinder_between(tris,
+                [x - bal_w * 0.5, bal_y + 0.6, bal_z + bal_depth],
+                [x + bal_w * 0.5, bal_y + 0.6, bal_z + bal_depth],
+                0.02, 4, BALCONY_RAIL_COLOR);
+            // Front railing bottom
+            mesh::cylinder_between(tris,
+                [x - bal_w * 0.5, bal_y + 0.02, bal_z + bal_depth],
+                [x + bal_w * 0.5, bal_y + 0.02, bal_z + bal_depth],
+                0.015, 4, BALCONY_RAIL_COLOR);
+        }
+
+        // --- Flower boxes under some windows ---
+        if bi % 3 == 0 && floors > 1 {
+            let flower_floor = 1 + (bi % floors.max(1) as usize) as i32;
+            if flower_floor < floors {
+                let fy = ground_y + 2.0 + flower_floor as f32 * floor_height - 0.15;
+                let fz_pos = z + d * 0.5 + 0.12;
+                for col in 0..cols.min(2) {
+                    let fx = x - w * 0.5 + 1.2 + col as f32 * 2.0 + win_w * 0.5;
+                    mesh::box_tris(tris, fx, fy, fz_pos, win_w + 0.1, 0.12, 0.15, FLOWER_BOX_COLOR);
+                    // Flowers
+                    let fc = FLOWER_COLORS[col as usize % FLOWER_COLORS.len()];
+                    mesh::sphere_tris(tris, fx - 0.12, fy + 0.12, fz_pos + 0.02, 0.08, 0, fc);
+                    mesh::sphere_tris(tris, fx + 0.12, fy + 0.12, fz_pos + 0.02, 0.08, 0, fc);
+                }
+            }
+        }
+
+        // --- Roof (3 varieties) ---
+        let roof_type = (bi + (color & 0xFF) as usize) % 3;
+        let roof_color = darken(color, 0.55);
+        match roof_type {
+            0 => {
+                // Flat roof with parapet
+                mesh::box_tris(tris, x, ground_y + h + 0.15, z,
+                    w + 0.2, 0.3, d + 0.2, roof_color);
+            }
+            1 => {
+                let peak = h * 0.15 + 1.0;
+                mesh::pitched_roof_tris(tris, x, ground_y + h, z, w + 0.3, d + 0.3, peak, roof_color);
+                // Dormer window on pitched roof
+                if w > 4.0 {
+                    let dorm_y = ground_y + h + peak * 0.35;
+                    let dorm_z = z + d * 0.5 + 0.1;
+                    mesh::box_tris(tris, x, dorm_y, dorm_z, 1.0, 0.8, 0.5, color);
+                    mesh::pitched_roof_tris(tris, x, dorm_y + 0.4, dorm_z, 1.2, 0.7, 0.4, roof_color);
+                    mesh::box_tris(tris, x, dorm_y, dorm_z + 0.26, 0.5, 0.5, 0.04, 0x00AA7722);
+                }
+            }
+            _ => {
+                let peak = h * 0.12 + 0.8;
+                mesh::hip_roof_tris(tris, x, ground_y + h, z, w + 0.3, d + 0.3, peak, roof_color);
+            }
+        }
+
+        // Cornice with more detail (double ledge)
+        let cornice_color = darken(color, 0.8);
+        mesh::cornice_tris(tris, x, ground_y + h - 0.1, z,
+            w, d, 0.12, 0.175, cornice_color);
+        mesh::cornice_tris(tris, x, ground_y + h - 0.25, z,
+            w, d, 0.08, 0.125, cornice_color);
+
+        // Belt course on taller buildings
+        if h > 8.0 {
+            mesh::cornice_tris(tris, x, ground_y + h * 0.5, z,
+                w, d, 0.15, 0.075, cornice_color);
+        }
+
+        // Chimney (40% of buildings)
+        if bi % 5 < 2 && h > 4.0 {
+            let chim_x = x + w * 0.3;
+            let chim_z = z - d * 0.3;
+            mesh::box_tris(tris, chim_x, ground_y + h + 1.2, chim_z,
+                0.4, 2.4, 0.4, darken(color, 0.5));
+            // Chimney cap
+            mesh::box_tris(tris, chim_x, ground_y + h + 2.5, chim_z,
+                0.5, 0.1, 0.5, darken(color, 0.4));
+        }
+
+        buildings.push(Building { x, z, w, d, h, ground_y });
+}
+
+fn emit_tree(
+    tris: &mut Vec<WorldTri>, trees: &mut Vec<Tree>, terrain: &Terrain,
+    rng: &mut Rng, x: f32, z: f32, ti: usize, seed: u64,
+) {
+    const LEAF_COLORS: [u32; 8] = [
+        0xFF38883A, 0xFF44AA44, 0xFF2D8830, 0xFF55BB55,
+        0xFF3A9A3A, 0xFF48B048, 0xFF2A7A2C, 0xFF40A840,
+    ];
+    const BARK_COLOR: u32 = 0xFF443322;
+    const BARK_RIDGE_COLOR: u32 = 0xFF332211;
+
+    let ground_y = terrain.height_at(x, z);
+    let trunk_h = rng.range(3.5, 6.0);
+    let trunk_r = rng.range(0.18, 0.35);
+    let canopy_r = rng.range(1.3, 2.5);
+    let tree_seed = ti as u64 * 7919 + seed;
+
+    mesh::bark_cylinder_tris(tris, x, ground_y + trunk_h * 0.5, z,
+        trunk_r, trunk_h, 10, trunk_r * 0.15, tree_seed, BARK_COLOR, BARK_RIDGE_COLOR);
+
+    let root_count = 2 + (ti % 2);
+    for ri in 0..root_count {
+        let ra = (ri as f32 / root_count as f32) * std::f32::consts::TAU + (ti as f32 * 2.1);
+        let rx = x + ra.cos() * trunk_r * 1.5;
+        let rz = z + ra.sin() * trunk_r * 1.5;
+        mesh::sphere_tris(tris, rx, ground_y + 0.05, rz, trunk_r * 0.5, 0, BARK_COLOR);
+    }
+
+    let num_branches = 2 + (ti % 3);
+    let branch_base_y = ground_y + trunk_h * 0.7;
+    for bi in 0..num_branches {
+        let angle = (bi as f32 / num_branches as f32) * std::f32::consts::TAU + (ti as f32 * 1.23);
+        let blen = canopy_r * 0.7;
+        let bx = x + angle.cos() * blen * 0.6;
+        let bz = z + angle.sin() * blen * 0.6;
+        let by = branch_base_y + blen * 0.5;
+        mesh::cylinder_between(tris,
+            [x, branch_base_y, z], [bx, by, bz],
+            trunk_r * 0.45, 5, BARK_COLOR);
+        if bi < 2 {
+            let sub_angle = angle + 0.6;
+            let sbx = bx + sub_angle.cos() * blen * 0.3;
+            let sbz = bz + sub_angle.sin() * blen * 0.3;
+            let sby = by + blen * 0.25;
+            mesh::cylinder_between(tris,
+                [bx, by, bz], [sbx, sby, sbz],
+                trunk_r * 0.2, 3, BARK_COLOR);
+        }
+    }
+
+    let num_canopies = 3 + (ti % 3);
+    let canopy_base_y = ground_y + trunk_h + canopy_r * 0.2;
+    let central_cr = canopy_r * 0.5;
+    mesh::leaf_canopy_tris(tris, x, canopy_base_y + canopy_r * 0.1, z,
+        central_cr, 60 + (ti * 5) % 20, central_cr * 0.2,
+        tree_seed.wrapping_add(9999), &LEAF_COLORS);
+
+    for ci in 0..num_canopies {
+        let angle = (ci as f32 / num_canopies as f32) * std::f32::consts::TAU + (ti as f32 * 0.77);
+        let spread = canopy_r * 0.5;
+        let clx = x + angle.cos() * spread;
+        let clz = z + angle.sin() * spread;
+        let cly = canopy_base_y + (ci as f32 * 0.15);
+        let cr = canopy_r * rng.range(0.35, 0.55);
+        let leaves_per_cluster = 50 + (ti * 7 + ci) % 25;
+        let leaf_sz = cr * 0.2;
+        mesh::leaf_canopy_tris(tris, clx, cly, clz, cr,
+            leaves_per_cluster, leaf_sz,
+            tree_seed.wrapping_add(ci as u64 * 3571), &LEAF_COLORS);
+    }
+
+    trees.push(Tree { x, z, trunk_radius: trunk_r + 0.1 });
+}
+
+fn emit_bush(
+    tris: &mut Vec<WorldTri>, terrain: &Terrain,
+    x: f32, z: f32, bi: usize, seed: u64,
+) {
+    const BUSH_LEAF_COLORS: [u32; 6] = [
+        0xFF2D6B2D, 0xFF336633, 0xFF225522, 0xFF3A7A3A, 0xFF1F5F1F, 0xFF2A6A2A,
+    ];
+    const BARK_COLOR: u32 = 0xFF443322;
+    let gy = terrain.height_at(x, z);
+    let hash = (bi as u32).wrapping_mul(2654435761);
+    let br = 0.4 + (hash % 500) as f32 / 1000.0;
+    let bh = 0.5 + (hash.wrapping_mul(3) % 500) as f32 / 1000.0;
+    mesh::bush_tris(tris, x, gy, z, br, bh,
+        bi as u64 * 6131 + seed, &BUSH_LEAF_COLORS, BARK_COLOR);
+}
+
+fn emit_grass(
+    tris: &mut Vec<WorldTri>, terrain: &Terrain, rng: &mut Rng,
+    x: f32, z: f32, gi: usize, seed: u64,
+) {
+    const GRASS_COLORS: [u32; 8] = [
+        0xFF55BB55, 0xFF66CC55, 0xFF44AA44, 0xFF5DBB4D,
+        0xFF77CC66, 0xFF55AA55, 0xFF6BC060, 0xFF88DD77,
+    ];
+    let gy = terrain.height_at(x, z);
+    let patch_r = rng.range(1.5, 3.5);
+    let blade_count = 20 + (gi % 20);
+    let blade_h = rng.range(0.2, 0.45);
+    let blade_w = rng.range(0.06, 0.12);
+    mesh::grass_patch_tris(tris, x, gy, z, patch_r, blade_count,
+        blade_h, blade_w, gi as u64 * 4877 + seed,
+        &GRASS_COLORS, Some(&|gx, gz| terrain.height_at(gx, gz)));
+}
+
+fn emit_rock(
+    tris: &mut Vec<WorldTri>, rocks: &mut Vec<Rock>, terrain: &Terrain,
+    x: f32, z: f32, scale: f32, ri: usize, seed: u64,
+) {
+    let ground_y = terrain.height_at(x, z);
+    let size = scale;
+    mesh::perturbed_sphere_tris(tris, x, ground_y + size * 0.4, z,
+        size, 1, 0.25, ri as u64 * 12345 + seed, ROCK_COLOR);
+    rocks.push(Rock { x, z, size });
+}
+
+fn emit_street_light(
+    tris: &mut Vec<WorldTri>, street_lights: &mut Vec<StreetLight>,
+    terrain: &Terrain, x: f32, z: f32, _seed: u64,
+) {
+    let ground_y = terrain.height_at(x, z);
+
+    // Base mounting plate
+    let base_y = ground_y + 0.04;
+    for pi in 0..8u32 {
+        let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
+        let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
+        mesh::push_tri(tris, [x, base_y, z],
+            [x + a1.cos() * 0.25, base_y, z + a1.sin() * 0.25],
+            [x + a0.cos() * 0.25, base_y, z + a0.sin() * 0.25],
+            [0.0, 1.0, 0.0], LAMP_BASE_COLOR);
+    }
+    mesh::cylinder_tris(tris, x, ground_y + 0.2, z, 0.12, 0.4, 6, LAMP_BASE_COLOR);
+    mesh::cylinder_tris(tris, x, ground_y + 2.7, z, 0.06, 4.6, 8, LAMP_POLE_COLOR);
+
+    // Arm toward road (use arbitrary direction since placement handles positioning)
+    let arm_dx = 0.8_f32;
+    let arm_dz = 0.0_f32;
+    mesh::cylinder_between(tris,
+        [x, ground_y + 5.0, z],
+        [x + arm_dx, ground_y + 5.1, z + arm_dz],
+        0.03, 4, LAMP_POLE_COLOR);
+
+    mesh::sphere_tris(tris, x + arm_dx, ground_y + 5.1, z + arm_dz,
+        0.2, 1, LAMP_GLOW_COLOR);
+
+    // Ground light pool
+    let pool_x = x + arm_dx;
+    let pool_z = z + arm_dz;
+    let pool_y = ground_y + 0.03;
+    let pool_r = 3.0;
+    let pool_color: u32 = 0x00553810;
+    for pi in 0..8u32 {
+        let a0 = (pi as f32 / 8.0) * std::f32::consts::TAU;
+        let a1 = ((pi + 1) as f32 / 8.0) * std::f32::consts::TAU;
+        mesh::push_tri(tris, [pool_x, pool_y, pool_z],
+            [pool_x + a1.cos() * pool_r, pool_y, pool_z + a1.sin() * pool_r],
+            [pool_x + a0.cos() * pool_r, pool_y, pool_z + a0.sin() * pool_r],
+            [0.0, 1.0, 0.0], pool_color);
+    }
+
+    street_lights.push(StreetLight { x, z, ground_y });
 }
 
 /// Unified walk collision — static obstacles (buildings, rocks, trees, lights, walls, bins, interactibles).
