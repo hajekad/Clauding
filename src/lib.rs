@@ -36,3 +36,7 @@ pub mod suspension;
 pub mod skeleton;
 pub mod vehicle_physics;
 pub mod deform;
+pub mod noise;
+pub mod zone;
+pub mod placement;
+pub mod anatomy;
