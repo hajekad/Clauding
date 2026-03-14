@@ -2,6 +2,7 @@
 // Near-plane clipping, backface/distance culling, day/night lighting
 // G-fixes: sculpted face geometry, hair for hatless NPCs, detailed bracers
 
+use crate::anatomy;
 use crate::gpu::GpuVertex;
 use crate::math::*;
 use crate::mesh;
@@ -1533,25 +1534,23 @@ fn body_ring(cx: f32, cz: f32, rx: f32, rz: f32, bumps: &[(f32, f32, f32)], n: u
     }).collect()
 }
 
-/// Nude male torso — single continuous lofted surface with V-taper.
-/// Cross-section rings define the body contour at each height; muscle shape
-/// is built into the ring profiles via Gaussian bumps. No overlapping ellipsoids.
+/// Nude torso — GLTF-extracted anatomical contours lofted into continuous mesh.
+/// Crotch taper and shoulder/deltoid/trap zones remain parametric.
 fn gen_nude_torso(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions, n: usize) {
     let sk = skin;
     let m = props.muscle_def;
     let sk_deep = darken(sk, 1.0 - 0.07 * m);
     let nipple_col = darken(sk, 0.78);
 
-    use std::f32::consts::PI;
+    use std::f32::consts::{PI, TAU};
     let hp = PI * 0.5;
 
     // Scale factors for each torso zone (1.0 for male baseline)
-    let sh = props.hip_rx / 0.18;       // hip scale
-    let sw = props.waist_rx / 0.15;     // waist scale
-    let sc = props.chest_rx / 0.22;     // chest scale
-    let ss = props.shoulder_rx / 0.32;  // shoulder scale
+    let sh = props.hip_rx / 0.18;
+    let sw = props.waist_rx / 0.15;
+    let sc = props.chest_rx / 0.22;
+    let ss = props.shoulder_rx / 0.32;
 
-    // Interpolate scale factor by Y height
     let s = |y: f32| -> f32 {
         if y <= 0.92 { sh }
         else if y <= 1.00 { sh + (sw - sh) * (y - 0.92) / 0.08 }
@@ -1560,262 +1559,181 @@ fn gen_nude_torso(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions, 
         else { ss }
     };
 
-    // Breast bump profile: given a Y height, compute the breast bump amplitude
-    // Uses Gaussian falloff centered at breast_y with wide spread for natural shape
     let breast_bump = |y: f32| -> f32 {
         if !props.has_breasts { return 0.0; }
-        let by = props.breast_y; // center of breast volume (~1.26)
-        let dy = (y - by) / 0.10; // wider spread for softer transition
-        let amp = props.breast_rz * 1.3; // moderate forward projection (less pointy)
+        let by = props.breast_y;
+        let dy = (y - by) / 0.10;
+        let amp = props.breast_rz * 1.3;
         amp * (-0.5 * dy * dy).exp()
     };
 
-    // Helper: scale rx/rz by zone factor, bump amps by muscle_def
-    // Adds breast bumps as structural (not scaled by muscle_def)
-    let sr = |y: f32, rx: f32, rz: f32, bumps: &[(f32, f32, f32)]| -> (f32, f32, Vec<(f32, f32, f32)>) {
+    // Base body half-widths interpolated by Y (from original ring definitions)
+    let base_dims = |y: f32| -> (f32, f32) {
+        const CP: [(f32, f32, f32); 13] = [
+            (0.82, 0.04, 0.04), (0.86, 0.10, 0.08), (0.89, 0.14, 0.11),
+            (0.92, 0.18, 0.14), (0.96, 0.17, 0.13), (1.00, 0.15, 0.13),
+            (1.04, 0.155, 0.14), (1.08, 0.17, 0.15), (1.12, 0.19, 0.16),
+            (1.16, 0.20, 0.17), (1.21, 0.21, 0.20), (1.26, 0.22, 0.21),
+            (1.32, 0.22, 0.19),
+        ];
+        if y <= CP[0].0 { return (CP[0].1, CP[0].2); }
+        if y >= CP[12].0 { return (CP[12].1, CP[12].2); }
+        for i in 0..12 {
+            if y <= CP[i + 1].0 {
+                let t = (y - CP[i].0) / (CP[i + 1].0 - CP[i].0);
+                return (CP[i].1 + t * (CP[i + 1].1 - CP[i].1),
+                        CP[i].2 + t * (CP[i + 1].2 - CP[i].2));
+            }
+        }
+        (0.18, 0.14)
+    };
+
+    let mut rings: Vec<(f32, Vec<[f32; 2]>, u32)> = Vec::with_capacity(34);
+
+    // ── CROTCH TAPER ──
+    rings.push((0.82, body_ring(0.0, 0.0, 0.04, 0.04, &[], n), sk));
+
+    // ── ANATOMICAL TORSO ZONE (Y≈0.837 to Y≈1.291) ──
+    for i in 0..anatomy::torso_ring_count() {
+        let y = anatomy::torso_ring_y(i);
+        let (brx, brz) = base_dims(y);
         let sf = s(y);
-        let mut sb: Vec<(f32, f32, f32)> = bumps.iter()
-            .map(|&(a, w, amp)| (a, w, amp * m))
-            .collect();
-        // Add breast bumps — wide angular spread for natural rounded shape
+        let rx = brx * sf;
+        let rz = brz * sf;
+        let mut pts = anatomy::torso_ring(y, rx, rz, m, n);
+
+        // Add breast bumps as radial displacement at breast angles
         let bb = breast_bump(y);
         if bb > 0.001 {
-            sb.push((0.30, 0.55, bb));   // right breast (very wide, soft curve)
-            sb.push((-0.30, 0.55, bb));  // left breast
+            for pt in pts.iter_mut() {
+                let theta = pt[0].atan2(-pt[1]);
+                let st = theta.sin();
+                let ct = theta.cos();
+                let mut dr = 0.0f32;
+                for &(center, width) in &[(0.30f32, 0.55f32), (-0.30, 0.55)] {
+                    let mut diff = theta - center;
+                    if diff > PI { diff -= TAU; }
+                    if diff < -PI { diff += TAU; }
+                    dr += bb * (-0.5 * (diff / width).powi(2)).exp();
+                }
+                pt[0] += dr * st;
+                pt[1] -= dr * ct;
+            }
         }
-        (rx * sf, rz * sf, sb)
-    };
 
-    // Build each ring: structural bumps use s(y), muscle bumps use m
-    let ring = |y: f32, rx: f32, rz: f32, bumps: &[(f32, f32, f32)]| -> (f32, Vec<[f32; 2]>, u32) {
-        let (rx2, rz2, sb) = sr(y, rx, rz, bumps);
-        (y, body_ring(0.0, 0.0, rx2, rz2, &sb, n), sk)
-    };
+        rings.push((y, pts, sk));
+    }
 
-    // ── LOFTED BODY SURFACE — continuous mesh from crotch to neck ──
-    let rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-        (0.82, body_ring(0.0, 0.0, 0.04, 0.04, &[], n), sk),
+    // ── SHOULDER / DELTOID / TRAP ZONE (parametric — above anatomy data) ──
+    {
+        let sf = s(1.32);
+        rings.push((1.32, body_ring(0.0, 0.0, 0.22 * sf, 0.19 * sf, &[
+            (0.35, 0.35, 0.028 * m), (-0.35, 0.35, 0.028 * m),
+            (0.0, 0.10, -0.010),
+            (hp, 0.30, 0.035 * m), (PI + hp, 0.30, 0.035 * m),
+            (PI, 0.15, -0.008 * m),
+            (PI - 0.5, 0.25, 0.022 * m), (PI + 0.5, 0.25, 0.022 * m),
+        ], n), sk));
+    }
+    {
+        let sf = s(1.36);
+        let da = props.shoulder_deltoid_amp;
+        rings.push((1.36, body_ring(0.0, 0.0, 0.20 * sf, 0.19 * sf, &[
+            (hp, 0.35, da + 0.02 * sf), (PI + hp, 0.35, da + 0.02 * sf),
+            (0.5, 0.3, 0.020 * m), (-0.5, 0.3, 0.020 * m),
+            (PI - 0.5, 0.3, 0.025 * m), (PI + 0.5, 0.3, 0.025 * m),
+            (PI, 0.5, 0.05 * sf),
+            (0.3, 0.15, 0.010 * sf), (-0.3, 0.15, 0.010 * sf),
+        ], n), sk));
+    }
+    {
+        let sf = s(1.39);
+        let da = props.shoulder_deltoid_amp;
+        rings.push((1.39, body_ring(0.0, 0.0, 0.18 * sf, 0.18 * sf, &[
+            (hp, 0.35, da + 0.04 * sf), (PI + hp, 0.35, da + 0.04 * sf),
+            (0.5, 0.3, 0.015 * m), (-0.5, 0.3, 0.015 * m),
+            (PI - 0.5, 0.3, 0.025 * m), (PI + 0.5, 0.3, 0.025 * m),
+            (PI, 0.5, 0.055 * sf),
+        ], n), sk));
+    }
+    {
+        let sf = s(1.42);
+        let da = props.shoulder_deltoid_amp;
+        rings.push((1.42, body_ring(0.0, 0.0, 0.16 * sf, 0.17 * sf, &[
+            (hp, 0.35, da + 0.05 * sf), (PI + hp, 0.35, da + 0.05 * sf),
+            (0.0, 0.4, 0.015 * sf),
+            (PI, 0.5, 0.055 * sf),
+        ], n), sk));
+    }
+    {
+        let sf = s(1.43);
+        let da = props.shoulder_deltoid_amp;
+        rings.push((1.43, body_ring(0.0, 0.0, 0.14 * sf, 0.15 * sf, &[
+            (hp, 0.30, da * 0.3 + 0.02 * sf), (PI + hp, 0.30, da * 0.3 + 0.02 * sf),
+            (PI, 0.5, 0.050 * sf),
+        ], n), sk));
+    }
+    {
+        let sf = s(1.44);
+        rings.push((1.44, body_ring(0.0, 0.0, 0.13 * sf, 0.13 * sf, &[
+            (hp, 0.25, 0.010 * sf), (PI + hp, 0.25, 0.010 * sf),
+            (PI, 0.5, 0.045 * sf),
+        ], n), sk));
+    }
+    {
+        let sf = s(1.45);
+        rings.push((1.45, body_ring(0.0, 0.0, 0.12 * sf, 0.11 * sf, &[
+            (PI, 0.5, 0.040 * sf),
+        ], n), sk));
+    }
+    {
+        let sf = s(1.46);
+        rings.push((1.46, body_ring(0.0, 0.0, 0.12 * sf, 0.10 * sf, &[
+            (PI, 0.5, 0.04 * sf),
+            (PI - 0.4, 0.3, 0.012 * sf), (PI + 0.4, 0.3, 0.012 * sf),
+        ], n), sk));
+    }
+    rings.push((1.48, body_ring(0.0, 0.0, props.neck_rx, props.neck_rz, &[
+        (PI, 0.5, 0.035 * m),
+    ], n), sk));
 
-        ring(0.86, 0.10, 0.08, &[
-            (PI, 0.5, 0.025),
-        ]),
-        ring(0.89, 0.14, 0.11, &[
-            (PI, 0.5, 0.04),
-        ]),
-        // Pelvis — hip width, glute bulge
-        {
-            let sf = s(0.92);
-            (0.92, body_ring(0.0, 0.0, 0.18 * sf, 0.14 * sf, &[
-                (hp, 0.35, 0.025 * sf),           // hip bone (structural — ASIS)
-                (PI + hp, 0.35, 0.025 * sf),
-                (PI, 0.5, 0.06 * sf),             // glute (structural)
-                (PI - 0.4, 0.3, 0.03 * m),        // glute lobe (muscle)
-                (PI + 0.4, 0.3, 0.03 * m),
-            ], n), sk)
-        },
-        // Upper pelvis / V-line / iliac crest
-        {
-            let sf = s(0.96);
-            (0.96, body_ring(0.0, 0.0, 0.17 * sf, 0.13 * sf, &[
-                (hp, 0.35, 0.02 * sf),
-                (PI + hp, 0.35, 0.02 * sf),
-                (PI, 0.4, 0.04 * sf),
-                (0.4, 0.3, -0.012 * m),           // V-line indent
-                (-0.4, 0.3, -0.012 * m),
-            ], n), sk)
-        },
-        // Waist — narrowest point
-        ring(1.00, 0.15, 0.13, &[
-            (0.8, 0.3, 0.022),      // oblique
-            (-0.8, 0.3, 0.022),
-            (PI, 0.5, 0.04),        // lumbar curve
-            (PI - 0.3, 0.2, 0.015), // erector spinae
-            (PI + 0.3, 0.2, 0.015),
-        ]),
-        // Lower abs / navel level
-        ring(1.04, 0.155, 0.14, &[
-            (0.0, 0.4, 0.025),     // rectus abdominis
-            (0.3, 0.15, -0.008),   // linea alba indent L
-            (-0.3, 0.15, -0.008),  // linea alba indent R
-            (0.8, 0.3, 0.025),     // oblique
-            (-0.8, 0.3, 0.025),
-            (PI, 0.5, 0.035),
-            (PI - 0.3, 0.2, 0.015),
-            (PI + 0.3, 0.2, 0.015),
-        ]),
-        // Mid-abs
-        ring(1.08, 0.17, 0.15, &[
-            (0.0, 0.35, 0.03),     // abs (upper row)
-            (0.3, 0.12, -0.010),   // tendinous intersection
-            (-0.3, 0.12, -0.010),
-            (0.8, 0.3, 0.025),     // oblique
-            (-0.8, 0.3, 0.025),
-            (PI, 0.5, 0.04),
-            (PI - 0.3, 0.2, 0.015),
-            (PI + 0.3, 0.2, 0.015),
-        ]),
-        // Lower ribs / serratus
-        ring(1.12, 0.19, 0.16, &[
-            (0.0, 0.4, 0.02),      // upper abs
-            (0.3, 0.12, -0.008),   // tendinous intersection
-            (-0.3, 0.12, -0.008),
-            (0.7, 0.2, 0.02),      // serratus anterior
-            (-0.7, 0.2, 0.02),
-            (hp, 0.35, 0.035),     // lateral body wall (serratus wrapping)
-            (PI + hp, 0.35, 0.035),
-            (PI - 0.6, 0.35, 0.035), // lat emerging
-            (PI + 0.6, 0.35, 0.035),
-            (PI, 0.4, 0.04),
-            (PI - 0.25, 0.15, 0.012),
-            (PI + 0.25, 0.15, 0.012),
-        ]),
-        // Lower pec line / serratus peak
-        ring(1.16, 0.20, 0.17, &[
-            (0.4, 0.35, 0.035),    // pec lower shelf (sternal head)
-            (-0.4, 0.35, 0.035),
-            (0.0, 0.10, -0.015),   // sternal groove — deeper, narrower
-            (0.7, 0.2, 0.025),     // serratus anterior
-            (-0.7, 0.2, 0.025),
-            (hp, 0.35, 0.040),     // lateral body wall
-            (PI + hp, 0.35, 0.040),
-            (PI - 0.5, 0.35, 0.040), // lat (growing)
-            (PI + 0.5, 0.35, 0.040),
-            (PI, 0.15, -0.008),    // spine groove
-            (PI - 0.25, 0.15, 0.012), // erector spinae
-            (PI + 0.25, 0.15, 0.012),
-        ]),
-        // Mid pec — clavicular head distinct from sternal head
-        ring(1.21, 0.21, 0.20, &[
-            (0.4, 0.35, 0.038),    // pec sternal head bulk
-            (-0.4, 0.35, 0.038),
-            (0.0, 0.10, -0.015),   // sternal groove — linear depression
-            (hp, 0.35, 0.040),     // lateral body wall — pec wrapping
-            (PI + hp, 0.35, 0.040),
-            (PI - 0.5, 0.3, 0.030), // lat (peak)
-            (PI + 0.5, 0.3, 0.030),
-            (PI, 0.15, -0.008),    // spine groove
-            (PI - 0.25, 0.12, 0.012), // erector spinae
-            (PI + 0.25, 0.12, 0.012),
-        ]),
-        // Pec shelf / chest peak
-        ring(1.26, 0.22, 0.21, &[
-            (0.4, 0.40, 0.038),    // pec peak
-            (-0.4, 0.40, 0.038),
-            (0.0, 0.10, -0.015),   // sternal groove
-            (hp, 0.35, 0.040),     // lateral body wall — pec to arm
-            (PI + hp, 0.35, 0.040),
-            (PI - 0.5, 0.3, 0.025), // lat insertion
-            (PI + 0.5, 0.3, 0.025),
-            (PI, 0.15, -0.008),    // spine groove
-            (PI - 0.6, 0.25, 0.018), // scapular medial border
-            (PI + 0.6, 0.25, 0.018),
-        ]),
-        // Upper pec → clavicular head
-        ring(1.32, 0.22, 0.19, &[
-            (0.35, 0.35, 0.028),   // clavicular pec head — raised upper pec
-            (-0.35, 0.35, 0.028),
-            (0.0, 0.10, -0.010),   // sternal notch approach
-            (hp, 0.30, 0.035),     // lateral body wall — narrowing toward shoulder
-            (PI + hp, 0.30, 0.035),
-            (PI, 0.15, -0.008),    // spine groove
-            (PI - 0.5, 0.25, 0.022), // rhomboid / scapular
-            (PI + 0.5, 0.25, 0.022),
-        ]),
-        // Shoulder approach — deltoid begins as distinct lateral mass
-        // Base rx = ribcage width; narrow deltoid bumps (width 0.35) carry shoulder width.
-        // Total target: ~0.28 per side for male (0.56m bi-deltoid)
-        {
-            let sf = s(1.36);
-            let da = props.shoulder_deltoid_amp;
-            (1.36, body_ring(0.0, 0.0, 0.20 * sf, 0.19 * sf, &[
-                (hp, 0.35, da + 0.02 * sf),   // deltoid emerging (narrow bump)
-                (PI + hp, 0.35, da + 0.02 * sf),
-                (0.5, 0.3, 0.020 * m),    // anterior deltoid
-                (-0.5, 0.3, 0.020 * m),
-                (PI - 0.5, 0.3, 0.025 * m), // posterior deltoid
-                (PI + 0.5, 0.3, 0.025 * m),
-                (PI, 0.5, 0.05 * sf),     // upper back mass
-                (0.3, 0.15, 0.010 * sf),  // clavicle ridge (anterior)
-                (-0.3, 0.15, 0.010 * sf),
-            ], n), sk)
-        },
-        // Mid-shoulder — deltoid growing
-        {
-            let sf = s(1.39);
-            let da = props.shoulder_deltoid_amp;
-            (1.39, body_ring(0.0, 0.0, 0.18 * sf, 0.18 * sf, &[
-                (hp, 0.35, da + 0.04 * sf),
-                (PI + hp, 0.35, da + 0.04 * sf),
-                (0.5, 0.3, 0.015 * m),
-                (-0.5, 0.3, 0.015 * m),
-                (PI - 0.5, 0.3, 0.025 * m),
-                (PI + 0.5, 0.3, 0.025 * m),
-                (PI, 0.5, 0.055 * sf),     // trapezius
-            ], n), sk)
-        },
-        // Shoulder peak — deltoid cap at maximum, ribcage narrowing
-        // Front/back trapezius: rx=0.16 to neck_rx=0.10 → ~45° slope
-        {
-            let sf = s(1.42);
-            let da = props.shoulder_deltoid_amp;
-            (1.42, body_ring(0.0, 0.0, 0.16 * sf, 0.17 * sf, &[
-                (hp, 0.35, da + 0.05 * sf),   // deltoid cap — concentrated lateral
-                (PI + hp, 0.35, da + 0.05 * sf),
-                (0.0, 0.4, 0.015 * sf),   // pec projection (front)
-                (PI, 0.5, 0.055 * sf),     // trapezius
-            ], n), sk)
-        },
-        // Shoulder-to-neck — deltoid fading, trapezius slope
-        {
-            let sf = s(1.43);
-            let da = props.shoulder_deltoid_amp;
-            (1.43, body_ring(0.0, 0.0, 0.14 * sf, 0.15 * sf, &[
-                (hp, 0.30, da * 0.3 + 0.02 * sf), (PI + hp, 0.30, da * 0.3 + 0.02 * sf),
-                (PI, 0.5, 0.050 * sf),     // trapezius
-            ], n), sk)
-        },
-        // Trapezius mid-slope
-        {
-            let sf = s(1.44);
-            (1.44, body_ring(0.0, 0.0, 0.13 * sf, 0.13 * sf, &[
-                (hp, 0.25, 0.010 * sf), (PI + hp, 0.25, 0.010 * sf),
-                (PI, 0.5, 0.045 * sf),     // trapezius slope
-            ], n), sk)
-        },
-        // Upper trapezius — approaching neck
-        {
-            let sf = s(1.45);
-            (1.45, body_ring(0.0, 0.0, 0.12 * sf, 0.11 * sf, &[
-                (PI, 0.5, 0.040 * sf),     // upper trap
-            ], n), sk)
-        },
-        // Neck base — trapezius wraps around
-        {
-            let sf = s(1.46);
-            (1.46, body_ring(0.0, 0.0, 0.12 * sf, 0.10 * sf, &[
-                (PI, 0.5, 0.04 * sf),      // upper trap / nuchal
-                (PI - 0.4, 0.3, 0.012 * sf),
-                (PI + 0.4, 0.3, 0.012 * sf),
-            ], n), sk)
-        },
-        // Neck transition
-        (1.48, body_ring(0.0, 0.0, props.neck_rx, props.neck_rz, &[
-            (PI, 0.5, 0.035 * m),      // trap insertion
-        ], n), sk),
-    ];
-
+    let torso_base = tris.len();
     mesh::loft_y_tris(tris, &rings);
 
+    // ── CURVATURE-BASED COLOR VARIATION ──
+    // Muscle peaks (convex) get lighter skin, grooves (concave) get darker.
+    // Computed as deviation from smooth ellipse at each triangle's position.
+    if m > 0.1 {
+        for tri in &mut tris[torso_base..] {
+            let cy = (tri.v[0][1] + tri.v[1][1] + tri.v[2][1]) / 3.0;
+            if cy < 0.86 || cy > 1.29 { continue; } // anatomy zone only
+            let cx = (tri.v[0][0] + tri.v[1][0] + tri.v[2][0]) / 3.0;
+            let cz = (tri.v[0][2] + tri.v[1][2] + tri.v[2][2]) / 3.0;
+            let r_actual = (cx * cx + cz * cz).sqrt();
+            // Smooth ellipse radius at this angle and Y
+            let (brx, brz) = base_dims(cy);
+            let sf = s(cy);
+            let theta = cx.atan2(-cz);
+            let ex = brx * sf * theta.sin();
+            let ez = brz * sf * theta.cos();
+            let r_smooth = (ex * ex + ez * ez).sqrt();
+            if r_smooth < 0.01 { continue; }
+            let dev = (r_actual - r_smooth) / r_smooth;
+            // ±6% brightness shift, scaled by muscle_def
+            let shift = (dev * 8.0).clamp(-0.06, 0.06) * m;
+            if shift.abs() > 0.005 {
+                tri.color = darken(tri.color, 1.0 + shift);
+            }
+        }
+    }
+
     // ── MINIMAL SURFACE DETAIL ──
-    // Nipples — lower-outer quadrant of each pectoral, slightly recessed
     let nip_y = if props.has_breasts { 1.23 } else { 1.20 };
     for &side in &[-1.0f32, 1.0] {
-        let nx = side * 0.12 * sc; // outer placement
+        let nx = side * 0.12 * sc;
         mesh::sphere_tris(tris, nx, nip_y, -0.22 * sc, 0.004, 0, nipple_col);
-        // Areola — subtle ring around nipple
         mesh::ellipsoid_tris(tris, nx, nip_y, -0.215 * sc, 0.012, 0.012, 0.003, 0, darken(nipple_col, 0.95));
     }
-    // Navel (tiny indent)
     mesh::sphere_tris(tris, 0.0, 1.02, -0.17 * sw, 0.008, 0, sk_deep);
 }
 
@@ -2027,7 +1945,7 @@ fn limb_ring(cx: f32, cz: f32, rx: f32, rz: f32, side: f32, bumps: &[(f32, f32, 
     }
 }
 
-/// Nude leg — single continuous loft from hip to ankle, no sphere joints
+/// Nude leg — GLTF-extracted anatomical contours lofted from hip to ankle.
 fn gen_nude_leg(
     tris: &mut Vec<WorldTri>, side: f32, fwd: f32, knee_bend: f32, skin: u32,
     props: &BodyProportions, n: usize,
@@ -2036,114 +1954,79 @@ fn gen_nude_leg(
     let l = props.leg_rx_scale;
     let m = props.muscle_def;
 
-    use std::f32::consts::PI;
-    let hp = PI * 0.5;
-
     let lx = side * props.hip_joint_x;
     let ankle = [lx, 0.08, fwd * 0.25 - knee_bend * 0.4];
 
-    // ── SINGLE CONTINUOUS LEG LOFT (hip → knee → ankle) ──
-    let leg_heights: Vec<(f32, f32, f32, Vec<(f32, f32, f32)>)> = vec![
-        // Hip top — wide to overlap with torso
-        (0.92, 0.145, 0.132, vec![
-            (PI, 0.5, 0.015 * m),              // glute transition
-        ]),
-        (0.88, 0.152, 0.136, vec![
-            (PI, 0.5, 0.024 * m),              // glute-ham
-            (PI + hp, 0.4, 0.020 * m),         // adductors
-        ]),
-        (0.84, 0.156, 0.140, vec![
-            (0.0, 0.4, 0.028 * m),             // quads
-            (PI, 0.5, 0.030 * m),              // hamstrings
-            (PI + hp, 0.4, 0.024 * m),         // adductors
-        ]),
-        (0.78, 0.158, 0.142, vec![
-            (0.0, 0.4, 0.034 * m),             // quads peak
-            (hp - 0.3, 0.35, 0.024 * m),       // VL
-            (PI, 0.5, 0.034 * m),              // hamstrings
-            (PI + hp, 0.4, 0.026 * m),         // adductors
-        ]),
-        (0.70, 0.150, 0.134, vec![
-            (0.0, 0.4, 0.036 * m),             // rectus femoris (peak)
-            (hp - 0.3, 0.35, 0.028 * m),       // vastus lateralis
-            (PI + hp + 0.3, 0.3, 0.022 * m),   // vastus medialis
-            (PI, 0.5, 0.034 * m),              // hamstrings (peak)
-            (PI + hp, 0.4, 0.024 * m),         // adductors
-        ]),
-        (0.62, 0.134, 0.122, vec![
-            (0.0, 0.4, 0.034 * m),             // rectus femoris
-            (hp - 0.3, 0.35, 0.024 * m),       // vastus lateralis
-            (PI + hp + 0.3, 0.3, 0.020 * m),   // vastus medialis
-            (PI, 0.5, 0.028 * m),              // hamstrings
-        ]),
-        (0.54, 0.110, 0.100, vec![
-            (0.0, 0.35, 0.026 * m),            // lower quad
-            (PI + hp + 0.3, 0.3, 0.018 * m),   // VM teardrop
-        ]),
-        // Knee — patella on front, popliteal fossa on back
-        (0.50, 0.088, 0.082, vec![
-            (0.0, 0.20, 0.020 * m),            // patella — oval raised form
-            (PI, 0.25, -0.006 * m),            // popliteal fossa (concavity)
-        ]),
-        (0.48, 0.084, 0.078, vec![
-            (0.0, 0.18, 0.018 * m),            // patella
-            (PI, 0.20, -0.005 * m),            // popliteal fossa
-            (PI - 0.4, 0.15, 0.008 * m),       // hamstring tendon (medial)
-            (PI + 0.4, 0.15, 0.008 * m),       // hamstring tendon (lateral)
-        ]),
-        (0.46, 0.088, 0.082, vec![
-            (0.0, 0.15, 0.007),                // tibial tuberosity
-        ]),
-        // Calf — gastrocnemius heart shape, tibial ridge on front
-        (0.42, 0.090, 0.082, vec![
-            (PI, 0.5, 0.024 * m),              // soleus
-            (0.0, 0.10, 0.007),                // tibial ridge (shin bone)
-        ]),
-        (0.36, 0.094, 0.086, vec![
-            (PI - 0.3, 0.30, 0.034 * m),       // gastrocnemius medial (larger, lower)
-            (PI + 0.3, 0.30, 0.024 * m),       // gastrocnemius lateral (smaller)
-            (0.0, 0.30, 0.020 * m),            // tibialis anterior
-            (0.0, 0.08, 0.007),                // tibial ridge
-        ]),
-        (0.30, 0.088, 0.078, vec![
-            (PI - 0.3, 0.30, 0.036 * m),       // gastrocnemius medial (peak)
-            (PI + 0.3, 0.30, 0.028 * m),       // gastrocnemius lateral
-            (0.0, 0.30, 0.022 * m),            // tibialis anterior (peak)
-            (0.0, 0.08, 0.007),                // tibial ridge
-        ]),
-        (0.22, 0.070, 0.064, vec![
-            (PI, 0.4, 0.024 * m),              // soleus taper
-            (0.0, 0.25, 0.014 * m),            // tibialis anterior
-            (0.0, 0.08, 0.006),                // tibial ridge
-        ]),
-        (0.14, 0.058, 0.052, vec![
-            (PI, 0.15, 0.014),                 // Achilles tendon — visible ridge
-            (0.0, 0.08, 0.005),                // tibial ridge (fading)
-        ]),
-        // Ankle — malleoli (ankle bones) + Achilles
-        (0.08, 0.048, 0.046, vec![
-            (hp, 0.15, 0.008),                 // lateral malleolus
-            (PI + hp, 0.15, 0.010),            // medial malleolus (slightly larger)
-            (PI, 0.12, 0.010),                 // Achilles insertion
-        ]),
-    ];
+    // GLTF → game Y mapping (ankle-to-hip scale)
+    const GLTF_LO: f32 = 0.04;
+    const GLTF_HI: f32 = 0.62;
+    const GAME_LO: f32 = 0.08;
+    const GAME_HI: f32 = 0.92;
+    const Y_SCALE: f32 = (GAME_HI - GAME_LO) / (GLTF_HI - GLTF_LO);
+    let gltf_to_game = |gy: f32| -> f32 { GAME_LO + (gy - GLTF_LO) * Y_SCALE };
 
-    let hip_y = 0.92;
-    let knee_y = 0.48;
-    let ankle_y = 0.08;
+    // Base leg dimensions interpolated by game Y (from original ring definitions)
+    let base_dims = |y: f32| -> (f32, f32) {
+        const CP: [(f32, f32, f32); 16] = [
+            (0.08, 0.048, 0.046), (0.14, 0.058, 0.052), (0.22, 0.070, 0.064),
+            (0.30, 0.088, 0.078), (0.36, 0.094, 0.086), (0.42, 0.090, 0.082),
+            (0.46, 0.088, 0.082), (0.48, 0.084, 0.078), (0.50, 0.088, 0.082),
+            (0.54, 0.110, 0.100), (0.62, 0.134, 0.122), (0.70, 0.150, 0.134),
+            (0.78, 0.158, 0.142), (0.84, 0.156, 0.140), (0.88, 0.152, 0.136),
+            (0.92, 0.145, 0.132),
+        ];
+        if y <= CP[0].0 { return (CP[0].1, CP[0].2); }
+        if y >= CP[15].0 { return (CP[15].1, CP[15].2); }
+        for i in 0..15 {
+            if y <= CP[i + 1].0 {
+                let t = (y - CP[i].0) / (CP[i + 1].0 - CP[i].0);
+                return (CP[i].1 + t * (CP[i + 1].1 - CP[i].1),
+                        CP[i].2 + t * (CP[i + 1].2 - CP[i].2));
+            }
+        }
+        (0.10, 0.09)
+    };
+
+    // CZ interpolation along hip→knee→ankle path (walking animation)
+    let hip_y = 0.92f32;
+    let knee_y = 0.48f32;
+    let ankle_y = 0.08f32;
     let knee_cz = fwd * 0.5;
     let ankle_cz = fwd * 0.25 - knee_bend * 0.4;
 
-    let leg_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = leg_heights.iter().map(|&(ref y, rx, rz, ref bumps)| {
-        let (cz,) = if *y >= knee_y {
-            let t = (hip_y - *y) / (hip_y - knee_y);
-            (knee_cz * t,)
+    let compute_cz = |y: f32| -> f32 {
+        if y >= knee_y {
+            let t = (hip_y - y) / (hip_y - knee_y);
+            knee_cz * t
         } else {
-            let t = (knee_y - *y) / (knee_y - ankle_y);
-            (knee_cz * (1.0 - t) + ankle_cz * t,)
-        };
-        (*y, limb_ring(lx, cz, rx * l, rz * l, side, bumps, n), sk)
-    }).collect();
+            let t = (knee_y - y) / (knee_y - ankle_y);
+            knee_cz * (1.0 - t) + ankle_cz * t
+        }
+    };
+
+    // Build rings from GLTF anatomy data (ascending game Y: ankle → hip)
+    let mut leg_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = Vec::with_capacity(35);
+
+    for i in 0..anatomy::leg_ring_count() {
+        let gltf_y = anatomy::leg_ring_y(i);
+        let game_y = gltf_to_game(gltf_y);
+        let (brx, brz) = base_dims(game_y);
+        let cz = compute_cz(game_y);
+
+        let mut pts = anatomy::leg_ring(gltf_y, brx * l, brz * l, m, n);
+        // Mirror for left leg (negate X, reverse winding)
+        if side < 0.0 {
+            for pt in pts.iter_mut() { pt[0] = -pt[0]; }
+            pts.reverse();
+        }
+        // Offset to limb center
+        for pt in pts.iter_mut() {
+            pt[0] += lx;
+            pt[1] += cz;
+        }
+
+        leg_rings.push((game_y, pts, sk));
+    }
 
     mesh::loft_y_tris(tris, &leg_rings);
 
@@ -2194,106 +2077,111 @@ fn gen_player_clothing(
     };
 
     // ── COAT/VEST SHELL — lofted tube matching body contour + offset ──
-    // Ring radii derived from nude torso ring definitions. Muscle bumps attenuated
-    // to 50% for smooth cloth surface. No shoulder pad or armpit filler ellipsoids.
+    // Anatomy zone uses GLTF contours for body-matching coat shape.
+    // Muscle bumps attenuated to 50% for smooth cloth surface.
     if app.has_coat {
-        let coat_ring = |y: f32, rx: f32, rz: f32, bumps: &[(f32, f32, f32)]| -> (f32, Vec<[f32; 2]>, u32) {
+        use std::f32::consts::TAU;
+        // Base body dimensions for coat (same profile as gen_nude_torso)
+        let coat_base_dims = |y: f32| -> (f32, f32) {
+            const CP: [(f32, f32, f32); 13] = [
+                (0.82, 0.04, 0.04), (0.86, 0.10, 0.08), (0.89, 0.14, 0.11),
+                (0.92, 0.18, 0.14), (0.96, 0.17, 0.13), (1.00, 0.15, 0.13),
+                (1.04, 0.155, 0.14), (1.08, 0.17, 0.15), (1.12, 0.19, 0.16),
+                (1.16, 0.20, 0.17), (1.21, 0.21, 0.20), (1.26, 0.22, 0.21),
+                (1.32, 0.22, 0.19),
+            ];
+            if y <= CP[0].0 { return (CP[0].1, CP[0].2); }
+            if y >= CP[12].0 { return (CP[12].1, CP[12].2); }
+            for i in 0..12 {
+                if y <= CP[i + 1].0 {
+                    let t = (y - CP[i].0) / (CP[i + 1].0 - CP[i].0);
+                    return (CP[i].1 + t * (CP[i + 1].1 - CP[i].1),
+                            CP[i].2 + t * (CP[i + 1].2 - CP[i].2));
+                }
+            }
+            (0.18, 0.14)
+        };
+        let coat_ring_parametric = |y: f32, rx: f32, rz: f32, bumps: &[(f32, f32, f32)]| -> (f32, Vec<[f32; 2]>, u32) {
             let sf = s(y);
             let ab: Vec<(f32, f32, f32)> = bumps.iter()
                 .map(|&(a, w, amp)| (a, w, amp * 0.5))
                 .collect();
             (y, body_ring(0.0, 0.0, rx * sf + co, rz * sf + co, &ab, n), coat)
         };
-        let coat_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-            // F1: Extended coat below waist to eliminate midriff gap
-            coat_ring(0.78, 0.16, 0.14, &[(PI, 0.5, 0.04)]),
-            coat_ring(0.82, 0.15, 0.13, &[(PI, 0.5, 0.04)]),
-            coat_ring(0.88, 0.14, 0.12, &[(PI, 0.5, 0.04)]),
-            coat_ring(0.92, 0.18, 0.14, &[
-                (hp, 0.40, 0.05), (PI + hp, 0.40, 0.05), (PI, 0.5, 0.06),
-            ]),
-            coat_ring(0.96, 0.17, 0.13, &[
-                (hp, 0.40, 0.04), (PI + hp, 0.40, 0.04), (PI, 0.4, 0.04),
-            ]),
-            coat_ring(1.00, 0.16, 0.13, &[
-                (hp, 0.40, 0.04), (PI + hp, 0.40, 0.04), (PI, 0.5, 0.04),
-            ]),
-            coat_ring(1.04, 0.17, 0.14, &[
-                (hp, 0.40, 0.05), (PI + hp, 0.40, 0.05), (PI, 0.5, 0.035),
-            ]),
-            // Armhole zone (Y=1.08-1.32): bypass 0.5 attenuation for full lateral bumps.
-            // Breast coverage bumps (theta=±0.30) match nude body breast profile.
-            {
-                let sf = s(1.08); let bb = breast_bump(1.08);
-                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02), (PI, 0.5, 0.02 * sf)];
-                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
-                (1.08, body_ring(0.0, 0.0, 0.19 * sf + co, 0.16 * sf + co, &b, n), coat)
-            },
-            {
-                let sf = s(1.12); let bb = breast_bump(1.12);
-                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02), (PI, 0.4, 0.02 * sf)];
-                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
-                (1.12, body_ring(0.0, 0.0, 0.21 * sf + co, 0.17 * sf + co, &b, n), coat)
-            },
-            {
-                let sf = s(1.16); let bb = breast_bump(1.16);
-                let pm = props.muscle_def * 0.5; // pec coverage (attenuated muscle bump)
-                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02),
-                    (0.4, 0.35, 0.020 * pm), (-0.4, 0.35, 0.020 * pm)];
-                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
-                (1.16, body_ring(0.0, 0.0, 0.22 * sf + co, 0.18 * sf + co, &b, n), coat)
-            },
-            {
-                let sf = s(1.21); let bb = breast_bump(1.21);
-                let pm = props.muscle_def * 0.5;
-                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02),
-                    (0.4, 0.35, 0.025 * pm), (-0.4, 0.35, 0.025 * pm)];
-                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
-                (1.21, body_ring(0.0, 0.0, 0.23 * sf + co, 0.20 * sf + co, &b, n), coat)
-            },
-            {
-                let sf = s(1.26); let bb = breast_bump(1.26);
-                let pm = props.muscle_def * 0.5;
-                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02),
-                    (0.4, 0.40, 0.025 * pm), (-0.4, 0.40, 0.025 * pm)];
-                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
-                (1.26, body_ring(0.0, 0.0, 0.24 * sf + co, 0.21 * sf + co, &b, n), coat)
-            },
-            {
-                let sf = s(1.32); let bb = breast_bump(1.32);
-                let pm = props.muscle_def * 0.5;
-                let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02), (PI, 0.5, 0.02 * sf),
-                    (0.35, 0.35, 0.018 * pm), (-0.35, 0.35, 0.018 * pm)];
-                if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
-                (1.32, body_ring(0.0, 0.0, 0.24 * sf + co, 0.20 * sf + co, &b, n), coat)
-            },
-            {
-                let sf = s(1.36); let da = props.shoulder_deltoid_amp * 0.5;
-                (1.36, body_ring(0.0, 0.0, 0.22 * sf + co, 0.20 * sf + co, &[
-                    (hp, 0.45, da + 0.02), (PI + hp, 0.45, da + 0.02), (PI, 0.5, 0.030 * sf),
-                ], n), coat)
-            },
-            {
-                let sf = s(1.39); let da = props.shoulder_deltoid_amp * 0.5;
-                (1.39, body_ring(0.0, 0.0, 0.20 * sf + co, 0.19 * sf + co, &[
-                    (hp, 0.45, da + 0.03), (PI + hp, 0.45, da + 0.03), (PI, 0.5, 0.035 * sf),
-                ], n), coat)
-            },
-            {
-                let sf = s(1.42); let da = props.shoulder_deltoid_amp * 0.5;
-                (1.42, body_ring(0.0, 0.0, 0.18 * sf + co, 0.18 * sf + co, &[
-                    (hp, 0.45, da + 0.04), (PI + hp, 0.45, da + 0.04), (PI, 0.5, 0.035 * sf),
-                ], n), coat)
-            },
-            {
-                let sf = s(1.44);
-                (1.44, body_ring(0.0, 0.0, 0.14 * sf + co, 0.14 * sf + co, &[
-                    (hp, 0.35, 0.02), (PI + hp, 0.35, 0.02), (PI, 0.5, 0.028 * sf),
-                ], n), darken(coat, 0.92))
-            },
-            (1.48, body_ring(0.0, 0.0, props.neck_rx + co, props.neck_rz + co, &[], n),
-                darken(coat, 0.88)),
-        ];
+        // Anatomy coat ring: body contour + offset, half muscle_def, with breast bumps
+        let coat_ring_anat = |y: f32| -> (f32, Vec<[f32; 2]>, u32) {
+            let (brx, brz) = coat_base_dims(y);
+            let sf = s(y);
+            let rx = brx * sf + co;
+            let rz = brz * sf + co;
+            let cm = props.muscle_def * 0.5; // cloth smoothness
+            let mut pts = anatomy::torso_ring(y, rx, rz, cm, n);
+            // Add breast bumps (with margin for coat coverage)
+            let bb = breast_bump(y);
+            if bb > 0.001 {
+                for pt in pts.iter_mut() {
+                    let theta = pt[0].atan2(-pt[1]);
+                    let st = theta.sin();
+                    let ct = theta.cos();
+                    let mut dr = 0.0f32;
+                    for &(center, width) in &[(0.30f32, 0.55f32), (-0.30, 0.55)] {
+                        let mut diff = theta - center;
+                        if diff > PI { diff -= TAU; }
+                        if diff < -PI { diff += TAU; }
+                        dr += bb * (-0.5 * (diff / width).powi(2)).exp();
+                    }
+                    pt[0] += dr * st;
+                    pt[1] -= dr * ct;
+                }
+            }
+            (y, pts, coat)
+        };
+
+        let mut coat_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = Vec::with_capacity(30);
+        // Below anatomy zone (parametric)
+        coat_rings.push(coat_ring_parametric(0.78, 0.16, 0.14, &[(PI, 0.5, 0.04)]));
+        coat_rings.push(coat_ring_parametric(0.82, 0.15, 0.13, &[(PI, 0.5, 0.04)]));
+        coat_rings.push(coat_ring_parametric(0.88, 0.14, 0.12, &[(PI, 0.5, 0.04)]));
+        // Anatomy zone (Y≈0.92 to Y≈1.26)
+        for &y in &[0.92, 0.96, 1.00, 1.04, 1.08, 1.12, 1.16, 1.21, 1.26] {
+            coat_rings.push(coat_ring_anat(y));
+        }
+        // Above anatomy zone (parametric shoulder/deltoid/neck)
+        {
+            let sf = s(1.32);
+            let bb = breast_bump(1.32);
+            let pm = props.muscle_def * 0.5;
+            let mut b = vec![(hp, 0.45, 0.02), (PI + hp, 0.45, 0.02), (PI, 0.5, 0.02 * sf),
+                (0.35, 0.35, 0.018 * pm), (-0.35, 0.35, 0.018 * pm)];
+            if bb > 0.001 { b.push((0.30, 0.55, bb)); b.push((-0.30, 0.55, bb)); }
+            coat_rings.push((1.32, body_ring(0.0, 0.0, 0.24 * sf + co, 0.20 * sf + co, &b, n), coat));
+        }
+        {
+            let sf = s(1.36); let da = props.shoulder_deltoid_amp * 0.5;
+            coat_rings.push((1.36, body_ring(0.0, 0.0, 0.22 * sf + co, 0.20 * sf + co, &[
+                (hp, 0.45, da + 0.02), (PI + hp, 0.45, da + 0.02), (PI, 0.5, 0.030 * sf),
+            ], n), coat));
+        }
+        {
+            let sf = s(1.39); let da = props.shoulder_deltoid_amp * 0.5;
+            coat_rings.push((1.39, body_ring(0.0, 0.0, 0.20 * sf + co, 0.19 * sf + co, &[
+                (hp, 0.45, da + 0.03), (PI + hp, 0.45, da + 0.03), (PI, 0.5, 0.035 * sf),
+            ], n), coat));
+        }
+        {
+            let sf = s(1.42); let da = props.shoulder_deltoid_amp * 0.5;
+            coat_rings.push((1.42, body_ring(0.0, 0.0, 0.18 * sf + co, 0.18 * sf + co, &[
+                (hp, 0.45, da + 0.04), (PI + hp, 0.45, da + 0.04), (PI, 0.5, 0.035 * sf),
+            ], n), coat));
+        }
+        {
+            let sf = s(1.44);
+            coat_rings.push((1.44, body_ring(0.0, 0.0, 0.14 * sf + co, 0.14 * sf + co, &[
+                (hp, 0.35, 0.02), (PI + hp, 0.35, 0.02), (PI, 0.5, 0.028 * sf),
+            ], n), darken(coat, 0.92)));
+        }
+        coat_rings.push((1.48, body_ring(0.0, 0.0, props.neck_rx + co, props.neck_rz + co, &[], n),
+            darken(coat, 0.88)));
         mesh::loft_y_tris(tris, &coat_rings);
 
         // Lapels
@@ -2350,27 +2238,70 @@ fn gen_player_clothing(
             mesh::loft_y_tris(tris, &cape_rings);
         }
     } else {
-        // No coat — vest/shirt shell
+        // No coat — vest/shirt shell (anatomy contours + offset)
+        use std::f32::consts::TAU;
         let vco = 0.04;
-        let vest_ring = |y: f32, rx: f32, rz: f32| -> (f32, Vec<[f32; 2]>, u32) {
+        // Base body dimensions (same profile as gen_nude_torso)
+        let vest_base_dims = |y: f32| -> (f32, f32) {
+            const CP: [(f32, f32, f32); 13] = [
+                (0.82, 0.04, 0.04), (0.86, 0.10, 0.08), (0.89, 0.14, 0.11),
+                (0.92, 0.18, 0.14), (0.96, 0.17, 0.13), (1.00, 0.15, 0.13),
+                (1.04, 0.155, 0.14), (1.08, 0.17, 0.15), (1.12, 0.19, 0.16),
+                (1.16, 0.20, 0.17), (1.21, 0.21, 0.20), (1.26, 0.22, 0.21),
+                (1.32, 0.22, 0.19),
+            ];
+            if y <= CP[0].0 { return (CP[0].1, CP[0].2); }
+            if y >= CP[12].0 { return (CP[12].1, CP[12].2); }
+            for i in 0..12 {
+                if y <= CP[i + 1].0 {
+                    let t = (y - CP[i].0) / (CP[i + 1].0 - CP[i].0);
+                    return (CP[i].1 + t * (CP[i + 1].1 - CP[i].1),
+                            CP[i].2 + t * (CP[i + 1].2 - CP[i].2));
+                }
+            }
+            (0.18, 0.14)
+        };
+        let vest_ring_param = |y: f32, rx: f32, rz: f32| -> (f32, Vec<[f32; 2]>, u32) {
             let sf = s(y);
             let bb = breast_bump(y);
             let mut bumps: Vec<(f32, f32, f32)> = Vec::new();
             if bb > 0.001 { bumps.push((0.30, 0.55, bb)); bumps.push((-0.30, 0.55, bb)); }
             (y, body_ring(0.0, 0.0, rx * sf + vco, rz * sf + vco, &bumps, n), vest)
         };
+        let vest_ring_anat = |y: f32| -> (f32, Vec<[f32; 2]>, u32) {
+            let (brx, brz) = vest_base_dims(y);
+            let sf = s(y);
+            let mut pts = anatomy::torso_ring(y, brx * sf + vco, brz * sf + vco, props.muscle_def * 0.3, n);
+            let bb = breast_bump(y);
+            if bb > 0.001 {
+                for pt in pts.iter_mut() {
+                    let theta = pt[0].atan2(-pt[1]);
+                    let st = theta.sin();
+                    let ct = theta.cos();
+                    let mut dr = 0.0f32;
+                    for &(center, width) in &[(0.30f32, 0.55f32), (-0.30, 0.55)] {
+                        let mut diff = theta - center;
+                        if diff > PI { diff -= TAU; }
+                        if diff < -PI { diff += TAU; }
+                        dr += bb * (-0.5 * (diff / width).powi(2)).exp();
+                    }
+                    pt[0] += dr * st;
+                    pt[1] -= dr * ct;
+                }
+            }
+            (y, pts, vest)
+        };
         let vest_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-            // F1: Extended vest below waist to eliminate midriff gap
-            vest_ring(0.78, 0.16, 0.14),
-            vest_ring(0.82, 0.15, 0.13),
-            vest_ring(0.88, 0.14, 0.12),
-            vest_ring(0.92, 0.18, 0.14),
-            vest_ring(1.00, 0.15, 0.13),
-            vest_ring(1.08, 0.17, 0.15),
-            vest_ring(1.16, 0.20, 0.17),
-            vest_ring(1.26, 0.22, 0.21),
-            vest_ring(1.34, 0.22, 0.19),
-            vest_ring(1.40, 0.18, 0.18),
+            vest_ring_param(0.78, 0.16, 0.14),
+            vest_ring_param(0.82, 0.15, 0.13),
+            vest_ring_param(0.88, 0.14, 0.12),
+            vest_ring_anat(0.92),
+            vest_ring_anat(1.00),
+            vest_ring_anat(1.08),
+            vest_ring_anat(1.16),
+            vest_ring_anat(1.26),
+            vest_ring_param(1.34, 0.22, 0.19),
+            vest_ring_param(1.40, 0.18, 0.18),
             (1.44, body_ring(0.0, 0.0, props.neck_rx + 0.04, props.neck_rz + 0.03, &[], n), shirt_col),
         ];
         mesh::loft_y_tris(tris, &vest_rings);

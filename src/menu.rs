@@ -433,13 +433,12 @@ pub fn sys_menu_render(
             let scale = 3;
             let line_h = scale * 5 + scale * 4;
 
-            let panel_w = 420;
+            let panel_w = 480;
             let panel_h = line_h * 6 + scale * 4;
             let bx = cx - panel_w / 2;
             let by = cy - panel_h / 2;
             draw_panel(fb, bx, by, panel_w, panel_h);
 
-            // Title
             let title_scale = 4;
             let title = "NEW WORLD";
             let tw = text_pw(title, title_scale);
@@ -464,12 +463,14 @@ pub fn sys_menu_render(
             // Hint
             {
                 let y = items_y + line_h;
-                let hint = "EMPTY - RANDOM";
-                draw_text(fb, bx + scale * 4 + text_pw("  ", scale), y, hint, 2, TEXT_DIM);
+                draw_text(fb, bx + scale * 4 + text_pw("  ", scale), y, "EMPTY - RANDOM", 2, TEXT_DIM);
             }
+            // Separator before buttons
+            let btn_sep_y = items_y + line_h * 2;
+            draw_hline(fb, bx + scale * 2, btn_sep_y, panel_w - scale * 4, BORDER);
             // GENERATE (cursor 1)
             {
-                let y = items_y + line_h * 2;
+                let y = btn_sep_y + scale * 3;
                 let selected = menu.cursor == 1;
                 let color = if selected { TEXT_SEL } else { TEXT_DIM };
                 let iw = text_pw("GENERATE", scale);
@@ -480,7 +481,7 @@ pub fn sys_menu_render(
             }
             // BACK (cursor 2)
             {
-                let y = items_y + line_h * 3;
+                let y = btn_sep_y + scale * 3 + line_h;
                 let selected = menu.cursor == 2;
                 let color = if selected { TEXT_SEL } else { TEXT_DIM };
                 let iw = text_pw("BACK", scale);
@@ -870,3 +871,5 @@ fn digits_to_u64(buf: &[u8; 20], len: usize) -> u64 {
     }
     val
 }
+
+
