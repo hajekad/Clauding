@@ -8,18 +8,42 @@ use std::fs;
 pub struct LoadedModel {
     pub tris: Vec<WorldTri>,
     pub name: String,
+    pub height: f32,  // Y extent after normalization
+    pub width: f32,   // X extent (full)
+    pub depth: f32,   // Z extent (full)
+}
+
+/// Compute bounding box dimensions of a set of triangles.
+fn measure_bounds(tris: &[WorldTri]) -> (f32, f32, f32) {
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for tri in tris {
+        for v in &tri.v {
+            for i in 0..3 { min[i] = min[i].min(v[i]); max[i] = max[i].max(v[i]); }
+        }
+    }
+    (max[0] - min[0], max[1] - min[1], max[2] - min[2])
+}
+
+/// A model entry in the library with its tris and bounding box metadata.
+pub struct ModelEntry {
+    pub tris: Vec<WorldTri>,
+    pub name: String,
+    pub height: f32,  // normalized height (Y extent)
+    pub width: f32,   // normalized width (X extent)
+    pub depth: f32,   // normalized depth (Z extent)
 }
 
 /// Auto-discovered model library — scans directories for scene.gltf files.
 /// Drop a new folder with scene.gltf + scene.bin anywhere under a category
 /// and it gets picked up automatically on next load.
 pub struct ModelLibrary {
-    pub architecture: Vec<Vec<WorldTri>>,  // building models
-    pub trees: Vec<Vec<WorldTri>>,         // tree/vegetation models
-    pub characters: Vec<Vec<WorldTri>>,    // character models (1.8m tall humanoids)
-    pub character_names: Vec<String>,      // display names for character selection menu
+    pub architecture: Vec<ModelEntry>,     // building models (normalized to 8m tall)
+    pub trees: Vec<ModelEntry>,            // tree/vegetation models (normalized to 6m tall)
+    pub characters: Vec<Vec<WorldTri>>,    // character models (1.8m tall humanoids) — legacy format for render compat
+    pub character_names: Vec<String>,
     pub cars: Vec<Vec<WorldTri>>,          // car models (~4.5m long)
-    pub car_names: Vec<String>,            // display names for car models
+    pub car_names: Vec<String>,
 }
 
 impl ModelLibrary {
@@ -38,17 +62,32 @@ impl ModelLibrary {
         let base = "models/v1";
         let mut lib = Self::empty();
 
-        // Architecture: load at natural scale (assume GLTF is in meters)
-        // We normalize so tallest dimension = model height, preserving aspect ratio
-        let max_tris_arch: usize = 500;
-        let max_tris_tree: usize = 50;
+        // Budget: ~3M static verts total. Buildings get ~1800 tris each, trees ~160.
+        let max_tris_arch: usize = 1_800;
+        let max_tris_tree: usize = 160;
 
         let arch_dirs = discover_gltf_dirs(&format!("{base}/architecture"));
         for dir in &arch_dirs {
             let name = dir.rsplit('/').next().unwrap_or("?");
             if let Some(mut m) = try_load_gltf_scaled(dir, name, 0xFFCCBBAA, 8.0) {
+                // Reject models with broken aspect ratios:
+                // - Paper-thin (any axis < 15% of tallest)
+                // - Mega-wide (footprint > 4× height — likely a pack of buildings)
+                let min_dim = m.width.min(m.depth);
+                let max_footprint = m.width.max(m.depth);
+                if min_dim < m.height * 0.25 {
+                    eprintln!("  SKIP '{}': too thin ({:.1}×{:.1}×{:.1}m)", name, m.width, m.height, m.depth);
+                    continue;
+                }
+                if max_footprint > m.height * 3.0 {
+                    eprintln!("  SKIP '{}': too wide ({:.1}×{:.1}×{:.1}m) — likely a pack", name, m.width, m.height, m.depth);
+                    continue;
+                }
                 decimate_to_budget(&mut m.tris, max_tris_arch);
-                lib.architecture.push(m.tris);
+                lib.architecture.push(ModelEntry {
+                    height: m.height, width: m.width, depth: m.depth,
+                    tris: m.tris, name: m.name,
+                });
             }
         }
 
@@ -56,8 +95,17 @@ impl ModelLibrary {
         for dir in &nature_dirs {
             let name = dir.rsplit('/').next().unwrap_or("?");
             if let Some(mut m) = try_load_gltf_scaled(dir, name, 0xFF447733, 6.0) {
+                // Reject tree packs that are too wide (> 3× height — multiple trees in one file)
+                let max_footprint = m.width.max(m.depth);
+                if max_footprint > m.height * 2.0 {
+                    eprintln!("  SKIP tree '{}': too wide ({:.1}×{:.1}×{:.1}m) — likely a pack", name, m.width, m.height, m.depth);
+                    continue;
+                }
                 decimate_to_budget(&mut m.tris, max_tris_tree);
-                lib.trees.push(m.tris);
+                lib.trees.push(ModelEntry {
+                    height: m.height, width: m.width, depth: m.depth,
+                    tris: m.tris, name: m.name,
+                });
             }
         }
 
@@ -289,8 +337,9 @@ pub fn try_load_gltf_scaled(dir: &str, name: &str, color: u32, target_height: f3
             && tri.normal.iter().all(|c| c.is_finite())
     });
     if all_tris.is_empty() { return None; }
-    eprintln!("gltf_loader: loaded '{}' ({} tris, {:.1}m)", name, all_tris.len(), target_height);
-    Some(LoadedModel { tris: all_tris, name: name.to_string() })
+    let (w, h, d) = measure_bounds(&all_tris);
+    eprintln!("gltf_loader: loaded '{}' ({} tris, {:.1}×{:.1}×{:.1}m)", name, all_tris.len(), w, h, d);
+    Some(LoadedModel { tris: all_tris, name: name.to_string(), height: h, width: w, depth: d })
 }
 
 /// Load a car GLTF model, normalizing by longest dimension to target_length.
@@ -340,8 +389,9 @@ fn try_load_gltf_car(dir: &str, name: &str, color: u32, target_length: f32) -> O
             && tri.normal.iter().all(|c| c.is_finite())
     });
     if all_tris.is_empty() { return None; }
-    eprintln!("gltf_loader: loaded car '{}' ({} tris, {:.1}m)", name, all_tris.len(), target_length);
-    Some(LoadedModel { tris: all_tris, name: name.to_string() })
+    let (w, h, d) = measure_bounds(&all_tris);
+    eprintln!("gltf_loader: loaded car '{}' ({} tris, {:.1}×{:.1}×{:.1}m)", name, all_tris.len(), w, h, d);
+    Some(LoadedModel { tris: all_tris, name: name.to_string(), height: h, width: w, depth: d })
 }
 
 /// Normalize car model: scale so longest horizontal axis = target_length,
@@ -466,11 +516,13 @@ pub fn load_gltf_model(dir: &str, name: &str, skin_color: u32) -> LoadedModel {
     // Normalize: center on X/Z, Y=0 at feet, scale to 1.8m tall
     normalize_model(&mut all_tris);
 
+    let (w, h, d) = measure_bounds(&all_tris);
     eprintln!("gltf_loader: loaded '{}' from {}: {} tris", name, dir, all_tris.len());
 
     LoadedModel {
         tris: all_tris,
         name: name.to_string(),
+        height: h, width: w, depth: d,
     }
 }
 
