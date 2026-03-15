@@ -40,8 +40,8 @@ impl ModelLibrary {
 
         // Architecture: load at natural scale (assume GLTF is in meters)
         // We normalize so tallest dimension = model height, preserving aspect ratio
-        let max_tris_arch: usize = 1_000;
-        let max_tris_tree: usize = 200;
+        let max_tris_arch: usize = 10_000;
+        let max_tris_tree: usize = 2_000;
 
         let arch_dirs = discover_gltf_dirs(&format!("{base}/architecture"));
         for dir in &arch_dirs {
@@ -61,8 +61,8 @@ impl ModelLibrary {
             }
         }
 
-        // Characters: load at 1.8m tall humanoid scale, max 15K tris
-        let max_tris_char: usize = 15_000;
+        // Characters: load at 1.8m tall humanoid scale, max 50K tris
+        let max_tris_char: usize = 50_000;
         let char_dirs = discover_gltf_dirs(&format!("{base}/characters"));
         for dir in &char_dirs {
             let name = dir.rsplit('/').next().unwrap_or("?");
@@ -77,8 +77,8 @@ impl ModelLibrary {
             }
         }
 
-        // Cars: load at ~4.5m long (longest axis), max 8K tris
-        let max_tris_car: usize = 8_000;
+        // Cars: load at ~4.5m long (longest axis), max 20K tris
+        let max_tris_car: usize = 20_000;
         let car_dirs = discover_gltf_dirs(&format!("{base}/cars"));
         for dir in &car_dirs {
             let name = dir.rsplit('/').next().unwrap_or("?");
@@ -98,20 +98,116 @@ impl ModelLibrary {
     }
 }
 
-/// Simple decimation: if model exceeds budget, keep every Nth triangle.
-/// Preserves model shape at lower fidelity.
+/// Vertex-clustering decimation: merges nearby vertices on a 3D grid.
+/// Preserves mesh topology — adjacent triangles stay connected.
+/// Degenerate triangles (collapsed to a line or point) are removed.
 fn decimate_to_budget(tris: &mut Vec<WorldTri>, max_tris: usize) {
     if tris.len() <= max_tris { return; }
     let original = tris.len();
-    let stride = (original + max_tris - 1) / max_tris; // ceil division
-    let mut kept = Vec::with_capacity(max_tris);
-    for (i, tri) in tris.iter().enumerate() {
-        if i % stride == 0 {
-            kept.push(WorldTri { v: tri.v, normal: tri.normal, color: tri.color });
+
+    // Binary search for grid resolution that gives ~target tri count
+    let mut lo_res = 4u32;
+    let mut hi_res = 512u32;
+    let mut best_tris: Vec<WorldTri> = Vec::new();
+
+    for _ in 0..12 { // max 12 iterations of binary search
+        let mid = (lo_res + hi_res) / 2;
+        let result = cluster_decimate(tris, mid);
+        if result.len() > max_tris {
+            hi_res = mid;
+        } else {
+            best_tris = result;
+            lo_res = mid + 1;
+        }
+        if lo_res >= hi_res { break; }
+    }
+
+    if best_tris.is_empty() {
+        best_tris = cluster_decimate(tris, lo_res);
+    }
+
+    eprintln!("  decimated {} -> {} tris (grid {})", original, best_tris.len(), lo_res);
+    *tris = best_tris;
+}
+
+/// Cluster vertices into a 3D grid and rebuild triangles.
+fn cluster_decimate(tris: &[WorldTri], grid_res: u32) -> Vec<WorldTri> {
+    // Compute bounding box
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for tri in tris {
+        for v in &tri.v {
+            for i in 0..3 { min[i] = min[i].min(v[i]); max[i] = max[i].max(v[i]); }
         }
     }
-    eprintln!("  decimated {} -> {} tris (stride {})", original, kept.len(), stride);
-    *tris = kept;
+    let dims = [max[0]-min[0]+1e-6, max[1]-min[1]+1e-6, max[2]-min[2]+1e-6];
+    let inv_cell = [grid_res as f32 / dims[0], grid_res as f32 / dims[1], grid_res as f32 / dims[2]];
+
+    // Map vertex to grid cell index
+    let to_cell = |v: [f32; 3]| -> u64 {
+        let cx = ((v[0] - min[0]) * inv_cell[0]).min(grid_res as f32 - 1.0).max(0.0) as u64;
+        let cy = ((v[1] - min[1]) * inv_cell[1]).min(grid_res as f32 - 1.0).max(0.0) as u64;
+        let cz = ((v[2] - min[2]) * inv_cell[2]).min(grid_res as f32 - 1.0).max(0.0) as u64;
+        cx + cy * grid_res as u64 + cz * grid_res as u64 * grid_res as u64
+    };
+
+    // Accumulate vertex positions per cell
+    use std::collections::HashMap;
+    let mut cell_sum: HashMap<u64, ([f64; 3], u32)> = HashMap::new();
+    for tri in tris {
+        for v in &tri.v {
+            let cell = to_cell(*v);
+            let entry = cell_sum.entry(cell).or_insert(([0.0; 3], 0));
+            entry.0[0] += v[0] as f64;
+            entry.0[1] += v[1] as f64;
+            entry.0[2] += v[2] as f64;
+            entry.1 += 1;
+        }
+    }
+
+    // Compute cell representative positions (centroid of all vertices in cell)
+    let cell_pos: HashMap<u64, [f32; 3]> = cell_sum.iter().map(|(&cell, &(sum, count))| {
+        let c = count as f64;
+        (cell, [(sum[0]/c) as f32, (sum[1]/c) as f32, (sum[2]/c) as f32])
+    }).collect();
+
+    // Rebuild triangles using cell representatives, skip degenerate
+    let mut result = Vec::new();
+    for tri in tris {
+        let c0 = to_cell(tri.v[0]);
+        let c1 = to_cell(tri.v[1]);
+        let c2 = to_cell(tri.v[2]);
+
+        // Skip degenerate: any two vertices collapsed to same cell
+        if c0 == c1 || c1 == c2 || c0 == c2 { continue; }
+
+        let v0 = cell_pos[&c0];
+        let v1 = cell_pos[&c1];
+        let v2 = cell_pos[&c2];
+
+        // Recompute normal
+        let e1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]];
+        let e2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]];
+        let nx = e1[1]*e2[2] - e1[2]*e2[1];
+        let ny = e1[2]*e2[0] - e1[0]*e2[2];
+        let nz = e1[0]*e2[1] - e1[1]*e2[0];
+        let nl = (nx*nx + ny*ny + nz*nz).sqrt();
+        let normal = if nl > 1e-10 { [nx/nl, ny/nl, nz/nl] } else { tri.normal };
+
+        result.push(WorldTri { v: [v0, v1, v2], normal, color: tri.color });
+    }
+
+    // Deduplicate identical triangles (same 3 cell indices)
+    let mut seen: HashMap<(u64,u64,u64), bool> = HashMap::new();
+    let mut deduped = Vec::with_capacity(result.len());
+    for tri in &result {
+        let key = (to_cell(tri.v[0]), to_cell(tri.v[1]), to_cell(tri.v[2]));
+        if seen.insert(key, true).is_none() {
+            deduped.push(WorldTri { v: tri.v, normal: tri.normal, color: tri.color });
+        }
+    }
+
+    deduped
 }
 
 /// Recursively discover directories containing scene.gltf files.
