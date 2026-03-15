@@ -20,40 +20,11 @@ pub const CLIP_SITTING_POSE: usize = 7;
 
 /// Compute skeleton normalization parameters: scale factor and Y offset.
 /// Used to scale bone bind_translations so the skeleton matches the 1.8m mesh.
-pub fn skeleton_normalization(skeleton: &FbxSkeleton) -> (f32, f32) {
-    let raw = compute_raw_pose(skeleton, None);
-    let mut min_y = f32::MAX;
-    let mut max_y = f32::MIN;
-    for m in &raw {
-        min_y = min_y.min(m[13]);
-        max_y = max_y.max(m[13]);
-    }
-    let scale = 1.8 / (max_y - min_y).max(0.01);
-    (min_y, scale)
-}
-
-/// Normalize a skeleton in-place: scale all bind_translations so the skeleton
-/// matches the 1.8m mesh coordinate system (Y=0 at feet).
-pub fn normalize_skeleton(skeleton: &mut FbxSkeleton, min_y: f32, scale: f32) {
-    // Scale the ROOT bone's bind_translation to shift Y=0 to feet and scale to 1.8m.
-    // Child bones' translations are relative offsets — they only need scaling, not Y shifting.
-    for bone in &mut skeleton.bones {
-        bone.bind_translation[0] *= scale;
-        bone.bind_translation[1] *= scale;
-        bone.bind_translation[2] *= scale;
-    }
-    // Apply the Y offset only to root bones (no parent)
-    for bone in &mut skeleton.bones {
-        if bone.parent.is_none() {
-            bone.bind_translation[1] -= min_y * scale;
-        }
-    }
-}
+/// The FBX skeleton was created by Mixamo from our 1.8m OBJ export.
+/// No normalization needed — the skeleton IS at 1.8m scale already.
 
 /// Evaluate animation at time `t`, returning per-bone world-space transforms.
-/// The skeleton must already be normalized (bind translations scaled to match mesh).
-/// Animation translations (e.g., Hips root motion) are also scaled.
-pub fn evaluate_pose(skeleton: &FbxSkeleton, clip: &AnimationClip, t: f32, anim_scale: f32) -> Vec<Mat4> {
+pub fn evaluate_pose(skeleton: &FbxSkeleton, clip: &AnimationClip, t: f32) -> Vec<Mat4> {
     let n = skeleton.bones.len();
     let mut world_transforms: Vec<Mat4> = vec![M4_IDENTITY; n];
 
@@ -70,14 +41,7 @@ pub fn evaluate_pose(skeleton: &FbxSkeleton, clip: &AnimationClip, t: f32, anim_
             };
             rotation_deg = interpolate_channel_rotation(channel, anim_t);
             if let Some(ref trans_keys) = channel.translations {
-                let raw_t = interpolate_channel_translation(channel, trans_keys, anim_t);
-                // Scale animated translations the same way bind translations were scaled
-                translation = [raw_t[0] * anim_scale, raw_t[1] * anim_scale, raw_t[2] * anim_scale];
-                // Apply root Y offset for root bones
-                if bone.parent.is_none() {
-                    // The root offset was already baked into bind_translation,
-                    // but the animated translation replaces it, so we need to apply the offset here too
-                }
+                translation = interpolate_channel_translation(channel, trans_keys, anim_t);
             }
         }
 
@@ -405,7 +369,6 @@ pub struct AnimationData {
     pub inverse_bind: Vec<Mat4>,         // inverse bind-pose matrices
     pub bind_transforms: Vec<Mat4>,      // bind-pose world transforms
     pub hips_bone: usize,                // index of the Hips bone
-    pub norm_matrix: Mat4,               // skeleton-to-mesh normalization transform
 }
 
 impl AnimationData {
@@ -423,22 +386,19 @@ impl AnimationData {
                 inverse_bind: Vec::new(),
                 bind_transforms: Vec::new(),
                 hips_bone: 0,
-                norm_matrix: M4_IDENTITY,
             };
         }
 
         // Normalize skeleton bind translations to match 1.8m mesh coordinate system
-        let (min_y, scale) = skeleton_normalization(&skeleton);
-        normalize_skeleton(&mut skeleton, min_y, scale);
-
+        // No skeleton normalization needed — the FBX was created from our 1.8m OBJ
         let bind_transforms = compute_bind_pose(&skeleton);
         let inverse_bind = compute_inverse_bind_matrices(&skeleton);
         let hips_bone = skeleton.bones.iter()
             .position(|b| b.name.contains("Hips") && !b.name.contains("UpLeg"))
             .unwrap_or(0);
 
-        eprintln!("[skeleton_anim] normalized skeleton: scale={:.3}, hips Y={:.3}",
-            scale, bind_transforms[hips_bone][13]);
+        eprintln!("[skeleton_anim] hips Y={:.3}, {} bones",
+            bind_transforms[hips_bone][13], skeleton.bones.len());
 
         // Compute bone assignments for every character model
         let mut model_bone_assignments = Vec::with_capacity(all_models.len());
@@ -456,7 +416,6 @@ impl AnimationData {
             inverse_bind,
             bind_transforms,
             hips_bone,
-            norm_matrix: { let mut m = M4_IDENTITY; m[0] = scale; m[5] = scale; m[10] = scale; m },
         }
     }
 
@@ -548,8 +507,7 @@ impl AnimationData {
         }
 
         let clip = &self.clips[clip_index];
-        let anim_scale = self.norm_matrix[0]; // uniform scale stored in norm_matrix diagonal
-        let animated = evaluate_pose(&self.skeleton, clip, time, anim_scale);
+        let animated = evaluate_pose(&self.skeleton, clip, time);
 
         let start = output.len();
         skin_mesh(bind_tris, assignments.unwrap(), &animated, &self.inverse_bind, output);
