@@ -241,13 +241,24 @@ fn contour_ring(
         lerp_ring(lo_pts, hi_pts, t)
     };
 
-    // Compute GLTF ring's half-widths
-    let (gltf_hx, gltf_hz) = half_widths(&raw);
+    // Center the contour at its centroid before measuring dimensions.
+    // GLTF cross-sections are offset from origin (bone axis ≠ centroid),
+    // which inflates half_widths and causes wrong scaling if not centered.
+    let n_pts = raw.len() as f32;
+    let cx = raw.iter().map(|p| p[0]).sum::<f32>() / n_pts;
+    let cz = raw.iter().map(|p| p[1]).sum::<f32>() / n_pts;
+    let centered: Vec<[f32; 2]> = raw.iter().map(|p| [p[0] - cx, p[1] - cz]).collect();
 
-    // Scale to target dimensions
-    let sx = target_rx / gltf_hx;
-    let sz = target_rz / gltf_hz;
-    let mut scaled: Vec<[f32; 2]> = raw.iter().map(|p| [p[0] * sx, p[1] * sz]).collect();
+    // Compute half-widths from centroid (true cross-section dimensions)
+    let (cent_hx, cent_hz) = half_widths(&centered);
+
+    // Scale using per-axis to match target, but applied to centered contour.
+    // Now the scaling correctly represents the cross-section shape.
+    let sx = target_rx / cent_hx;
+    let sz = target_rz / cent_hz;
+    let mut scaled: Vec<[f32; 2]> = centered.iter()
+        .map(|p| [p[0] * sx + cx * sx, p[1] * sz + cz * sz])
+        .collect();
 
     // Resample to desired point count
     let src_n = scaled.len();
@@ -258,9 +269,14 @@ fn contour_ring(
     // Blend with smooth ellipse based on muscle_def
     if muscle_def < 1.0 {
         let smooth = smooth_ellipse(target_rx, target_rz, n);
+        // Offset smooth ellipse by the scaled centroid
+        let ocx = cx * sx;
+        let ocz = cz * sz;
         for (i, pt) in scaled.iter_mut().enumerate() {
-            pt[0] = smooth[i][0] + muscle_def * (pt[0] - smooth[i][0]);
-            pt[1] = smooth[i][1] + muscle_def * (pt[1] - smooth[i][1]);
+            let sx_off = smooth[i][0] + ocx;
+            let sz_off = smooth[i][1] + ocz;
+            pt[0] = sx_off + muscle_def * (pt[0] - sx_off);
+            pt[1] = sz_off + muscle_def * (pt[1] - sz_off);
         }
     }
 
