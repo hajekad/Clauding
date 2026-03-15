@@ -1,6 +1,6 @@
 // sys_render: transform world + player geometry to screen, rasterize
 // Near-plane clipping, backface/distance culling, day/night lighting
-// G-fixes: sculpted face geometry, hair for hatless NPCs, detailed bracers
+// G-fixes: sculpted face geometry, detailed bracers
 
 use crate::anatomy;
 use crate::gpu::GpuVertex;
@@ -88,13 +88,13 @@ fn male_proportions() -> BodyProportions {
     BodyProportions {
         body_stretch: 1.25,
         body_widen: 1.0,
-        head_scale: 0.62,
+        head_scale: 0.70,
         head_cy: 1.70,
-        neck_top: 1.50,
+        neck_top: 1.49,
         shoulder_rx: 0.36,
         shoulder_deltoid_amp: 0.10,
         hip_rx: 0.28,
-        waist_rx: 0.13,
+        waist_rx: 0.20,
         chest_rx: 0.24,
         muscle_def: 1.0,
         arm_rx_scale: 1.0,
@@ -326,10 +326,6 @@ const SKIN_TONES: [u32; 12] = [
     0xFF5A3D28, // deep brown
     0xFFDDBC98, // warm beige
 ];
-const HAIR_COLORS: [u32; 8] = [
-    0xFF332211, 0xFF443322, 0xFF221100, 0xFF554433,
-    0xFF664422, 0xFF887755, 0xFF111111, 0xFFBBAA88, // black, silver/wig
-];
 const HAT_COLORS: [u32; 6] = [
     0xFF333333, 0xFF554433, 0xFF222222, 0xFF443344, 0xFF665544, 0xFF2A2A2A,
 ];
@@ -357,7 +353,6 @@ const BUTTON_BRASS: u32 = 0xFFBBAA55;
 #[derive(Clone)]
 struct NpcAppearance {
     skin: u32,
-    hair: u32,
     hat_type: u8,    // 0=none,1=tricorn,2=top_hat,3=cap,4=bonnet,5=wide_brim,6=hood,7=powdered_wig
     hat_col: u32,
     coat_col: u32,
@@ -372,7 +367,6 @@ struct NpcAppearance {
     sash_col: u32,
     belt_col: u32,        // belt leather color — varies per NPC
     face_age: u8,         // 0=young, 1=mid, 2=old (wrinkle density)
-    hair_style: u8,       // 0=full, 1=short crop, 2=receding/thin
     is_female: bool,
     face: FaceSliders,
 }
@@ -385,7 +379,6 @@ fn npc_appearance(seed: u32) -> NpcAppearance {
     let face_base = if is_female { FaceSliders::female_default() } else { FaceSliders::male_default() };
     NpcAppearance {
         skin: SKIN_TONES[(s / 3) as usize % SKIN_TONES.len()],
-        hair: HAIR_COLORS[(s / 5) as usize % HAIR_COLORS.len()],
         hat_type: (s / 7 % 8) as u8,
         hat_col: HAT_COLORS[(s / 11) as usize % HAT_COLORS.len()],
         coat_col,
@@ -400,7 +393,6 @@ fn npc_appearance(seed: u32) -> NpcAppearance {
         sash_col: SASH_COLORS[(s / 23) as usize % SASH_COLORS.len()],
         belt_col: BELT_COLORS[(s / 31) as usize % BELT_COLORS.len()],
         face_age: ((s / 29) % 3) as u8,
-        hair_style: ((s / 37) % 3) as u8,
         is_female,
         face: FaceSliders::randomized(&face_base, s),
     }
@@ -425,7 +417,6 @@ fn player_appearance(is_female: bool) -> NpcAppearance {
     };
     NpcAppearance {
         skin: SKIN_TONES[0], // use palette instead of constant
-        hair: 0xFF332211,
         hat_type: 6,           // hood
         hat_col: 0xFF2A2A3A,   // dark blue-grey
         coat_col: 0xFF2A3044,  // dark navy (Arno's coat)
@@ -440,7 +431,6 @@ fn player_appearance(is_female: bool) -> NpcAppearance {
         sash_col: 0xFFAA2222,  // red sash
         belt_col: LEATHER_DARK,
         face_age: 0,
-        hair_style: 0,
         is_female,
         face,
     }
@@ -621,6 +611,7 @@ pub fn sky_color(hour: f32) -> u32 {
 pub fn sys_render(
     fb: &mut Framebuffer, world: &WorldData, player: &Player, cam: &Camera,
     hour: f32, scratch: &mut Vec<WorldTri>,
+    character_models: &[Vec<WorldTri>],
 ) {
     let tc = time_colors(hour);
     let aspect = fb.w as f32 / fb.h as f32;
@@ -645,7 +636,11 @@ pub fn sys_render(
     for npc in &world.npcs {
         if npc.state == NpcState::Sleeping { continue; }
         if npc.in_vehicle { continue; }
-        gen_npc_mesh(npc, scratch);
+        if !character_models.is_empty() {
+            gen_npc_mesh_gltf(npc, character_models, scratch);
+        } else {
+            gen_npc_mesh(npc, scratch);
+        }
     }
     for item in &world.items {
         if !item.active && !item.falling { continue; }
@@ -657,7 +652,11 @@ pub fn sys_render(
         gen_trash_bin_mesh(bin, scratch);
     }
     if player.in_vehicle.is_none() {
-        gen_player_mesh(player, scratch);
+        if !character_models.is_empty() {
+            gen_player_mesh_gltf(player, character_models, scratch);
+        } else {
+            gen_player_mesh(player, scratch);
+        }
     }
     // Night-time street light glow halos (dynamic — only rendered at night)
     if is_night {
@@ -810,10 +809,9 @@ fn shade_and_fog(color: u32, intensity: f32, fog: f32, tc: &TimeColors) -> u32 {
 // CHARACTER BODY GENERATION — each body part separately modeled
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Generate the full anatomical head: skull, face, ears, hair/hat
+/// Generate the full anatomical head: skull, face, ears, hat
 fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u32>) {
     let skin = app.skin;
-    let hair = app.hair;
     let sk = skin;
     let sk_sh = darken(skin, 0.92);
 
@@ -839,135 +837,127 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     let glabella = sl(0.003, 0.020, f.brow_ridge);
     let supraorb = sl(0.005, 0.025, f.brow_ridge);
     let cheek = sl(0.014, 0.060, f.cheekbone);
-    let chin_proj = sl(0.010, 0.070, f.chin_projection);
+    let chin_proj = sl(0.020, 0.080, f.chin_projection); // stronger chin
     let chin_w = sl(0.045, 0.080, f.chin_width);  // min 0.045 prevents spike chin
     let nose_size = sl(0.024, 0.060, f.nose_size);
     let nose_br = sl(0.012, 0.028, f.nose_bridge);
     let lip_full = sl(0.6, 1.6, f.lip_fullness);
     let eye_x = sl(0.060, 0.100, f.eye_spacing);
-    let eye_r = sl(0.018, 0.034, f.eye_size);
-    let eye_z = sl(-0.290, -0.340, f.eye_depth);
+    let eye_r = sl(0.024, 0.040, f.eye_size); // larger eyes
+    let eye_z = sl(-0.210, -0.240, f.eye_depth);
     let fh_off = sl(-0.03, 0.03, f.forehead_height);
-    let ear_s = sl(0.70, 1.30, f.ear_size);
+    let ear_s = sl(1.00, 1.80, f.ear_size); // larger ears to be visible after head scaling
     let fem = app.is_female;
 
     // Orbital socket depth — negative displacement at eye positions
     // Creates concavity that eyeballs sit inside
     // Deep sockets ensure eyes visibly sit in sculpted recesses
-    let orb_depth = sl(-0.015, -0.035, f.eye_depth);
+    let orb_depth = sl(-0.008, -0.018, f.eye_depth); // shallower sockets to avoid black void
 
     // ══════════════════════════════════════════════════════════════
     // SKULL LOFT — anatomically structured head surface
     // Key features: orbital sockets, prominent brow, zygomatic arch,
     // nasal bridge, occipital curve, frontal eminences
     // ══════════════════════════════════════════════════════════════
+    // Skull depth ratio: rz ≈ 1.25x rx (real human skull proportions)
     let rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-        // ── CHIN — forward-projecting mental protuberance ──
-        (1.46, body_ring(0.0, -0.06 * skd, chin_w, 0.09 * skd, &[
+        // ── CHIN — forward-projecting ──
+        (1.46, body_ring(0.0, -0.04 * skd, chin_w, 0.08 * skd, &[
             (0.0, 0.3, chin_proj),
         ], n), sk),
-        (1.49, body_ring(0.0, -0.04 * skd, (chin_w + 0.10 * skw) * 0.5, 0.11 * skd, &[
-            (0.0, 0.3, chin_proj * 0.7),
+        (1.49, body_ring(0.0, -0.02 * skd, (chin_w + 0.10 * skw) * 0.5, 0.10 * skd, &[
+            (0.0, 0.3, chin_proj * 0.6),
         ], n), sk),
-        (1.52, body_ring(0.0, -0.02 * skd, 0.13 * skw, 0.13 * skd, &[
-            (0.0, 0.3, chin_proj * 0.4),
+        (1.52, body_ring(0.0, -0.01 * skd, 0.13 * skw, 0.12 * skd, &[
+            (0.0, 0.3, chin_proj * 0.3),
         ], n), sk),
         // Labiomental fold
-        (1.55, body_ring(0.0, 0.0, 0.15 * skw, 0.22 * skd, &[
-            (0.0, 0.20, -0.022),
+        (1.55, body_ring(0.0, 0.0, 0.15 * skw, 0.16 * skd, &[
+            (0.0, 0.20, -0.015),
             (hp, 0.25, jaw_w), (le, 0.25, jaw_w),
         ], n), sk),
 
-        // ── JAW — mandible with defined gonial angle ──
-        (1.58, body_ring(0.0, 0.01 * skd, 0.19 * skw, 0.25 * skd, &[
+        // ── JAW ──
+        (1.58, body_ring(0.0, 0.01 * skd, 0.19 * skw, 0.19 * skd, &[
             (hp, 0.25, jawline), (le, 0.25, jawline),
             (0.0, 0.3, 0.012),
         ], n), sk),
-        (1.61, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.26 * skd, &[
+        (1.61, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.20 * skd, &[
             (hp, 0.15, gonial), (le, 0.15, gonial),
             (hp - 0.3, 0.2, masseter), (le + 0.3, 0.2, masseter),
         ], n), sk),
-        (1.63, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.26 * skd, &[
+        (1.63, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.21 * skd, &[
             (hp, 0.15, gonial * 0.7), (le, 0.15, gonial * 0.7),
             (hp - 0.3, 0.2, masseter * 0.9), (le + 0.3, 0.2, masseter * 0.9),
         ], n), sk),
 
-        // ── MOUTH LEVEL — face center shifted forward for muzzle projection ──
-        (1.65, body_ring(0.0, 0.01 * skd, 0.195 * skw, 0.28 * skd, &[
-            (0.0, 0.25, 0.028),
-            (0.20, 0.08, -0.004), (TAU - 0.20, 0.08, -0.004),
+        // ── MOUTH LEVEL ──
+        (1.65, body_ring(0.0, 0.01 * skd, 0.195 * skw, 0.22 * skd, &[
+            (0.0, 0.25, 0.020),
         ], n), sk),
-        (1.67, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.30 * skd, &[
-            (0.0, 0.28, 0.035),
+        (1.67, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.23 * skd, &[
+            (0.0, 0.28, 0.025),
             (hp - 0.3, 0.2, masseter * 0.7), (le + 0.3, 0.2, masseter * 0.7),
-            (0.22, 0.08, -0.008), (TAU - 0.22, 0.08, -0.008),
         ], n), sk),
 
-        // ── NOSE BASE — piriform aperture, forward projection ──
-        (1.69, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.31 * skd, &[
-            (0.0, 0.12, 0.038),
-            (0.22, 0.08, -0.008), (TAU - 0.22, 0.08, -0.008),
+        // ── NOSE BASE ──
+        (1.69, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.23 * skd, &[
+            (0.0, 0.12, 0.030),
         ], n), sk),
-        // Nose mid — tip + alar projection
-        (1.72, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.32 * skd, &[
-            (0.0, 0.08, nose_size * 1.5),
-            (0.12, 0.06, nose_br * 1.0), (TAU - 0.12, 0.06, nose_br * 1.0),
-            (0.25, 0.08, -0.008), (TAU - 0.25, 0.08, -0.008),
+        (1.72, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.24 * skd, &[
+            (0.0, 0.08, nose_size * 1.2),
+            (0.12, 0.06, nose_br), (TAU - 0.12, 0.06, nose_br),
         ], n), sk),
 
-        // ── INFRAORBITAL / CHEEKBONE — zygomatic arch, orbital socket begins ──
-        (1.74, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.33 * skd, &[
-            (0.0, 0.06, nose_size * 0.8),
+        // ── CHEEKBONE / ORBITAL ──
+        (1.74, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.24 * skd, &[
+            (0.0, 0.06, nose_size * 0.6),
             (0.55, 0.18, cheek * 1.1), (TAU - 0.55, 0.18, cheek * 1.1),
             (re, 0.12, orb_depth * 0.5), (le, 0.12, orb_depth * 0.5),
         ], n), sk),
-
-        // ── ORBITAL SOCKET — deepest recess at eye level ──
-        (1.77, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.34 * skd, &[
-            (0.0, 0.06, nose_br * 1.1),
+        (1.77, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.25 * skd, &[
+            (0.0, 0.06, nose_br * 0.8),
             (re, 0.12, orb_depth), (le, 0.12, orb_depth),
             (0.55, 0.15, cheek * 0.6), (TAU - 0.55, 0.15, cheek * 0.6),
         ], n), sk),
-        // Upper orbital — socket recovering toward brow
-        (1.80, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.34 * skd, &[
-            (0.0, 0.06, nose_br * 0.8),
-            (re, 0.12, orb_depth * 0.4), (le, 0.12, orb_depth * 0.4),
+        (1.80, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.25 * skd, &[
+            (re, 0.12, orb_depth * 0.3), (le, 0.12, orb_depth * 0.3),
         ], n), sk),
 
-        // ── BROW RIDGE — supraorbital torus, projects forward over eye sockets ──
-        (1.82, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.35 * skd, &[
+        // ── BROW RIDGE — prominent forward shelf ──
+        (1.82, body_ring(0.0, 0.0, 0.20 * skw, 0.25 * skd, &[
             (0.0, 0.50, brow_shelf),
             (0.0, 0.10, glabella),
             (re, 0.10, supraorb), (le, 0.10, supraorb),
         ], n), sk),
-        (1.84, body_ring(0.0, 0.02 * skd, 0.20 * skw, 0.35 * skd, &[
+        (1.84, body_ring(0.0, 0.01 * skd, 0.20 * skw, 0.25 * skd, &[
             (0.0, 0.50, brow_boss * 0.8),
         ], n), sk),
 
-        // ── FOREHEAD — frontal eminences ──
-        (1.87 + fh_off, body_ring(0.0, 0.04 * skd, 0.21 * skw, 0.34 * skd, &[
-            (0.25, 0.15, 0.008), (TAU - 0.25, 0.15, 0.008),
-            (PI, 0.4, 0.010),
+        // ── FOREHEAD ──
+        (1.87 + fh_off, body_ring(0.0, 0.02 * skd, 0.20 * skw, 0.25 * skd, &[], n), sk),
+
+        // ── CRANIAL VAULT — more rings for smooth dome, rear bumps for occipital ──
+        (1.89 + fh_off, body_ring(0.0, 0.03 * skd, 0.20 * skw, 0.25 * skd, &[
+            (PI, 0.40, 0.025),
+        ], n), sk),
+        (1.91 + fh_off, body_ring(0.0, 0.04 * skd, 0.19 * skw, 0.24 * skd, &[
+            (PI, 0.40, 0.030),
+        ], n), sk),
+        (1.93 + fh_off, body_ring(0.0, 0.05 * skd, 0.18 * skw, 0.23 * skd, &[
+            (PI, 0.40, 0.032),
+        ], n), sk),
+        (1.95 + fh_off, body_ring(0.0, 0.05 * skd, 0.17 * skw, 0.22 * skd, &[
+            (PI, 0.40, 0.028),
+        ], n), sk),
+        (1.97 + fh_off, body_ring(0.0, 0.04 * skd, 0.15 * skw, 0.20 * skd, &[
+            (PI, 0.40, 0.020),
         ], n), sk),
 
-        // ── CRANIAL VAULT ──
-        (1.91 + fh_off, body_ring(0.0, 0.07 * skd, 0.21 * skw, 0.32 * skd, &[
-            (PI, 0.35, 0.025),
-            (hp, 0.3, 0.008), (le, 0.3, 0.008),
-        ], n), sk),
-        (1.95 + fh_off, body_ring(0.0, 0.08 * skd, 0.21 * skw, 0.32 * skd, &[
-            (PI, 0.35, 0.030),
-        ], n), sk),
-        (1.99 + fh_off, body_ring(0.0, 0.08 * skd, 0.21 * skw, 0.30 * skd, &[
-            (PI, 0.35, 0.025),
-        ], n), sk),
-
-        // ── CROWN — smooth dome, gradual convergence ──
-        (2.03 + fh_off, body_ring(0.0, 0.06 * skd, 0.20 * skw, 0.26 * skd, &[], n), sk),
-        (2.07 + fh_off, body_ring(0.0, 0.05 * skd, 0.19 * skw, 0.23 * skd, &[], n), sk),
-        (2.10 + fh_off, body_ring(0.0, 0.04 * skd, 0.16 * skw, 0.18 * skd, &[], n), sk),
-        (2.13 + fh_off, body_ring(0.0, 0.03 * skd, 0.11 * skw, 0.13 * skd, &[], n), sk),
-        (2.16 + fh_off, body_ring(0.0, 0.02 * skd, 0.06 * skw, 0.07 * skd, &[], n), sk),
+        // ── CROWN — smooth convergence ──
+        (1.99 + fh_off, body_ring(0.0, 0.03 * skd, 0.13 * skw, 0.16 * skd, &[], n), sk),
+        (2.01 + fh_off, body_ring(0.0, 0.02 * skd, 0.10 * skw, 0.12 * skd, &[], n), sk),
+        (2.03 + fh_off, body_ring(0.0, 0.01 * skd, 0.06 * skw, 0.07 * skd, &[], n), sk),
     ];
     mesh::loft_y_tris(tris, &rings);
 
@@ -999,10 +989,10 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
         let brow_thick = sl(0.003, 0.007, f.brow_ridge);
         // Inner brow — narrower to stay on skull surface
         mesh::ellipsoid_tris(tris, side * eye_x, 1.82, -0.310,
-            0.030, brow_thick, 0.012, 0, darken(hair, 0.85));
+            0.030, brow_thick, 0.012, 0, darken(skin, 0.65));
         // Brow tail — follows brow ridge
         mesh::ellipsoid_tris(tris, side * (eye_x + 0.014), 1.823, -0.290,
-            0.012, brow_thick * 0.5, 0.008, 0, darken(hair, 0.80));
+            0.012, brow_thick * 0.5, 0.008, 0, darken(skin, 0.60));
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -1011,43 +1001,20 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     // ══════════════════════════════════════════════════════════════
     let ns = nose_size;
     let nb = nose_br;
-    // Nasal bone — tall ridge forming the bridge (pushed well forward past skull)
-    mesh::ellipsoid_tris(tris, 0.0, 1.76, -0.355, nb * 1.6, 0.044, nb * 1.4, 1, sk);
-    // Dorsum — continuous bridge from nasion to tip
-    mesh::ellipsoid_tris(tris, 0.0, 1.74, -0.348, nb * 1.4, 0.034, nb * 1.2, 1, sk);
-    // Lateral walls — defined planes flanking the bridge
+    // Nose bridge — prominent ridge
+    mesh::ellipsoid_tris(tris, 0.0, 1.75, -0.270, nb * 2.0, 0.050, nb * 1.8, 1, sk);
+    // Nose tip — large, prominent
+    mesh::ellipsoid_tris(tris, 0.0, 1.715, -0.290, ns * 1.0, 0.030, ns * 0.9, 1, darken(sk, 0.96));
+    // Alar wings — wider and more visible
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * nb * 1.3, 1.73, -0.330,
-            nb * 0.9, 0.042, nb * 0.8, 0, sk);
+        mesh::ellipsoid_tris(tris, side * ns * 0.80, 1.712, -0.260,
+            ns * 0.70, 0.025, ns * 0.55, 1, sk);
     }
-    // Nose tip — defined ball (prominent forward projection)
-    mesh::ellipsoid_tris(tris, 0.0, 1.715, -0.375, ns * 0.65, 0.022, ns * 0.65, 1, darken(sk, 0.96));
-    // Alar wings — fleshy lateral flaps
+    // Nostrils
     for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * ns * 0.75, 1.712, -0.345,
-            ns * 0.65, 0.024, ns * 0.55, 1, sk);
-        // Alar crease
-        mesh::ellipsoid_tris(tris, side * ns * 0.85, 1.710, -0.328,
-            ns * 0.28, 0.014, ns * 0.22, 0, darken(sk, 0.88));
-        // Wing underside
-        mesh::ellipsoid_tris(tris, side * ns * 0.55, 1.705, -0.358,
-            ns * 0.50, 0.010, ns * 0.40, 0, darken(sk, 0.88));
+        mesh::ellipsoid_tris(tris, side * ns * 0.35, 1.706, -0.268,
+            ns * 0.32, 0.012, 0.012, 0, darken(sk, 0.30));
     }
-    // Columella — central pillar between nostrils
-    mesh::ellipsoid_tris(tris, 0.0, 1.706, -0.362, 0.011, 0.016, 0.016, 0, darken(sk, 0.93));
-    // Nostrils — dark openings
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * ns * 0.38, 1.703, -0.350,
-            ns * 0.32, 0.010, 0.014, 0, darken(sk, 0.25));
-    }
-    // ── PHILTRUM — two visible ridges from columella to Cupid's bow ──
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.008, 1.695, -0.318,
-            0.006, 0.024, 0.010, 0, sk_sh);
-    }
-    // Philtrum groove
-    mesh::ellipsoid_tris(tris, 0.0, 1.695, -0.320,
-        0.005, 0.022, 0.005, 0, darken(sk, 0.88));
 
     // ══════════════════════════════════════════════════════════════
     // MOUTH — Cupid's bow upper lip, full lower lip, vermilion borders
@@ -1056,33 +1023,15 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     let lo_lip_col = if fem { 0xFFDD9999 } else { 0xFFCC9988 };
     let lf = lip_full;
 
-    // Muzzle — skin-colored base that pushes the mouth area forward from skull
-    mesh::ellipsoid_tris(tris, 0.0, 1.668, -0.280, 0.048, 0.025, 0.030, 1, sk);
+    // Muzzle — forward projection for mouth area
+    mesh::ellipsoid_tris(tris, 0.0, 1.668, -0.210, 0.048, 0.026, 0.028, 1, sk);
 
-    // Upper lip — two halves for Cupid's bow
-    mesh::ellipsoid_tris(tris, -0.014, 1.676, -0.310, 0.034, 0.008 * lf, 0.016 * lf, 0, lip_col);
-    mesh::ellipsoid_tris(tris,  0.014, 1.676, -0.310, 0.034, 0.008 * lf, 0.016 * lf, 0, lip_col);
-    // Cupid's bow peak
-    mesh::ellipsoid_tris(tris, 0.0, 1.680, -0.285, 0.010, 0.005 * lf, 0.008 * lf, 0, lip_col);
-
+    // Upper lip
+    mesh::ellipsoid_tris(tris, 0.0, 1.676, -0.225, 0.038, 0.010 * lf, 0.016 * lf, 1, lip_col);
     // Lower lip
-    mesh::ellipsoid_tris(tris, 0.0, 1.654, -0.278, 0.044, 0.014 * lf, 0.018 * lf, 1, lo_lip_col);
-    // Vermilion border
-    mesh::ellipsoid_tris(tris, 0.0, 1.665, -0.285, 0.046, 0.003, 0.005, 0, darken(lip_col, 0.80));
-
+    mesh::ellipsoid_tris(tris, 0.0, 1.656, -0.210, 0.042, 0.013 * lf, 0.018 * lf, 1, lo_lip_col);
     // Mouth line
-    push_box(tris, 0.0, 1.666, -0.288, 0.038, 0.001, 0.004, darken(sk, 0.40));
-    // Commissures
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.038, 1.664, -0.278,
-            0.007, 0.005, 0.005, 0, darken(sk, 0.55));
-    }
-
-    // Nasolabial folds
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.036, 1.69, -0.282,
-            0.006, 0.028, 0.006, 0, darken(sk, 0.86));
-    }
+    push_box(tris, 0.0, 1.666, -0.218, 0.034, 0.001, 0.004, darken(sk, 0.40));
 
     // ══════════════════════════════════════════════════════════════
     // EARS — scaled by ear_size slider
@@ -1143,135 +1092,13 @@ fn gen_head(tris: &mut Vec<WorldTri>, app: &NpcAppearance, is_job_hat: Option<u3
     }
 
     // ══════════════════════════════════════════════════════════════
-    // HAIR — skull-hugging lofted mesh + sideburns
+    // HAT — headwear generation
     // ══════════════════════════════════════════════════════════════
-    let hat = if let Some(jc) = is_job_hat {
+    if let Some(jc) = is_job_hat {
         gen_job_hat(tris, jc);
-        true
     } else {
-        gen_hat(tris, app, hair)
+        gen_hat(tris, app);
     };
-
-    if hat && app.hat_type != 6 {
-        // Hair peeking out from under hat
-        mesh::ellipsoid_tris(tris, 0.0, 1.70, 0.14, 0.14, 0.06, 0.10, 0, hair);
-        for &side in &[-1.0f32, 1.0] {
-            push_box(tris, side * 0.17, 1.74, -0.02, 0.015, 0.05, 0.03, hair);
-            push_box(tris, side * 0.16, 1.76, 0.04, 0.02, 0.04, 0.08, hair);
-        }
-    } else if !hat {
-        match app.hair_style {
-            1 => gen_hair_short(tris, hair, skw, skd),
-            2 => gen_hair_receding(tris, hair, skw, skd, fh_off),
-            _ => gen_hair_full(tris, hair, skw, skd, fh_off),
-        }
-    }
-}
-
-/// Full hair for hatless NPCs — skull-hugging lofted cap covering top and back,
-/// with sideburns, back volume, and hairline fringe.
-fn gen_hair_full(tris: &mut Vec<WorldTri>, hair: u32, skw: f32, skd: f32, fh_off: f32) {
-    use std::f32::consts::PI;
-    let hd = darken(hair, 0.92);
-    let hl = darken(hair, 0.85);
-
-    // Hair cap — lofted rings covering top and back of skull
-    let hair_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-        // Hairline — starts just above brow, wraps around sides and back
-        (1.84 + fh_off, body_ring(0.0, 0.02 * skd, 0.215 * skw, 0.29 * skd, &[
-            (0.0, 0.40, -0.020),
-            (PI, 0.4, 0.012),
-        ], 32), hair),
-        // Mid-cranium — full coverage
-        (1.88 + fh_off, body_ring(0.0, 0.05 * skd, 0.225 * skw, 0.30 * skd, &[
-            (PI, 0.35, 0.020),
-        ], 32), hair),
-        (1.93 + fh_off, body_ring(0.0, 0.07 * skd, 0.225 * skw, 0.30 * skd, &[
-            (PI, 0.35, 0.025),
-        ], 32), hair),
-        // Crown
-        (1.98 + fh_off, body_ring(0.0, 0.08 * skd, 0.22 * skw, 0.29 * skd, &[
-            (PI, 0.35, 0.028),
-        ], 32), hair),
-        (2.02 + fh_off, body_ring(0.0, 0.07 * skd, 0.20 * skw, 0.27 * skd, &[
-            (PI, 0.35, 0.022),
-        ], 32), hair),
-        // Top — converging
-        (2.06 + fh_off, body_ring(0.0, 0.06 * skd, 0.17 * skw, 0.22 * skd, &[], 32), hd),
-        (2.09 + fh_off, body_ring(0.0, 0.05 * skd, 0.13 * skw, 0.17 * skd, &[], 32), hd),
-        (2.11 + fh_off, body_ring(0.0, 0.04 * skd, 0.09 * skw, 0.12 * skd, &[], 32), hd),
-        (2.13 + fh_off, body_ring(0.0, 0.03 * skd, 0.05 * skw, 0.06 * skd, &[], 32), hd),
-    ];
-    mesh::loft_y_tris(tris, &hair_rings);
-
-    // Sideburns — visible hair alongside ears
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.195 * skw, 1.76, 0.0,
-            0.025, 0.06, 0.04, 0, hd);
-        mesh::ellipsoid_tris(tris, side * 0.19 * skw, 1.72, -0.01,
-            0.022, 0.04, 0.03, 0, hd);
-    }
-
-    // Back volume — hair draping over nape
-    mesh::ellipsoid_tris(tris, 0.0, 1.78, 0.17 * skd, 0.14 * skw, 0.10, 0.08 * skd, 1, hl);
-    mesh::ellipsoid_tris(tris, 0.0, 1.70, 0.15 * skd, 0.12 * skw, 0.06, 0.06 * skd, 0, hl);
-
-    // Hairline fringe — subtle forehead boundary
-    mesh::ellipsoid_tris(tris, 0.0, 1.84 + fh_off, -0.20 * skd, 0.12 * skw, 0.010, 0.015, 0, hd);
-}
-
-/// Short cropped hair — tight to skull, visible scalp through thin coverage.
-/// Military/worker cut. Sideburns only, no back volume.
-fn gen_hair_short(tris: &mut Vec<WorldTri>, hair: u32, skw: f32, skd: f32) {
-    let hd = darken(hair, 0.88);
-    // Thin skull cap — sits very close to head, minimal volume
-    let hair_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-        (1.84, body_ring(0.0, 0.01 * skd, 0.205 * skw, 0.27 * skd, &[], 24), hd),
-        (1.90, body_ring(0.0, 0.03 * skd, 0.210 * skw, 0.28 * skd, &[], 24), hd),
-        (1.96, body_ring(0.0, 0.04 * skd, 0.200 * skw, 0.26 * skd, &[], 24), hair),
-        (2.02, body_ring(0.0, 0.04 * skd, 0.170 * skw, 0.22 * skd, &[], 24), hair),
-        (2.06, body_ring(0.0, 0.03 * skd, 0.120 * skw, 0.15 * skd, &[], 24), hd),
-        (2.09, body_ring(0.0, 0.02 * skd, 0.060 * skw, 0.08 * skd, &[], 24), hd),
-    ];
-    mesh::loft_y_tris(tris, &hair_rings);
-    // Short sideburns
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.19 * skw, 1.74, -0.01,
-            0.018, 0.04, 0.025, 0, hd);
-    }
-}
-
-/// Receding/thinning hair — exposed forehead, hair only on sides and back.
-/// Older/distinguished look. Horseshoe pattern.
-fn gen_hair_receding(tris: &mut Vec<WorldTri>, hair: u32, skw: f32, skd: f32, fh_off: f32) {
-    use std::f32::consts::PI;
-    let hd = darken(hair, 0.90);
-    let hl = darken(hair, 0.85);
-    // Side and back hair only — no top coverage (receded hairline)
-    // Back volume (nape area)
-    mesh::ellipsoid_tris(tris, 0.0, 1.76, 0.16 * skd, 0.13 * skw, 0.08, 0.07 * skd, 1, hl);
-    mesh::ellipsoid_tris(tris, 0.0, 1.68, 0.14 * skd, 0.11 * skw, 0.05, 0.05 * skd, 0, hl);
-    // Side patches (above ears) — thicker sideburns
-    for &side in &[-1.0f32, 1.0] {
-        mesh::ellipsoid_tris(tris, side * 0.195 * skw, 1.78, 0.02,
-            0.030, 0.07, 0.06, 0, hd);
-        mesh::ellipsoid_tris(tris, side * 0.19 * skw, 1.72, -0.01,
-            0.025, 0.05, 0.04, 0, hd);
-        // Temple wisps
-        mesh::ellipsoid_tris(tris, side * 0.18 * skw, 1.84 + fh_off, -0.06,
-            0.020, 0.02, 0.03, 0, hd);
-    }
-    // Thin back strip connecting sides
-    let back_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
-        (1.82, body_ring(0.0, 0.10 * skd, 0.20 * skw, 0.10 * skd, &[
-            (PI, 0.5, 0.015),
-        ], 16), hd),
-        (1.88, body_ring(0.0, 0.10 * skd, 0.18 * skw, 0.08 * skd, &[
-            (PI, 0.5, 0.012),
-        ], 16), hd),
-        (1.94, body_ring(0.0, 0.09 * skd, 0.12 * skw, 0.05 * skd, &[], 16), hd),
-    ];
-    mesh::loft_y_tris(tris, &back_rings);
 }
 
 /// Neck — ring-lofted with SCM muscles and larynx. Continuous head-to-neck topology.
@@ -1307,7 +1134,7 @@ fn gen_neck(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions, n: usi
 }
 
 /// Generate hat/headwear with high detail
-fn gen_hat(tris: &mut Vec<WorldTri>, app: &NpcAppearance, _hair: u32) -> bool {
+fn gen_hat(tris: &mut Vec<WorldTri>, app: &NpcAppearance) -> bool {
     let hat_col = app.hat_col;
     match app.hat_type {
         1 => {
@@ -1419,7 +1246,7 @@ fn gen_hat(tris: &mut Vec<WorldTri>, app: &NpcAppearance, _hair: u32) -> bool {
             mesh::cylinder_tris(tris, 0.0, 1.72, 0.12, 0.03, 0.15, 6, wig_col);
             // Ribbon tie
             push_box(tris, 0.0, 1.72, 0.12, 0.04, 0.015, 0.015, 0xFF222222);
-            // Forehead hairline detail
+            // Forehead wig edge detail
             push_box(tris, 0.0, 1.82, -0.12, 0.1, 0.01, 0.02, darken(wig_col, 0.92));
             true
         }
@@ -1821,24 +1648,7 @@ fn gen_nude_arm(
     let arm_base = tris.len();
     mesh::loft_y_tris(tris, &arm_rings);
 
-    // ── CLOSE TOP OF ARM — taper inward so the deltoid cap isn't an open hole ──
-    {
-        let top = &arm_rings[0]; // first ring is highest Y (deltoid cap)
-        let ty = top.0;
-        let pts = &top.1;
-        let n_pts = pts.len() as f32;
-        let cap_cx = pts.iter().map(|p| p[0]).sum::<f32>() / n_pts;
-        let cap_cz = pts.iter().map(|p| p[1]).sum::<f32>() / n_pts;
-        let mut closing: Vec<(f32, Vec<[f32; 2]>, u32)> = Vec::new();
-        closing.push((ty, pts.clone(), sk));
-        for &(dy, shrink) in &[(0.015, 0.4), (0.025, 0.0)] {
-            let ring: Vec<[f32; 2]> = pts.iter()
-                .map(|p| [cap_cx + (p[0] - cap_cx) * shrink, cap_cz + (p[1] - cap_cz) * shrink])
-                .collect();
-            closing.push((ty + dy, ring, sk));
-        }
-        mesh::loft_y_tris(tris, &closing);
-    }
+    // Arm top is open but hidden inside the torso shoulder zone.
 
     // ── CURVATURE-BASED COLOR VARIATION (arms) ──
     if m > 0.1 {
@@ -2755,7 +2565,6 @@ fn gen_nude_player_body(
     tris: &mut Vec<WorldTri>,
     swing: f32,
     skin: u32,
-    hair: u32,
     attack_phase: f32,
     carrying_item: bool,
     carrying_bin: bool,
@@ -2770,12 +2579,12 @@ fn gen_nude_player_body(
     } else {
         let face = if is_female { FaceSliders::female_default() } else { FaceSliders::male_default() };
         NpcAppearance {
-            skin, hair,
+            skin,
             hat_type: 0, hat_col: 0, coat_col: 0, vest_col: 0,
             has_coat: false, has_cape: false, has_sash: false,
             has_cross_strap: false, has_bracers: false,
             boot_type: 0, boot_col: 0, sash_col: 0, belt_col: 0,
-            face_age: 0, hair_style: 0, is_female, face,
+            face_age: 0, is_female, face,
         }
     };
 
@@ -3015,7 +2824,6 @@ pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
         tris,
         player.walk_phase.sin() * 0.4,
         skin,
-        app.hair,
         player.attack_phase,
         player.carrying_item,
         player.carrying_bin.is_some(),
@@ -3028,12 +2836,163 @@ pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
     place_mesh(tris, base, player.terrain_normal, 25.0, player.rot_y, player.x, player.y, player.z);
 }
 
+/// Generate player mesh from a pre-loaded GLTF model.
+/// Clones the selected model's triangles, tints them to the player's skin color,
+/// then applies terrain rotation and world positioning via place_mesh().
+pub fn gen_player_mesh_gltf(player: &Player, models: &[Vec<WorldTri>], tris: &mut Vec<WorldTri>) {
+    let idx = player.model_index.min(models.len().saturating_sub(1));
+    if models.is_empty() { return; }
+    let model = &models[idx];
+
+    let base = tris.len();
+    tris.extend_from_slice(model);
+
+    // Tint skin color
+    let app = player_appearance(player.is_female);
+    let skin = if player.hit_flash > 0.0 { 0xFFFF4444 } else { app.skin };
+    let default_skin: u32 = 0xFFBBA088;
+    if skin != default_skin {
+        for tri in &mut tris[base..] {
+            if tri.color == default_skin {
+                tri.color = skin;
+            }
+        }
+    }
+
+    place_mesh(tris, base, player.terrain_normal, 25.0, player.rot_y, player.x, player.y, player.z);
+}
+
+/// Generate NPC mesh from a pre-loaded GLTF model.
+/// Selects male or female model based on NPC appearance, tints skin color,
+/// then applies terrain rotation and world positioning via place_mesh().
+pub fn gen_npc_mesh_gltf(npc: &Npc, models: &[Vec<WorldTri>], tris: &mut Vec<WorldTri>) {
+    if models.is_empty() { return; }
+    let app = npc_appearance(npc.brain_idx as u32);
+    // All NPCs use beauty_girl (index 0) for now — single default model
+    let idx = 0;
+    let model = &models[idx];
+
+    let base = tris.len();
+    tris.extend_from_slice(model);
+
+    // Tint skin color
+    let shirt = if npc.hit_flash > 0.0 { 0xFFFF4444 } else { job_shirt_color(npc) };
+    let skin = if npc.hit_flash > 0.0 { 0xFFFF4444 } else { app.skin };
+    let default_skin: u32 = 0xFFBBA088;
+    let _ = shirt; // shirt color not applied to GLTF model (it has no clothing distinction)
+    if skin != default_skin {
+        for tri in &mut tris[base..] {
+            if tri.color == default_skin {
+                tri.color = skin;
+            }
+        }
+    }
+
+    // Handle ragdoll state — apply the same dual-segment orientation as the procedural body
+    if npc.ragdoll_active {
+        let p = &npc.ragdoll_points;
+        let make_basis = |up_raw: [f32; 3], right_hint: [f32; 3]| -> [[f32; 3]; 3] {
+            let ulen = (up_raw[0]*up_raw[0] + up_raw[1]*up_raw[1] + up_raw[2]*up_raw[2]).sqrt().max(0.01);
+            let up = [up_raw[0]/ulen, up_raw[1]/ulen, up_raw[2]/ulen];
+            let dot = right_hint[0]*up[0] + right_hint[1]*up[1] + right_hint[2]*up[2];
+            let rx = right_hint[0] - dot*up[0];
+            let ry = right_hint[1] - dot*up[1];
+            let rz = right_hint[2] - dot*up[2];
+            let rlen = (rx*rx + ry*ry + rz*rz).sqrt().max(0.01);
+            let right = [rx/rlen, ry/rlen, rz/rlen];
+            let fwd = [
+                right[1]*up[2] - right[2]*up[1],
+                right[2]*up[0] - right[0]*up[2],
+                right[0]*up[1] - right[1]*up[0],
+            ];
+            [right, up, fwd]
+        };
+
+        let foot_mid = [
+            (p[5][0]+p[6][0])*0.5, (p[5][1]+p[6][1])*0.5, (p[5][2]+p[6][2])*0.5,
+        ];
+        let lower_up = [p[0][0]-foot_mid[0], p[0][1]-foot_mid[1], p[0][2]-foot_mid[2]];
+        let feet_right = [p[6][0]-p[5][0], p[6][1]-p[5][1], p[6][2]-p[5][2]];
+        let lower = make_basis(lower_up, feet_right);
+
+        let upper_up = [p[2][0]-p[1][0], p[2][1]-p[1][1], p[2][2]-p[1][2]];
+        let hands_right = [p[4][0]-p[3][0], p[4][1]-p[3][1], p[4][2]-p[3][2]];
+        let upper = make_basis(upper_up, hands_right);
+
+        // Flatten [[f32;3];3] basis (rows: right, up, fwd) to column-major [f32;9]
+        let flatten = |b: &[[f32; 3]; 3]| -> [f32; 9] {
+            [b[0][0],b[0][1],b[0][2], b[1][0],b[1][1],b[1][2], b[2][0],b[2][1],b[2][2]]
+        };
+        let lower9 = flatten(&lower);
+        let upper9 = flatten(&upper);
+
+        // GLTF model is 1.8m tall (Y=0 at feet), blend at mid-body
+        let blend_lo = 0.8;
+        let blend_hi = 1.1;
+
+        for tri in &mut tris[base..] {
+            for v in &mut tri.v {
+                let lx = v[0]; let ly = v[1]; let lz = v[2];
+                let t = ((ly - blend_lo) / (blend_hi - blend_lo)).clamp(0.0, 1.0);
+
+                if t < 0.01 {
+                    let rv = rot3x3_apply(&lower9, [lx, ly, lz]);
+                    v[0] = rv[0] + foot_mid[0];
+                    v[1] = rv[1] + foot_mid[1];
+                    v[2] = rv[2] + foot_mid[2];
+                } else if t > 0.99 {
+                    let rel_y = ly - blend_hi;
+                    let rv = rot3x3_apply(&upper9, [lx, rel_y, lz]);
+                    v[0] = rv[0] + p[1][0];
+                    v[1] = rv[1] + p[1][1];
+                    v[2] = rv[2] + p[1][2];
+                } else {
+                    let lo = rot3x3_apply(&lower9, [lx, ly, lz]);
+                    let rel_y = ly - blend_hi;
+                    let hi = rot3x3_apply(&upper9, [lx, rel_y, lz]);
+                    v[0] = lo[0]*(1.0-t) + hi[0]*t + foot_mid[0]*(1.0-t) + p[1][0]*t;
+                    v[1] = lo[1]*(1.0-t) + hi[1]*t + foot_mid[1]*(1.0-t) + p[1][1]*t;
+                    v[2] = lo[2]*(1.0-t) + hi[2]*t + foot_mid[2]*(1.0-t) + p[1][2]*t;
+                }
+            }
+            let nx = tri.normal[0]; let ny = tri.normal[1]; let nz = tri.normal[2];
+            let avg_y = (tri.v[0][1] + tri.v[1][1] + tri.v[2][1]) / 3.0;
+            let t = ((avg_y - blend_lo) / (blend_hi - blend_lo)).clamp(0.0, 1.0);
+            if t < 0.5 {
+                tri.normal = rot3x3_apply(&lower9, [nx, ny, nz]);
+            } else {
+                tri.normal = rot3x3_apply(&upper9, [nx, ny, nz]);
+            }
+        }
+        return;
+    }
+
+    // KO pose — rotate face-down
+    if npc.state == NpcState::KnockedOut {
+        let rot = terrain_rot3x3(clamp_normal_tilt(npc.terrain_normal, 25.0), npc.rot_y);
+        for tri in &mut tris[base..] {
+            for v in &mut tri.v {
+                let local = [v[0], v[2], -v[1]]; // -90° around X
+                let rv = rot3x3_apply(&rot, local);
+                v[0] = rv[0] + npc.x;
+                v[1] = rv[1] + npc.y + 0.15;
+                v[2] = rv[2] + npc.z;
+            }
+            let local_n = [tri.normal[0], tri.normal[2], -tri.normal[1]];
+            tri.normal = rot3x3_apply(&rot, local_n);
+        }
+        return;
+    }
+
+    place_mesh(tris, base, npc.terrain_normal, 25.0, npc.rot_y, npc.x, npc.y, npc.z);
+}
+
 /// Generate a clothed player body (for model_viewer debug renders).
 /// Uses the detailed nude body with ACU-style clothing layered on top.
 pub fn gen_clothed_player_body(tris: &mut Vec<WorldTri>, is_female: bool) {
     let app = player_appearance(is_female);
     gen_nude_player_body(
-        tris, 0.0, app.skin, app.hair,
+        tris, 0.0, app.skin,
         0.0, false, false, false, is_female,
         Some((&app, PLAYER_SHIRT, PLAYER_PANTS)),
         None,
@@ -3044,7 +3003,7 @@ pub fn gen_clothed_player_body(tris: &mut Vec<WorldTri>, is_female: bool) {
 pub fn gen_nude_player_body_export(tris: &mut Vec<WorldTri>, is_female: bool) {
     let app = player_appearance(is_female);
     gen_nude_player_body(
-        tris, 0.0, app.skin, app.hair,
+        tris, 0.0, app.skin,
         0.0, false, false, false, is_female,
         None, // no clothing
         None,
@@ -3053,15 +3012,15 @@ pub fn gen_nude_player_body_export(tris: &mut Vec<WorldTri>, is_female: bool) {
 
 /// Generate a standalone head + neck with face sliders, scaled and positioned.
 /// Used by model_viewer for rendering face variations.
-pub fn gen_head_standalone(tris: &mut Vec<WorldTri>, face: &FaceSliders, skin: u32, hair: u32, is_female: bool) {
+pub fn gen_head_standalone(tris: &mut Vec<WorldTri>, face: &FaceSliders, skin: u32, is_female: bool) {
     let props = if is_female { female_proportions() } else { male_proportions() };
     let app = NpcAppearance {
-        skin, hair,
+        skin,
         hat_type: 0, hat_col: 0, coat_col: 0, vest_col: 0,
         has_coat: false, has_cape: false, has_sash: false,
         has_cross_strap: false, has_bracers: false,
         boot_type: 0, boot_col: 0, sash_col: 0, belt_col: 0,
-        face_age: 0, hair_style: 0, is_female, face: face.clone(),
+        face_age: 0, is_female, face: face.clone(),
     };
     let head_base = tris.len();
     gen_head(tris, &app, None);
@@ -3719,7 +3678,7 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         let job_hat = job_hat_color(npc.job);
 
         gen_nude_player_body(
-            tris, 0.0, app.skin, app.hair, 0.0, false, false, false,
+            tris, 0.0, app.skin, 0.0, false, false, false,
             app.is_female,
             Some((&app, shirt, npc.pants_color)),
             job_hat,
@@ -3784,7 +3743,7 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         let job_hat = job_hat_color(npc.job);
 
         gen_nude_player_body(
-            tris, 0.0, app.skin, app.hair, 0.0, false, false, false,
+            tris, 0.0, app.skin, 0.0, false, false, false,
             app.is_female,
             Some((&app, shirt, npc.pants_color)),
             job_hat,
@@ -3815,7 +3774,6 @@ pub fn gen_npc_mesh(npc: &Npc, tris: &mut Vec<WorldTri>) {
         tris,
         npc.walk_phase.sin() * 0.4,
         app.skin,
-        app.hair,
         npc.attack_phase,
         npc.carrying_item,
         npc.carrying_bin.is_some(),
@@ -4034,11 +3992,6 @@ pub fn gen_npc_mesh_mid(npc: &Npc, tris: &mut Vec<WorldTri>) {
     ];
     mesh::loft_y_tris(tris, &head_rings);
 
-    // Hair cap (simple, if no hat)
-    if app.hat_type == 0 {
-        mesh::ellipsoid_tris(tris, 0.0, 1.96, 0.02, 0.16, 0.10, 0.18, 1, app.hair);
-    }
-
     // Neck
     let neck_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = vec![
         (1.42, body_ring(0.0, 0.0, 0.12, 0.11, &[], n), sk),
@@ -4152,6 +4105,7 @@ pub fn generate_dynamic_gpu_vertices(
     world: &WorldData, player: &Player, cam: &Camera,
     scratch: &mut Vec<WorldTri>, out: &mut Vec<GpuVertex>,
     hour: f32,
+    character_models: &[Vec<WorldTri>],
 ) {
     let eye = v3(cam.x, cam.y, cam.z);
     let fog_dist_sq = FOG_DIST_SQ;
@@ -4195,7 +4149,11 @@ pub fn generate_dynamic_gpu_vertices(
             None => continue,
         };
         if dist_sq < LOD_NPC_FULL_SQ {
-            gen_npc_mesh(npc, scratch);
+            if !character_models.is_empty() {
+                gen_npc_mesh_gltf(npc, character_models, scratch);
+            } else {
+                gen_npc_mesh(npc, scratch);
+            }
         } else if dist_sq < npc_mid_sq {
             gen_npc_mesh_mid(npc, scratch);
         } else if dist_sq < npc_low_sq {
@@ -4213,7 +4171,11 @@ pub fn generate_dynamic_gpu_vertices(
         gen_trash_bin_mesh(bin, scratch);
     }
     if player.in_vehicle.is_none() {
-        gen_player_mesh(player, scratch);
+        if !character_models.is_empty() {
+            gen_player_mesh_gltf(player, character_models, scratch);
+        } else {
+            gen_player_mesh(player, scratch);
+        }
     }
     // Night-time street light glow halos (dynamic — only rendered at night)
     if is_night {
