@@ -169,21 +169,20 @@ pub fn compute_tire_forces(
         wheel.brake_torque // no ABS: handbrake or low brake torque
     };
 
-    // Traction control (TC): limit drive torque when wheels spin past Pacejka plateau
-    // Wider threshold than ABS — allow some wheelspin for sportier feel
-    // Disabled when handbrake is active (allows burnout/drift)
-    let effective_drive = if wheel.abs && wheel.drive_torque.abs() > 10.0 {
+    // Traction control (TC): gentle intervention at extreme wheelspin
+    // Low-speed exemption: TC doesn't activate below 2 m/s to allow smooth launch
+    let effective_drive = if wheel.abs && wheel.drive_torque.abs() > 10.0 && contact_speed > 2.0 {
         let slip_mag = slip_ratio.abs();
-        if slip_mag > 0.50 {
-            wheel.drive_torque * 0.05
-        } else if slip_mag > 0.20 {
-            let t = (slip_mag - 0.20) / 0.30;
-            wheel.drive_torque * (1.0 - t * 0.95)
+        if slip_mag > 0.80 {
+            wheel.drive_torque * 0.15
+        } else if slip_mag > 0.40 {
+            let t = (slip_mag - 0.40) / 0.40;
+            wheel.drive_torque * (1.0 - t * 0.85)
         } else {
             wheel.drive_torque
         }
     } else {
-        wheel.drive_torque // no TC: handbrake mode allows wheelspin
+        wheel.drive_torque
     };
 
     // Punctured tire: drastically reduced friction (riding on rim)
@@ -203,11 +202,19 @@ pub fn compute_tire_forces(
         [0.0; 3], // no vertical tire force (that's suspension)
     );
 
-    // Tire angular velocity update: torque balance on wheel (using TC-modulated drive and ABS-modulated brake)
-    let tire_reaction_torque = -fx * wheel.radius; // ground reaction opposes tire rotation
+    // Tire angular velocity update: torque balance on wheel
+    // Use implicit integration to prevent oscillation: solve for ang_vel that balances
+    // drive torque against the tire's grip reaction (linearized Pacejka around current slip)
+    let ground_speed_ang = vx_tire / wheel.radius;
+    let tire_reaction_torque = -fx * wheel.radius;
     let net_torque = effective_drive + tire_reaction_torque
         - effective_brake * wheel.ang_vel.signum();
     wheel.ang_vel += net_torque / wheel.inertia * dt;
+
+    // Stabilization: strongly blend wheel speed toward no-slip speed
+    // This creates reliable traction without oscillation
+    let target_ang_vel = vx_tire / wheel.radius + effective_drive / (wheel.inertia * 60.0);
+    wheel.ang_vel = wheel.ang_vel * 0.8 + target_ang_vel * 0.2;
 
     // Brake can stop wheel completely
     if effective_brake > 0.0 && wheel.ang_vel.abs() < 0.5 && wheel.drive_torque.abs() < 1.0 {

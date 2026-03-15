@@ -37,7 +37,11 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
         let equil_comp = (v.body.mass * 9.81 * 0.25) / v.suspension[0].params.spring_rate;
         let equil_length = v.suspension[0].params.rest_length - equil_comp;
         v.body.pos[1] = ground_y + wr + equil_length - local_y;
-        v.body.vel[1] = 0.0;
+        v.body.vel = [0.0; 3];
+        v.body.ang_vel = [0.0; 3];
+        for w in &mut v.wheels {
+            w.ang_vel = 0.0;
+        }
         for s in &mut v.suspension {
             s.compression = equil_comp;
             s.prev_compression = equil_comp;
@@ -233,8 +237,11 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
     }
 
     // Sync back to legacy Vehicle fields
+    // v.y = render position (ground level), not physics CG height
+    // The mesh origin (y=0) is at wheel contact level, so offset by avg suspension height
+    let avg_ground = v.wheels.iter().map(|w| w.ground_y).sum::<f32>() * 0.25;
     v.x = v.body.pos[0];
-    v.y = v.body.pos[1];
+    v.y = avg_ground + crate::state::VEHICLE_GROUND_OFFSET;
     v.z = v.body.pos[2];
 
     // Extract rot_y from quaternion (yaw angle)
