@@ -152,18 +152,20 @@ pub fn place_assets(
                         let normal = terrain.normal_at(x, z);
                         if normal[1] < rule.slope_max { continue; }
 
-                        // Water avoidance
-                        if rule.avoid_water
-                            && world::on_river(x, z, river_segments)
-                        {
-                            continue;
+                        // Water avoidance — check with margin for building footprint
+                        if rule.avoid_water {
+                            let river_margin = rule.size_max * 0.5 + 3.0; // half max building + buffer
+                            if world::near_river(x, z, river_segments, river_margin) {
+                                continue;
+                            }
                         }
 
-                        // Building avoidance
-                        if rule.avoid_buildings
-                            && world::overlaps_building(x, z, 2.0, buildings)
-                        {
-                            continue;
+                        // Building avoidance — margin scales with asset size
+                        if rule.avoid_buildings {
+                            let bldg_margin = rule.size_max * 2.0 + 1.0;
+                            if world::overlaps_building(x, z, bldg_margin, buildings) {
+                                continue;
+                            }
                         }
 
                         // Road relation

@@ -96,10 +96,13 @@ impl ZoneMap {
             let elev_ref = WORLD_SIZE * 0.02; // scale with world
             let elev_score = 1.0 - (cell.elevation.abs() / elev_ref).min(1.0);
             // Slight preference for water proximity (trade, fishing, transport)
-            let water_near = RIVER_WIDTH * 0.5;
-            let water_far = WORLD_SIZE * 0.12;
-            let water_score = if cell.water_dist < water_near { 0.0 }
-                else if cell.water_dist < water_far { 0.5 * (1.0 - cell.water_dist / water_far) }
+            // but NOT too close — settlements need space for buildings between them and the river
+            let water_too_close = RIVER_WIDTH * 2.0 + 30.0; // safe building buffer
+            let water_ideal = water_too_close + WORLD_SIZE * 0.05; // sweet spot
+            let water_far = WORLD_SIZE * 0.15;
+            let water_score = if cell.water_dist < water_too_close { -0.5 } // penalize TOO close
+                else if cell.water_dist < water_ideal { 0.5 } // ideal distance
+                else if cell.water_dist < water_far { 0.3 * (1.0 - (cell.water_dist - water_ideal) / (water_far - water_ideal)) }
                 else { 0.0 };
             // Penalize world edges
             let edge_dist = (wx.abs() / WORLD_HALF).max(wz.abs() / WORLD_HALF);
@@ -111,10 +114,10 @@ impl ZoneMap {
 
         // Step 3: Pick settlement seeds — emergent from terrain (no artificial cap)
         let mut settlement_centers = Vec::new();
-        let min_separation = WORLD_SIZE * 0.24; // ~24% of world size
+        let min_separation = WORLD_SIZE * 0.35; // 35% of world — max ~5-7 settlements
 
         for &(score, idx) in &scores {
-            if score < 1.5 { break; }
+            if score < 2.0 { break; }
 
             let gx = idx % grid_size;
             let gz = idx / grid_size;

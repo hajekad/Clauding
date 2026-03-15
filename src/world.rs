@@ -338,12 +338,14 @@ fn generate_road_network(rng: &mut Rng, settlement_center: [f32; 2]) -> RoadNetw
         segments.push(RoadSegment {
             x0: nodes[best_j][0], z0: nodes[best_j][1],
             x1: nodes[ei][0], z1: nodes[ei][1],
-            tier: RoadTier::CarRoad,
+            tier: RoadTier::FieldRoad, // edge connections are dirt/field roads
         });
     }
 
     // --- FieldRoad connections ---
     let field_count = 5 + rng.next() as usize % 4;
+    let max_field_len = WORLD_SIZE * 0.12;
+    let min_field_len = WORLD_SIZE * 0.02;
     for _ in 0..field_count {
         // Pick two random non-adjacent nodes
         let a = rng.next() as usize % nodes.len();
@@ -352,7 +354,7 @@ fn generate_road_network(rng: &mut Rng, settlement_center: [f32; 2]) -> RoadNetw
         let dx = nodes[a][0] - nodes[b][0];
         let dz = nodes[a][1] - nodes[b][1];
         let dist = (dx * dx + dz * dz).sqrt();
-        if dist > 60.0 || dist < 10.0 { continue; } // reasonable length
+        if dist > max_field_len || dist < min_field_len { continue; }
         let already = segments.iter().any(|s|
             (s.x0 == nodes[a][0] && s.z0 == nodes[a][1] && s.x1 == nodes[b][0] && s.z1 == nodes[b][1])
             || (s.x1 == nodes[a][0] && s.z1 == nodes[a][1] && s.x0 == nodes[b][0] && s.z0 == nodes[b][1])
@@ -439,8 +441,8 @@ fn generate_parking_spots(net: &RoadNetwork, buildings: &[Building], terrain: &T
                 // Skip if overlapping buildings
                 if overlaps_building(sx, sz, 1.0, buildings) { continue; }
 
-                // Skip if on river
-                if on_river(sx, sz, river_segments) { continue; }
+                // Skip if near river (parking + vehicle width margin)
+                if near_river(sx, sz, river_segments, 4.0) { continue; }
 
                 let _ = terrain; // spot is on road surface, no height check needed
                 spots.push(ParkingSpot {
@@ -739,7 +741,7 @@ fn flatten_terrain_for_roads(
                 RoadTier::CarRoad => CAR_ROAD_WIDTH * 0.5 + SIDEWALK_WIDTH,
                 RoadTier::FieldRoad => FIELD_ROAD_WIDTH * 0.5 + 1.0,
             };
-            let fade = WORLD_SIZE * 0.008; // road flatten fade zone
+            let fade = WORLD_SIZE * 0.02; // road flatten fade zone (wider = smoother transition)
             let road_flatten = if rd < corridor {
                 0.0
             } else if rd < corridor + fade {
@@ -778,6 +780,43 @@ fn flatten_terrain_for_roads(
             };
 
             terrain.heights[iz * stride + ix] = h * road_flatten * settle_flatten * zone_flatten;
+        }
+    }
+}
+
+/// Flatten terrain under each building's footprint so buildings sit flush with ground.
+/// Uses smooth falloff so the flattened area blends naturally into surrounding terrain.
+fn flatten_terrain_under_buildings(terrain: &mut Terrain, buildings: &[Building]) {
+    let grid = terrain.grid;
+    let stride = grid + 1;
+    let cell = terrain.cell_size;
+    for b in buildings {
+        let margin = 2.0; // extra flat zone around building edge
+        let fade = 4.0;   // blend zone beyond margin
+        let hw = b.w * 0.5 + margin;
+        let hd = b.d * 0.5 + margin;
+        let ix0 = ((b.x - hw - fade + WORLD_HALF) / cell).max(0.0) as usize;
+        let ix1 = ((b.x + hw + fade + WORLD_HALF) / cell).min(grid as f32) as usize + 1;
+        let iz0 = ((b.z - hd - fade + WORLD_HALF) / cell).max(0.0) as usize;
+        let iz1 = ((b.z + hd + fade + WORLD_HALF) / cell).min(grid as f32) as usize + 1;
+        for iz in iz0..iz1.min(stride) {
+            for ix in ix0..ix1.min(stride) {
+                let wx = -WORLD_HALF + ix as f32 * cell;
+                let wz = -WORLD_HALF + iz as f32 * cell;
+                let dx = (wx - b.x).abs() - hw;
+                let dz = (wz - b.z).abs() - hd;
+                let outside = dx.max(dz); // negative = inside, positive = in fade zone
+                let t = if outside <= 0.0 {
+                    0.0 // fully inside — flatten to ground_y
+                } else if outside < fade {
+                    let f = outside / fade;
+                    f * f // quadratic ease into surrounding terrain
+                } else {
+                    continue; // outside fade zone
+                };
+                let idx = iz * stride + ix;
+                terrain.heights[idx] = b.ground_y * (1.0 - t) + terrain.heights[idx] * t;
+            }
         }
     }
 }
@@ -1069,6 +1108,7 @@ fn generate_road_strip(
 fn generate_dockyard_at(
     tris: &mut Vec<WorldTri>, terrain: &Terrain, rng: &mut Rng,
     buildings: &mut Vec<Building>, interactibles: &mut Vec<Interactible>,
+    river_segments: &[RiverSegment],
     center: [f32; 2], density_scale: f32,
 ) {
     let cx = center[0];
@@ -1086,13 +1126,14 @@ fn generate_dockyard_at(
             WATER_COLOR);
     }
 
-    // 6 Warehouses
+    // 6 Warehouses — skip any that overlap the river
     for i in 0..(6.0 * density_scale) as usize {
         let wx = cx - 50.0 + i as f32 * 18.0 + rng.range(-2.0, 2.0);
         let wz = cz + rng.range(0.0, 8.0);
         let ww = rng.range(8.0, 14.0);
         let wd = rng.range(6.0, 10.0);
         let wh = rng.range(4.0, 7.0);
+        if near_river(wx, wz, river_segments, ww.max(wd) * 0.5 + 2.0) { continue; }
         let (min_h, _) = building_ground_height(terrain, wx, wz, ww, wd);
         let gy = min_h;
         let color = WAREHOUSE_COLORS[i % WAREHOUSE_COLORS.len()];
@@ -1425,6 +1466,17 @@ pub fn on_river(x: f32, z: f32, river_segments: &[RiverSegment]) -> bool {
     false
 }
 
+/// Check if a point is within `margin` meters of the river edge
+pub fn near_river(x: f32, z: f32, river_segments: &[RiverSegment], margin: f32) -> bool {
+    for seg in river_segments {
+        let d = point_to_segment_dist(x, z, seg.x1, seg.z1, seg.x2, seg.z2);
+        if d < seg.width * 0.5 + margin {
+            return true;
+        }
+    }
+    false
+}
+
 /// River check that respects bridge exemptions
 pub fn on_river_not_bridge(x: f32, z: f32, river_segments: &[RiverSegment], bridges: &[Bridge]) -> bool {
     on_river(x, z, river_segments) && !on_bridge(x, z, bridges)
@@ -1685,7 +1737,7 @@ fn generate_bridges(
     walls: &mut Vec<Wall>, bridges: &mut Vec<Bridge>,
 ) {
     for seg in &net.segments {
-        if seg.tier != RoadTier::CarRoad { continue; }
+        // Generate bridges for all road types crossing the river
 
         // Find the crossing point of this road with the river
         let Some((perp_x, perp_z, dir_x, dir_z, len)) = segment_perp(seg) else { continue };
@@ -1726,16 +1778,25 @@ fn generate_bridges(
         let road_h = bank_h0.max(bank_h1);
         let deck_y = road_h + 0.1; // bridge slightly above road surface
 
-        let bridge_hw = CAR_ROAD_WIDTH * 0.5 + 0.5;
+        let road_w = match seg.tier {
+            RoadTier::CarRoad => CAR_ROAD_WIDTH,
+            RoadTier::FieldRoad => FIELD_ROAD_WIDTH,
+        };
+        let bridge_hw = road_w * 0.5 + 0.5;
         // Bridge spans river width + 10m (5m clearance each side)
         let bridge_len = RIVER_WIDTH + 10.0;
 
-        // Restore heightmap under bridge FIRST (before terrain mesh is generated)
+        // Restore heightmap under bridge (local bounds only)
         let grid = terrain.grid;
         let stride = grid + 1;
         let cell = terrain.cell_size;
-        for iz in 0..stride {
-            for ix in 0..stride {
+        let extent = bridge_len * 0.5 + bridge_hw;
+        let ix0 = ((cx - extent + WORLD_HALF) / cell).max(0.0) as usize;
+        let ix1 = ((cx + extent + WORLD_HALF) / cell).min(grid as f32) as usize + 1;
+        let iz0 = ((cz - extent + WORLD_HALF) / cell).max(0.0) as usize;
+        let iz1 = ((cz + extent + WORLD_HALF) / cell).min(grid as f32) as usize + 1;
+        for iz in iz0..iz1.min(stride) {
+            for ix in ix0..ix1.min(stride) {
                 let wx = -WORLD_HALF + ix as f32 * cell;
                 let wz = -WORLD_HALF + iz as f32 * cell;
                 let to_x = wx - cx;
@@ -1843,12 +1904,8 @@ fn generate_parking_lots(
                 || on_any_road(cx + 7.0, cz + 14.0, net);
             if on_road { continue; }
 
-            // Check river (center + all 4 corners of lot area)
-            if on_river(cx, cz, river_segments)
-                || on_river(cx - 7.0, cz - 14.0, river_segments)
-                || on_river(cx + 7.0, cz - 14.0, river_segments)
-                || on_river(cx - 7.0, cz + 14.0, river_segments)
-                || on_river(cx + 7.0, cz + 14.0, river_segments) { continue; }
+            // Check river with margin for lot footprint
+            if near_river(cx, cz, river_segments, 16.0) { continue; }
 
             // Check building overlap
             let overlaps = buildings.iter().any(|b| {
@@ -2423,7 +2480,7 @@ fn generate_suburbs(
                 let hx = sx + perp_x * house_offset * side;
                 let hz = sz + perp_z * house_offset * side;
 
-                if on_river(hx, hz, river_segments) { continue; }
+                if near_river(hx, hz, river_segments, 8.0) { continue; }
 
                 // Check building overlap
                 if overlaps_building(hx, hz, 6.0, buildings) { continue; }
@@ -2867,10 +2924,12 @@ pub fn generate_world(game: &mut GameState) {
     if let Some(dock_center) = zone_map.find_zone_center(zone::ZoneKind::Industrial) {
         generate_dockyard_at(&mut tris, &game.terrain, &mut rng,
             &mut game.world.buildings, &mut game.world.interactibles,
+            &game.world.river_segments,
             dock_center, d);
     } else if let Some(water_center) = zone_map.find_zone_center(zone::ZoneKind::Waterfront) {
         generate_dockyard_at(&mut tris, &game.terrain, &mut rng,
             &mut game.world.buildings, &mut game.world.interactibles,
+            &game.world.river_segments,
             water_center, d);
     }
 
@@ -3138,15 +3197,16 @@ pub fn generate_world(game: &mut GameState) {
                 z = game.road_network.nodes[ni][1] + angle.sin() * 25.0;
                 break;
             }
-            // Gaussian-ish distribution centered on settlement (σ ≈ 80m)
+            // Disk distribution centered on settlement, radius scales with world
             let angle = rng.range(0.0, std::f32::consts::TAU);
-            let r = (rng.range(0.0_f32, 1.0).sqrt()) * 120.0; // sqrt for uniform disk, radius 120m
+            let item_radius = WORLD_SIZE * 0.24; // 24% of world size
+            let r = (rng.range(0.0_f32, 1.0).sqrt()) * item_radius;
             x = (settlement_center[0] + angle.cos() * r).clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
             z = (settlement_center[1] + angle.sin() * r).clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
             attempts += 1;
             if on_any_road(x, z, &game.road_network) { continue; }
             if check_walk_collision(&game.world, x, z, 0.5, Some(usize::MAX)) { continue; }
-            if on_river_not_bridge(x, z, &game.world.river_segments, &game.world.bridges) { continue; }
+            if near_river(x, z, &game.world.river_segments, 2.0) { continue; }
             break;
         }
         let y = game.terrain.height_at(x, z);
@@ -3194,6 +3254,9 @@ pub fn generate_world(game: &mut GameState) {
         game.player.y = game.terrain.height_at(sx, sz);
         game.player.body.pos = [game.player.x, game.player.y, game.player.z];
     }
+
+    // Flatten terrain under each building footprint to prevent floating/sunken buildings
+    flatten_terrain_under_buildings(&mut game.terrain, &game.world.buildings);
 
     // Ambient occlusion
     apply_building_base_ao(&mut tris, &game.world.buildings);
