@@ -87,6 +87,8 @@ pub fn sys_menu_input(
     keys: &[bool; 256],
     prev_keys: &[bool; 256],
     world_seed: u64,
+    player_model_index: &mut usize,
+    character_count: usize,
 ) -> bool {
     match menu.state {
         MenuState::Title => {
@@ -123,7 +125,7 @@ pub fn sys_menu_input(
             }
         }
         MenuState::Paused => {
-            // RESUME(0), NEW WORLD(1), SETTINGS(2), QUIT(3)
+            // RESUME(0), NEW WORLD(1), CHARACTER(2), SETTINGS(3), QUIT(4)
             if edge(keys, prev_keys, KEY_ESC) {
                 menu.state = MenuState::None;
                 return false;
@@ -131,8 +133,17 @@ pub fn sys_menu_input(
             if edge(keys, prev_keys, KEY_UP) && menu.cursor > 0 {
                 menu.cursor -= 1;
             }
-            if edge(keys, prev_keys, KEY_DOWN) && menu.cursor < 3 {
+            if edge(keys, prev_keys, KEY_DOWN) && menu.cursor < 4 {
                 menu.cursor += 1;
+            }
+            if menu.cursor == 2 && character_count > 0 {
+                // Left/Right to cycle character model
+                if edge(keys, prev_keys, KEY_LEFT) {
+                    *player_model_index = if *player_model_index == 0 { character_count - 1 } else { *player_model_index - 1 };
+                }
+                if edge(keys, prev_keys, KEY_RIGHT) {
+                    *player_model_index = (*player_model_index + 1) % character_count;
+                }
             }
             if edge(keys, prev_keys, KEY_ENTER) {
                 match menu.cursor {
@@ -143,11 +154,17 @@ pub fn sys_menu_input(
                         menu.seed_len = u64_to_digits(world_seed, &mut menu.seed_digits);
                     }
                     2 => {
+                        // Cycle character model on Enter too
+                        if character_count > 0 {
+                            *player_model_index = (*player_model_index + 1) % character_count;
+                        }
+                    }
+                    3 => {
                         menu.state = MenuState::Settings;
                         menu.cursor = 0;
                         menu.came_from_title = false;
                     }
-                    3 => return true,
+                    4 => return true,
                     _ => {}
                 }
             }
@@ -208,7 +225,7 @@ pub fn sys_menu_input(
                     menu.cursor = 1;
                 } else {
                     menu.state = MenuState::Paused;
-                    menu.cursor = 2;
+                    menu.cursor = 3; // SETTINGS is now index 3 in Paused menu
                 }
                 return false;
             }
@@ -238,7 +255,7 @@ pub fn sys_menu_input(
                             menu.cursor = 1;
                         } else {
                             menu.state = MenuState::Paused;
-                            menu.cursor = 2;
+                            menu.cursor = 3; // SETTINGS is now index 3 in Paused menu
                         }
                     }
                     _ => {}
@@ -291,6 +308,7 @@ pub fn sys_menu_input(
 pub fn sys_menu_render(
     fb: &mut Framebuffer, menu: &MenuData, keybinds: &KeyBinds,
     sensitivity: f32, invert_x: bool, invert_y: bool,
+    player_model_index: usize, character_names: &[String],
 ) {
     if menu.state == MenuState::None { return; }
 
@@ -393,9 +411,9 @@ pub fn sys_menu_render(
             let scale = 3;
             let line_h = scale * 5 + scale * 4;
 
-            let items = ["RESUME", "NEW WORLD", "SETTINGS", "QUIT"];
-            let panel_w = 300;
-            let panel_h = line_h * (items.len() + 2) + scale * 4;
+            let num_items = 5; // RESUME, NEW WORLD, CHARACTER, SETTINGS, QUIT
+            let panel_w = 380;
+            let panel_h = line_h * (num_items + 2) + scale * 4;
             let bx = cx - panel_w / 2;
             let by = cy - panel_h / 2;
             draw_panel(fb, bx, by, panel_w, panel_h);
@@ -412,16 +430,27 @@ pub fn sys_menu_render(
 
             // Items
             let items_y = sep_y + scale * 3;
-            for (i, item) in items.iter().enumerate() {
+            let item_labels = ["RESUME", "NEW WORLD", "CHARACTER", "SETTINGS", "QUIT"];
+            for (i, item) in item_labels.iter().enumerate() {
                 let y = items_y + i * line_h;
                 let selected = i == menu.cursor;
                 let color = if selected { TEXT_SEL } else { TEXT_DIM };
-                let iw = text_pw(item, scale);
-                draw_text(fb, cx - iw / 2, y, item, scale, color);
-                if selected {
-                    // Small gold dash left of item
-                    let dash_x = cx - iw / 2 - scale * 4;
-                    draw_hline(fb, dash_x, y + scale * 2, scale * 2, GOLD);
+
+                if i == 2 && !character_names.is_empty() {
+                    // CHARACTER row: show model name with left/right arrows
+                    let model_name = &character_names[player_model_index % character_names.len()];
+                    let buf = format_character_line(selected, model_name);
+                    draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, color);
+                    if selected {
+                        draw_hline(fb, bx + scale * 2, y - scale, scale * 2, GOLD);
+                    }
+                } else {
+                    let iw = text_pw(item, scale);
+                    draw_text(fb, cx - iw / 2, y, item, scale, color);
+                    if selected {
+                        let dash_x = cx - iw / 2 - scale * 4;
+                        draw_hline(fb, dash_x, y + scale * 2, scale * 2, GOLD);
+                    }
                 }
             }
         }
@@ -842,6 +871,27 @@ fn format_seed_line(selected: bool, digits: &[u8; 20], len: usize) -> [u8; 64] {
     if selected && i < 64 {
         buf[i] = b'_';
     }
+    buf
+}
+
+fn format_character_line(selected: bool, model_name: &str) -> [u8; 64] {
+    let prefix = if selected { "> " } else { "  " };
+    let mut buf = [b' '; 64];
+    let mut i = 0;
+    for &c in prefix.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
+    for &c in b"CHARACTER" { if i < 64 { buf[i] = c; i += 1; } }
+    while i < 18 { if i < 64 { buf[i] = b' '; } i += 1; }
+    if i < 64 { buf[i] = b'<'; i += 1; }
+    if i < 64 { buf[i] = b' '; i += 1; }
+    // Convert name to uppercase for display
+    for &c in model_name.as_bytes() {
+        if i < 58 {
+            buf[i] = if c >= b'a' && c <= b'z' { c - 32 } else if c == b'_' { b' ' } else { c };
+            i += 1;
+        }
+    }
+    if i < 64 { buf[i] = b' '; i += 1; }
+    if i < 64 { buf[i] = b'>'; }
     buf
 }
 
