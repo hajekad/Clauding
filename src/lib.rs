@@ -40,3 +40,4 @@ pub mod noise;
 pub mod zone;
 pub mod placement;
 pub mod anatomy;
+pub mod gltf_loader;

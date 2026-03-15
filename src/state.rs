@@ -722,6 +722,8 @@ pub struct Player {
     // Standing on vehicle (character-on-vehicle stacking)
     pub standing_on_vehicle: Option<usize>,
     pub standing_on_vehicle_timer: f32, // hysteresis: stay "on vehicle" for 0.1s after losing contact
+    // GLTF model selection: 0=beauty_girl (default), 1=male_muscle
+    pub model_index: usize,
 }
 
 pub struct Camera {
@@ -786,6 +788,8 @@ pub struct GameState {
     pub time_speed: u32, // 1, 10, 100, 1000
     pub walk_grid: WalkGrid,
     pub zone_map: crate::zone::ZoneMap,
+    /// Cached GLTF character models: [0]=beauty_girl (default), [1]=male_muscle
+    pub character_models: Vec<Vec<WorldTri>>,
 }
 
 impl GameState {
@@ -823,6 +827,7 @@ impl GameState {
                 skeleton: crate::skeleton::Skeleton::new_humanoid(),
                 standing_on_vehicle: None,
                 standing_on_vehicle_timer: 0.0,
+                model_index: 0,
             },
             camera: Camera {
                 x: 0.0, y: 8.0, z: 18.0,
@@ -862,6 +867,7 @@ impl GameState {
             time_speed: 1,
             walk_grid: WalkGrid::empty(),
             zone_map: crate::zone::ZoneMap::empty(),
+            character_models: Vec::new(),
         }
     }
 
@@ -870,6 +876,16 @@ impl GameState {
     pub fn init(w: usize, h: usize, seed: u64) -> Self {
         let mut game = Self::new(w, h, seed);
         crate::world::generate_world(&mut game);
+
+        // Load GLTF character models: [0]=beauty_girl (default), [1]=male_muscle
+        let default_skin: u32 = 0xFFBBA088;
+        let girl_model = crate::gltf_loader::load_gltf_model(
+            "models/v1/characters/beauty_girl", "beauty_girl", default_skin,
+        );
+        let male_model = crate::gltf_loader::load_gltf_model(
+            "models/v1/characters/male_muscle", "male_muscle", default_skin,
+        );
+        game.character_models = vec![girl_model.tris, male_model.tris];
 
         // Load trained NEAT population (try neat_trained.bin first)
         if let Some(loaded) = crate::neat::load_population("neat_trained.bin", NUM_NPCS) {

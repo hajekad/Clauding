@@ -650,6 +650,7 @@ fn make_player() -> state::Player {
         skeleton: clauding::skeleton::Skeleton::new_humanoid(),
         standing_on_vehicle: None,
         standing_on_vehicle_timer: 0.0,
+        model_index: 0,
     }
 }
 
@@ -1421,7 +1422,7 @@ fn main() {
         for (pi, (name, sliders, skin)) in presets.iter().enumerate() {
             tris.clear();
             let is_female = name.contains("Female") || name.contains("Delicate") || name.contains("Soft");
-            render::gen_head_standalone(&mut tris, sliders, *skin, 0xFF332211, is_female);
+            render::gen_head_standalone(&mut tris, sliders, *skin, is_female);
 
             let vn = compute_smooth_normals(&tris);
 

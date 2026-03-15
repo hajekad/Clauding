@@ -437,6 +437,7 @@ fn main() {
                 &game.world, &game.player, &game.camera,
                 &mut render_scratch, &mut gpu_dynamic_verts,
                 game.time_of_day,
+                &game.character_models,
             );
 
             let aspect = fb.w as f32 / fb.h as f32;
@@ -460,7 +461,7 @@ fn main() {
             window.present(&fb.pixels);
         } else {
             fb.clear(render::sky_color(game.time_of_day));
-            render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut render_scratch);
+            render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut render_scratch, &game.character_models);
 
             particle::sys_render_particles(&mut fb, &particles, &game.camera);
             if !in_title { hud::sys_hud(&mut fb, &game); }
