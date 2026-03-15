@@ -4705,7 +4705,7 @@ pub fn frame_setup(
 ) -> (Mat4, crate::gpu::GpuPushConstants, [f32; 4]) {
     let aspect = width as f32 / height as f32;
     let view = m4_look_at(eye, target, [0.0, 1.0, 0.0]);
-    let proj = m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.1, WORLD_SIZE * 2.0);
+    let proj = m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.1, 500.0);
     let vp = m4_mul(&proj, &view);
     let push = gpu_push_constants(hour, eye, target, &vp);
     let clear = sky_color_f32(hour);

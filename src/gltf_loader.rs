@@ -40,8 +40,8 @@ impl ModelLibrary {
 
         // Architecture: load at natural scale (assume GLTF is in meters)
         // We normalize so tallest dimension = model height, preserving aspect ratio
-        let max_tris_arch: usize = 10_000;
-        let max_tris_tree: usize = 2_000;
+        let max_tris_arch: usize = 500;
+        let max_tris_tree: usize = 50;
 
         let arch_dirs = discover_gltf_dirs(&format!("{base}/architecture"));
         for dir in &arch_dirs {
@@ -61,8 +61,10 @@ impl ModelLibrary {
             }
         }
 
-        // Characters: load at 1.8m tall humanoid scale, max 50K tris
-        let max_tris_char: usize = 50_000;
+        // Characters: dynamic per-frame rendering — must be low poly
+        // 100 NPCs × tris × 3 verts × 28 bytes = per-frame upload budget
+        // At 2000 tris: 100 × 2000 × 3 × 28 = 16.8MB/frame — manageable
+        let max_tris_char: usize = 2_000;
         let char_dirs = discover_gltf_dirs(&format!("{base}/characters"));
         for dir in &char_dirs {
             let name = dir.rsplit('/').next().unwrap_or("?");
