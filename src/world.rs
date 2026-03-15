@@ -37,7 +37,7 @@ const LAMP_POLE_COLOR: u32 = 0xFF666666;
 const LAMP_BASE_COLOR: u32 = 0xFF555555; // darker base/mounting plate for street lights
 const LAMP_GLOW_COLOR: u32 = 0x00FFEE88; // alpha=0 flags emissive (night glow)
 
-const ROAD_SEG_STEP: f32 = 10.0; // subdivision step for terrain-following road strips
+const ROAD_SEG_STEP: f32 = 4.0; // subdivision step for terrain-following road strips
 
 // Dockyard colors
 const DOCK_GROUND: u32 = 0xFF555544;
@@ -212,36 +212,36 @@ fn generate_road_network(rng: &mut Rng, settlement_center: [f32; 2]) -> RoadNetw
     ];
     nodes.push(center); // index 0
 
-    // Ring 1: 4 nodes at radius ~500m
+    // Ring 1: 4 nodes at radius ~150m
     let ring1_count = 4;
     let ring1_start = nodes.len();
     let base_angle = rng.range(0.0, std::f32::consts::TAU);
     for i in 0..ring1_count {
         let angle = base_angle + (i as f32 / ring1_count as f32) * std::f32::consts::TAU
             + rng.range(-0.3, 0.3);
-        let radius = rng.range(350.0, 600.0);
+        let radius = rng.range(120.0, 180.0);
         nodes.push([angle.cos() * radius, angle.sin() * radius]);
     }
 
-    // Ring 2: 6 nodes at radius ~1000m
+    // Ring 2: 6 nodes at radius ~350m
     let ring2_count = 6;
     let ring2_start = nodes.len();
     let base_angle2 = rng.range(0.0, std::f32::consts::TAU);
     for i in 0..ring2_count {
         let angle = base_angle2 + (i as f32 / ring2_count as f32) * std::f32::consts::TAU
             + rng.range(-0.25, 0.25);
-        let radius = rng.range(800.0, 1200.0);
+        let radius = rng.range(280.0, 400.0);
         nodes.push([angle.cos() * radius, angle.sin() * radius]);
     }
 
-    // Edge nodes: 4 nodes at radius ~1500m
+    // Edge nodes: 4 nodes at radius ~600m
     let edge_count = 4;
     let edge_start = nodes.len();
     let base_angle3 = rng.range(0.0, std::f32::consts::TAU);
     for i in 0..edge_count {
         let angle = base_angle3 + (i as f32 / edge_count as f32) * std::f32::consts::TAU
             + rng.range(-0.3, 0.3);
-        let radius = rng.range(1300.0, 1700.0);
+        let radius = rng.range(500.0, 700.0);
         nodes.push([angle.cos() * radius, angle.sin() * radius]);
     }
 
@@ -562,43 +562,41 @@ fn generate_heightmap_noise(terrain: &mut Terrain, seed: u64, roughness: f32) {
     let cell = terrain.cell_size;
 
     // Base amplitude scales with roughness:
-    // roughness 0.3 = gentle Czech interior (~80m variation)
-    // roughness 1.0 = Bohemian-Moravian highlands (~250m)
-    // roughness 2.0 = Alpine terrain (~500m)
-    let base_amp = 250.0;
+    // roughness 0.3 = gentle rolling hills (~15m variation)
+    // roughness 1.0 = hilly terrain (~50m)
+    // roughness 2.0 = mountainous (~100m)
+    let base_amp = 50.0;
 
     for iz in 0..stride {
         for ix in 0..stride {
             let x = -WORLD_HALF + ix as f32 * cell;
             let z = -WORLD_HALF + iz as f32 * cell;
 
-            // 1. Continental structure: very low frequency defines mountain ranges vs basins
-            // Period ~10-15km — gives 2-3 major features across 30km
-            let tectonic = noise::fbm(x, z, 3, 0.00007, 2.0, 0.5, seed + 3333);
+            // 1. Large-scale terrain structure (period ~1.5km — 2 major features across 3km)
+            let tectonic = noise::fbm(x, z, 3, 0.0007, 2.0, 0.5, seed + 3333);
             let tectonic_h = tectonic * base_amp * roughness;
 
-            // 2. Domain-warped fBm for regional terrain (period ~1-2km)
-            let (wx, wz) = noise::warp_2d(x, z, 500.0, 0.0001, seed + 1111);
-            let regional = noise::fbm(wx, wz, 5, 0.00015, 2.2, 0.45, seed);
-            let regional_h = regional * base_amp * 0.4 * roughness;
+            // 2. Domain-warped fBm for regional terrain (period ~300m)
+            let (wx, wz) = noise::warp_2d(x, z, 80.0, 0.001, seed + 1111);
+            let regional = noise::fbm(wx, wz, 5, 0.0015, 2.2, 0.45, seed);
+            let regional_h = regional * base_amp * 0.5 * roughness;
 
-            // 3. Ridged noise for mountain peaks and sharp ridgelines
-            // More prominent when roughness is high (Alpine seeds)
-            let ridge = noise::ridged(x, z, 4, 0.0001, 2.0, 0.5, seed + 2222);
+            // 3. Ridged noise for ridgelines and sharp features
+            let ridge = noise::ridged(x, z, 4, 0.001, 2.0, 0.5, seed + 2222);
             let ridge_h = ridge * base_amp * 0.3 * roughness * roughness;
 
-            // 4. Fine detail noise (period ~200m) — small hillocks and undulations
-            let detail = noise::fbm(x, z, 3, 0.001, 2.0, 0.5, seed + 4444);
-            let detail_h = detail * 15.0 * roughness;
+            // 4. Fine detail noise (period ~30m) — small hillocks
+            let detail = noise::fbm(x, z, 3, 0.008, 2.0, 0.5, seed + 4444);
+            let detail_h = detail * 5.0 * roughness;
 
-            // Combine: tectonic base + regional shape + ridges + detail
+            // Combine
             let mut h = tectonic_h + regional_h + ridge_h + detail_h;
 
-            // Border uplift: mountains ring the edges (like Bohemian Massif basin)
+            // Border uplift: hills ring the edges
             let edge_x = (x.abs() / WORLD_HALF).max(0.0);
             let edge_z = (z.abs() / WORLD_HALF).max(0.0);
-            let edge = (edge_x.max(edge_z) - 0.5).max(0.0) * 2.0; // 0 at center, 1 at edge
-            let border_uplift = edge * edge * base_amp * 1.5 * roughness;
+            let edge = (edge_x.max(edge_z) - 0.6).max(0.0) * 2.5;
+            let border_uplift = edge * edge * base_amp * roughness;
             h += border_uplift;
 
             // Ensure terrain stays above a minimum (no deep holes)
@@ -620,7 +618,7 @@ fn erode_terrain(terrain: &mut Terrain, seed: u64, roughness: f32) {
     let stride = grid + 1;
     let cell = terrain.cell_size;
 
-    let num_drops = 200_000; // more drops = more defined channels
+    let num_drops = 50_000; // scaled for 500-cell grid
     let max_lifetime = 128;
     let erosion_rate = 0.3 * roughness;
     let deposition_rate = 0.2;
@@ -740,8 +738,8 @@ fn flatten_terrain_for_roads(
             };
             let road_flatten = if rd < corridor {
                 0.0
-            } else if rd < corridor + 20.0 {
-                let t = (rd - corridor) / 20.0;
+            } else if rd < corridor + 8.0 {
+                let t = (rd - corridor) / 8.0;
                 t * t
             } else {
                 1.0
@@ -753,10 +751,10 @@ fn flatten_terrain_for_roads(
                 let dx = x - center[0];
                 let dz = z - center[1];
                 let settle_dist = (dx * dx + dz * dz).sqrt();
-                let f = if settle_dist < 200.0 {
+                let f = if settle_dist < 60.0 {
                     0.15
-                } else if settle_dist < 500.0 {
-                    0.15 + 0.85 * ((settle_dist - 200.0) / 300.0)
+                } else if settle_dist < 150.0 {
+                    0.15 + 0.85 * ((settle_dist - 60.0) / 90.0)
                 } else {
                     1.0
                 };
@@ -959,27 +957,24 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain, zone_map: 
         mesh::push_quad_n(tris, [x,h0,z0], [x,skirt_y,z0], [x,skirt_y,z1], [x,h1,z1], east_n, skirt_color);
     }
 
-    // Extended ground floor plane beyond terrain bounds.
-    // Large flat quad at skirt_y extending to 2x world half in all directions.
-    // This catches any downward-looking rays that miss the terrain mesh entirely.
-    let ext = WORLD_HALF * 2.0; // extend to 500m from center (1km total)
-    let floor_color = darken(GROUND_LOW, 0.7); // slightly darker to hint at distance
-
-    // Floor is split into tiles to avoid precision issues with huge triangles.
-    // 4x4 grid of floor tiles covering -ext..+ext on X and Z.
-    let floor_tiles = 4;
-    let tile_size = (ext * 2.0) / floor_tiles as f32;
-    for tz in 0..floor_tiles {
-        for tx in 0..floor_tiles {
-            let fx0 = -ext + tx as f32 * tile_size;
-            let fz0 = -ext + tz as f32 * tile_size;
-            let fx1 = fx0 + tile_size;
-            let fz1 = fz0 + tile_size;
-            let a = [fx0, skirt_y, fz0]; // bottom-left
-            let b = [fx1, skirt_y, fz0]; // bottom-right
-            let c = [fx1, skirt_y, fz1]; // top-right
-            let d = [fx0, skirt_y, fz1]; // top-left
-            mesh::push_quad_n(tris, a, d, c, b, skirt_n_up, floor_color);
+    // Extended ground floor plane
+    if true {
+        let ext = WORLD_HALF * 2.0;
+        let floor_color = darken(GROUND_LOW, 0.7);
+        let floor_tiles = 4;
+        let tile_size = (ext * 2.0) / floor_tiles as f32;
+        for tz in 0..floor_tiles {
+            for tx in 0..floor_tiles {
+                let fx0 = -ext + tx as f32 * tile_size;
+                let fz0 = -ext + tz as f32 * tile_size;
+                let fx1 = fx0 + tile_size;
+                let fz1 = fz0 + tile_size;
+                let a = [fx0, skirt_y, fz0];
+                let b = [fx1, skirt_y, fz0];
+                let c = [fx1, skirt_y, fz1];
+                let d = [fx0, skirt_y, fz1];
+                mesh::push_quad_n(tris, a, d, c, b, skirt_n_up, floor_color);
+            }
         }
     }
 }
@@ -1390,14 +1385,13 @@ fn generate_interactibles(
 /// River centerline Z at given X
 /// River path: noise-warped curve across the map. Entry/exit positions vary by seed.
 fn river_z(x: f32, seed: u64) -> f32 {
-    // Base offset and exit offset determined by seed — scaled for 30km world
+    // Base offset and exit offset determined by seed
     let entry_z = noise::hash_2d(0, 0, seed.wrapping_add(77777)) * WORLD_HALF * 0.3;
     let exit_z = noise::hash_2d(1, 0, seed.wrapping_add(77777)) * WORLD_HALF * 0.3;
-    // Linear interpolation from entry to exit
     let t = (x + WORLD_HALF) / WORLD_SIZE;
     let base_z = entry_z + (exit_z - entry_z) * t;
-    // Add noise-based meandering — wider meanders for larger world
-    let meander = noise::fbm(x * 0.0002, 0.0, 3, 1.0, 2.0, 0.5, seed + 77700) * WORLD_HALF * 0.15;
+    // Meandering scaled to world size
+    let meander = noise::fbm(x * 0.002, 0.0, 3, 1.0, 2.0, 0.5, seed + 77700) * WORLD_HALF * 0.15;
     base_z + meander
 }
 
@@ -1436,7 +1430,7 @@ fn generate_river(
     terrain: &mut Terrain, tris: &mut Vec<WorldTri>,
     river_segments: &mut Vec<RiverSegment>, seed: u64,
 ) {
-    let step = 100.0; // 100m segments for 30km world
+    let step = 20.0; // 20m segments for 3km world
     let half = WORLD_HALF;
 
     // Build segments
