@@ -154,7 +154,8 @@ pub fn place_assets(
 
                         // Water avoidance — check with margin for building footprint
                         if rule.avoid_water {
-                            let river_margin = rule.size_max * 0.5 + 3.0; // half max building + buffer
+                            // Margin accounts for model footprint — buildings can be 5-10m wide
+                            let river_margin = rule.road_offset_max.max(8.0);
                             if world::near_river(x, z, river_segments, river_margin) {
                                 continue;
                             }

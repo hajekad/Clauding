@@ -2831,20 +2831,27 @@ pub fn generate_world(game: &mut GameState) {
         &game.road_network, &game.world.river_segments,
         &game.world.buildings, &mut rng,
     );
-    let n_arch_models = game.model_library.architecture.len();
-    let n_tree_models = game.model_library.trees.len();
+    let n_arch = game.model_library.architecture.len();
+    let n_trees = game.model_library.trees.len();
     for (bi, spot) in building_spots.iter().enumerate() {
-        if n_arch_models > 0 {
-            // Use GLTF model — pick variant based on building index
-            let model_idx = bi % n_arch_models;
-            let model_tris = &game.model_library.architecture[model_idx];
-            let h = rng.range(5.0, 15.0); // randomize height
-            let rot = rng.range(0.0, std::f32::consts::TAU);
+        if n_arch > 0 {
+            // Pick model randomly (not round-robin — avoids repeating patterns)
+            let model_idx = rng.next() as usize % n_arch;
+            let entry = &game.model_library.architecture[model_idx];
+            // Height varies per building — scale from model's normalized 8m base
+            let h = rng.range(5.0, 14.0);
+            let scale = h / entry.height.max(0.1);
+            // Orient randomly but prefer 90° increments for street alignment
+            let rot_choice = rng.next() % 8;
+            let rot = (rot_choice as f32) * std::f32::consts::FRAC_PI_4
+                + rng.range(-0.15, 0.15); // slight jitter
             let gy = game.terrain.height_at(spot.x, spot.z);
-            emit_gltf_building(&mut tris, &mut game.world.buildings,
-                model_tris, spot.x, gy, spot.z, h, rot);
+            // Use actual model proportions for the Building record
+            let w = entry.width * scale;
+            let d = entry.depth * scale;
+            emit_gltf_building_scaled(&mut tris, &mut game.world.buildings,
+                &entry.tris, spot.x, gy, spot.z, w, d, h, scale, rot);
         } else {
-            // Fallback: procedural building
             emit_building(&mut tris, &mut game.world.buildings, &game.terrain,
                 &mut rng, spot.x, spot.z, bi);
         }
@@ -2857,17 +2864,18 @@ pub fn generate_world(game: &mut GameState) {
         &game.world.buildings, &mut rng,
     );
     for (ti, spot) in tree_spots.iter().enumerate() {
-        if n_tree_models > 0 {
-            // Use GLTF tree model
-            let model_idx = ti % n_tree_models;
-            let model_tris = &game.model_library.trees[model_idx];
-            let scale = rng.range(0.7, 1.4); // size variation
+        if n_trees > 0 {
+            // Pick tree model randomly
+            let model_idx = rng.next() as usize % n_trees;
+            let entry = &game.model_library.trees[model_idx];
+            // Vary size ±30% from normalized 6m
+            let scale = rng.range(0.7, 1.3);
             let rot = rng.range(0.0, std::f32::consts::TAU);
             let gy = game.terrain.height_at(spot.x, spot.z);
-            emit_gltf_tree(&mut tris, &mut game.world.trees, model_tris,
-                spot.x, gy, spot.z, scale, rot, ti);
+            let trunk_r = entry.width.min(entry.depth) * 0.5 * scale * 0.15;
+            emit_gltf_tree_scaled(&mut tris, &mut game.world.trees, &entry.tris,
+                spot.x, gy, spot.z, scale, rot, trunk_r);
         } else {
-            // Fallback: procedural tree
             emit_tree(&mut tris, &mut game.world.trees, &game.terrain,
                 &mut rng, spot.x, spot.z, ti, seed);
         }
@@ -3379,6 +3387,63 @@ fn emit_road_geometry(tris: &mut Vec<WorldTri>, terrain: &Terrain, net: &RoadNet
 
 // ==================== Emit Functions ====================
 // Each emit_* function generates mesh geometry for a single placed asset.
+
+/// Place a GLTF building model with pre-computed dimensions from model metadata.
+fn emit_gltf_building_scaled(
+    tris: &mut Vec<WorldTri>, buildings: &mut Vec<Building>,
+    model_tris: &[WorldTri], x: f32, ground_y: f32, z: f32,
+    w: f32, d: f32, h: f32, scale: f32, rot: f32,
+) {
+    let (sin_r, cos_r) = rot.sin_cos();
+    for tri in model_tris {
+        let mut new_tri = WorldTri { v: tri.v, normal: tri.normal, color: tri.color };
+        for v in &mut new_tri.v {
+            let sx = v[0] * scale;
+            let sy = v[1] * scale;
+            let sz = v[2] * scale;
+            v[0] = sx * cos_r + sz * sin_r + x;
+            v[1] = sy + ground_y;
+            v[2] = -sx * sin_r + sz * cos_r + z;
+        }
+        let nx = new_tri.normal[0] * cos_r + new_tri.normal[2] * sin_r;
+        let nz = -new_tri.normal[0] * sin_r + new_tri.normal[2] * cos_r;
+        new_tri.normal[0] = nx;
+        new_tri.normal[2] = nz;
+        tris.push(new_tri);
+    }
+    // Building footprint in world space (rotated AABB)
+    let hw = w * 0.5;
+    let hd = d * 0.5;
+    let rot_w = (hw * cos_r.abs() + hd * sin_r.abs()) * 2.0;
+    let rot_d = (hw * sin_r.abs() + hd * cos_r.abs()) * 2.0;
+    buildings.push(Building { x, z, w: rot_w, d: rot_d, h, ground_y });
+}
+
+/// Place a GLTF tree model with pre-computed trunk radius from model metadata.
+fn emit_gltf_tree_scaled(
+    tris: &mut Vec<WorldTri>, trees: &mut Vec<Tree>,
+    model_tris: &[WorldTri], x: f32, ground_y: f32, z: f32,
+    scale: f32, rot: f32, trunk_r: f32,
+) {
+    let (sin_r, cos_r) = rot.sin_cos();
+    for tri in model_tris {
+        let mut new_tri = WorldTri { v: tri.v, normal: tri.normal, color: tri.color };
+        for v in &mut new_tri.v {
+            let sx = v[0] * scale;
+            let sy = v[1] * scale;
+            let sz = v[2] * scale;
+            v[0] = sx * cos_r + sz * sin_r + x;
+            v[1] = sy + ground_y;
+            v[2] = -sx * sin_r + sz * cos_r + z;
+        }
+        let nx = new_tri.normal[0] * cos_r + new_tri.normal[2] * sin_r;
+        let nz = -new_tri.normal[0] * sin_r + new_tri.normal[2] * cos_r;
+        new_tri.normal[0] = nx;
+        new_tri.normal[2] = nz;
+        tris.push(new_tri);
+    }
+    trees.push(Tree { x, z, trunk_radius: trunk_r.max(0.1) });
+}
 
 /// Place a GLTF building model at world position with given height and rotation.
 fn emit_gltf_building(
