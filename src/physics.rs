@@ -183,7 +183,7 @@ impl Contact {
 // ── Integration ──────────────────────────────────────────────────────────
 
 const GRAVITY: Vec3 = [0.0, -9.81, 0.0];
-const LINEAR_DAMPING: f32 = 0.0001;
+const LINEAR_DAMPING: f32 = 0.002;
 const ANGULAR_DAMPING: f32 = 0.02;
 
 /// Semi-implicit Euler: integrate forces → velocity → position

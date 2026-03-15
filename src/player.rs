@@ -277,7 +277,7 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
 
     // Sync body → legacy fields
     p.x = p.body.pos[0];
-    p.y = p.body.pos[1];
+    p.y = p.body.pos[1]; // player body is clamped to ground directly (no capsule offset)
     p.z = p.body.pos[2];
     p.vel_y = p.body.vel[1];
 

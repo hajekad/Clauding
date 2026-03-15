@@ -153,8 +153,9 @@ fn npc_physics(world: &mut WorldData, i: usize, terrain: &Terrain, road_network:
     world.npcs[i].body.pos[2] = world.npcs[i].body.pos[2].clamp(-WORLD_HALF + 5.0, WORLD_HALF - 5.0);
 
     // Sync body → legacy fields
+    // y = feet position (body center - capsule half_height - radius)
     world.npcs[i].x = world.npcs[i].body.pos[0];
-    world.npcs[i].y = world.npcs[i].body.pos[1];
+    world.npcs[i].y = world.npcs[i].body.pos[1] - 0.9; // capsule bottom offset
     world.npcs[i].z = world.npcs[i].body.pos[2];
     world.npcs[i].vel_y = world.npcs[i].body.vel[1];
 
@@ -267,15 +268,25 @@ pub fn npc_walk_toward(
         (tx, tz) // no path, walk directly
     };
 
-    // Turn toward waypoint
+    // Walk direction: toward waypoint (normalized)
     let dx = walk_tx - world.npcs[i].x;
     let dz = walk_tz - world.npcs[i].z;
-    let desired = (-dx).atan2(-dz);
+    let walk_dist = (dx * dx + dz * dz).sqrt();
+    let walk_dir = if walk_dist > 0.1 {
+        [dx / walk_dist, 0.0, dz / walk_dist]
+    } else {
+        [0.0, 0.0, 0.0]
+    };
+
+    // Face the direction we're actually moving (snap rot_y to movement direction)
     let npc = &mut world.npcs[i];
-    let mut diff = desired - npc.rot_y;
-    while diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
-    while diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
-    npc.rot_y += diff.clamp(-6.0 * dt, 6.0 * dt);
+    if walk_dist > 0.1 {
+        let desired = (-dx).atan2(-dz);
+        let mut diff = desired - npc.rot_y;
+        while diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
+        while diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
+        npc.rot_y += diff.clamp(-8.0 * dt, 8.0 * dt);
+    }
 
     // Gait + speed selection — surface-dependent speed cap (terrain/steep = slower)
     let surface = surface_at(npc.x, npc.z, net);
@@ -283,12 +294,10 @@ pub fn npc_walk_toward(
     let terrain_ny = terrain.normal_at(npc.x, npc.z)[1];
     let max_speed = crate::state::npc_speed_for_surface(surface, terrain_ny);
 
-    // Locomotion: legs push against ground via skeleton ground reaction force
-    // Actual speed emerges from gait (stride_freq × stride_len) capped by surface friction + speed limit
+    // Locomotion: walk TOWARD target, not in facing direction
     let surface_friction = crate::material::material_for_surface(surface).dynamic_friction;
-    let desired_dir = [-npc.rot_y.sin(), 0.0, -npc.rot_y.cos()];
     let walk_force = npc.skeleton.compute_locomotion_force(
-        desired_dir, desired_gait, npc.body.vel, npc.body.mass, surface_friction, max_speed,
+        walk_dir, desired_gait, npc.body.vel, npc.body.mass, surface_friction, max_speed,
     );
     npc.body.apply_force(walk_force);
 

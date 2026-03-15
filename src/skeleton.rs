@@ -979,7 +979,7 @@ impl Skeleton {
         } else if desired_speed < 0.1 {
             1.0 // braking: full force always
         } else {
-            0.3 // no foot pushing: reduced force (between stride pushes)
+            0.7 // no foot pushing: high force between stride pushes
         };
 
         // Stumble reduces locomotion force — character loses traction while off-balance
