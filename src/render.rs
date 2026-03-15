@@ -93,7 +93,7 @@ fn male_proportions() -> BodyProportions {
         neck_top: 1.50,
         shoulder_rx: 0.36,
         shoulder_deltoid_amp: 0.10,
-        hip_rx: 0.18,
+        hip_rx: 0.28,
         waist_rx: 0.13,
         chest_rx: 0.24,
         muscle_def: 1.0,
@@ -627,7 +627,7 @@ pub fn sys_render(
     let eye = v3(cam.x, cam.y, cam.z);
     let target = v3(cam.tx, cam.ty, cam.tz);
     let view = m4_look_at(eye, target, v3(0.0, 1.0, 0.0));
-    let proj = m4_perspective(60.0_f32.to_radians(), aspect, 0.1, 200.0);
+    let proj = m4_perspective(60.0_f32.to_radians(), aspect, 0.1, WORLD_SIZE * 2.0);
     let vp = m4_mul(&proj, &view);
     let fw = fb.w as f32;
     let fh = fb.h as f32;
@@ -1591,8 +1591,14 @@ fn gen_nude_torso(tris: &mut Vec<WorldTri>, skin: u32, props: &BodyProportions, 
 
     let mut rings: Vec<(f32, Vec<[f32; 2]>, u32)> = Vec::with_capacity(34);
 
-    // ── CROTCH TAPER ──
-    rings.push((0.82, body_ring(0.0, 0.0, 0.04, 0.04, &[], n), sk));
+    // ── CROTCH TAPER — smooth transition from point to hip width ──
+    {
+        let sh = s(0.86);
+        rings.push((0.78, body_ring(0.0, 0.0, 0.02, 0.02, &[], n), sk));
+        rings.push((0.80, body_ring(0.0, 0.0, 0.04, 0.04, &[], n), sk));
+        rings.push((0.82, body_ring(0.0, 0.0, 0.07 * sh, 0.06 * sh, &[], n), sk));
+        rings.push((0.84, body_ring(0.0, 0.0, 0.10 * sh, 0.08 * sh, &[], n), sk));
+    }
 
     // ── ANATOMICAL TORSO ZONE (Y≈0.837 to Y≈1.291) ──
     for i in 0..anatomy::torso_ring_count() {
@@ -1745,23 +1751,22 @@ fn gen_nude_arm(
     let a = props.arm_rx_scale;
     let m = props.muscle_def;
 
-    // ── JOINT POSITIONS ──
+    // ── JOINT POSITIONS — wrist at hip level, not shin ──
     let shoulder = [side * props.shoulder_joint_x, 1.42, 0.0];
-    let elbow = [side * (props.shoulder_joint_x + 0.10), 0.96, fwd * 0.35];
-    let wrist = [side * (props.shoulder_joint_x + 0.06), 0.54, fwd * 0.15 - bend];
+    let elbow = [side * (props.shoulder_joint_x + 0.08), 1.10, fwd * 0.30];
+    let wrist = [side * (props.shoulder_joint_x + 0.04), 0.78, fwd * 0.12 - bend];
 
     let shoulder_y = 1.44;
-    let elbow_y = 0.96;
-    let wrist_y = 0.54;
-    let arm_span = shoulder_y - wrist_y; // 0.90
+    let elbow_y = 1.10;
+    let wrist_y = 0.78;
+    let arm_span = shoulder_y - wrist_y; // 0.66
 
     // GLTF arm x_offset range
     let gltf_max_x = anatomy::arm_ring_x(anatomy::arm_ring_count() - 1);
 
-    // rx/rz profile along the arm — muscular proportions matching reference model
+    // rx/rz profile along the arm — wrist at Y=0.78 (hip level after stretch)
     let arm_dims: &[(f32, f32, f32)] = &[
-        // (y, rx, rz) — ~30-40% thicker than base, wide deltoid cap
-        (1.44, 0.145, 0.135),  // deltoid cap — wide wrap
+        (1.44, 0.145, 0.135),  // deltoid cap
         (1.43, 0.140, 0.128),  // deltoid
         (1.42, 0.135, 0.122),  // deltoid
         (1.40, 0.128, 0.114),  // deltoid-to-upper-arm
@@ -1770,16 +1775,14 @@ fn gen_nude_arm(
         (1.30, 0.110, 0.096),  // bicep peak
         (1.24, 0.105, 0.092),  // mid-upper arm
         (1.18, 0.098, 0.086),  // lower bicep
-        (1.12, 0.090, 0.080),  // tricep
-        (1.06, 0.082, 0.074),  // above elbow
-        (1.00, 0.076, 0.070),  // elbow approach
-        (0.96, 0.072, 0.066),  // elbow
-        (0.94, 0.076, 0.070),  // forearm belly start
-        (0.88, 0.080, 0.072),  // forearm belly peak
-        (0.82, 0.076, 0.066),  // mid forearm
-        (0.74, 0.066, 0.056),  // forearm taper
-        (0.64, 0.056, 0.048),  // lower forearm
-        (0.54, 0.048, 0.040),  // wrist
+        (1.12, 0.090, 0.080),  // elbow approach
+        (1.10, 0.082, 0.074),  // elbow
+        (1.08, 0.086, 0.076),  // below elbow
+        (1.02, 0.088, 0.078),  // forearm belly
+        (0.96, 0.084, 0.074),  // mid forearm
+        (0.90, 0.076, 0.066),  // forearm taper
+        (0.84, 0.066, 0.056),  // lower forearm
+        (0.78, 0.054, 0.046),  // wrist
     ];
 
     let arm_rings: Vec<(f32, Vec<[f32; 2]>, u32)> = arm_dims.iter().map(|&(y, rx, rz)| {
@@ -1841,7 +1844,7 @@ fn gen_nude_arm(
     if m > 0.1 {
         for tri in &mut tris[arm_base..] {
             let cy = (tri.v[0][1] + tri.v[1][1] + tri.v[2][1]) / 3.0;
-            if cy < 0.56 || cy > 1.10 { continue; } // stop above elbow to avoid torso overlap banding
+            if cy < 0.80 || cy > 1.10 { continue; } // forearm only, avoid torso overlap
             let cx = (tri.v[0][0] + tri.v[1][0] + tri.v[2][0]) / 3.0;
             let cz = (tri.v[0][2] + tri.v[1][2] + tri.v[2][2]) / 3.0;
             // Find arm center at this Y via same path interpolation
@@ -1904,19 +1907,7 @@ fn gen_nude_arm(
         tris.truncate(keep);
     }
 
-    // ── ARMPIT FILL — bridge geometry between torso and arm ──
-    // Covers the gap between torso side and arm inner surface from all angles
-    {
-        let ax = side * (props.shoulder_joint_x - 0.06);
-        // Main armpit mass — large, covering front and back
-        mesh::ellipsoid_tris(tris, ax, 1.36, 0.0, 0.12 * a, 0.10, 0.16 * a, 0, sk);
-        mesh::ellipsoid_tris(tris, ax, 1.32, 0.0, 0.11 * a, 0.08, 0.15 * a, 0, sk);
-        mesh::ellipsoid_tris(tris, ax, 1.28, 0.0, 0.09 * a, 0.05, 0.13 * a, 0, sk);
-        // Front pec-deltoid bridge
-        mesh::ellipsoid_tris(tris, ax, 1.34, -0.10, 0.08 * a, 0.06, 0.08 * a, 0, sk);
-        // Rear lat-deltoid bridge
-        mesh::ellipsoid_tris(tris, ax, 1.34, 0.08, 0.08 * a, 0.06, 0.08 * a, 0, sk);
-    }
+    // Armpit fill removed — was creating floating debris geometry.
 
     // ── HAND ──
     gen_hand(tris, wrist[0], wrist[1] - 0.05, wrist[2] - 0.02, side, sk);
@@ -1933,57 +1924,46 @@ fn gen_bare_foot(tris: &mut Vec<WorldTri>, ankle: [f32; 3], side: f32, skin: u32
     let ay = ankle[1]; // default 0.08 in standing
     let y = |offset: f32| -> f32 { ay + offset };
 
+    // Foot scale — Z offsets multiplied to reach ~26cm foot length
+    let fz = 1.6f32; // foot Z scale
+
     // ── HEEL — calcaneus, rounded posterior ──
-    mesh::ellipsoid_tris(tris, lx, y(-0.052), az + 0.035, 0.035, 0.028, 0.035, 0, sk);
-    // Achilles insertion (slight bump at back)
-    mesh::ellipsoid_tris(tris, lx, y(-0.035), az + 0.04, 0.020, 0.015, 0.018, 0, sk_dk);
+    mesh::ellipsoid_tris(tris, lx, y(-0.052), az + 0.035 * fz, 0.038, 0.030, 0.040, 0, sk);
+    mesh::ellipsoid_tris(tris, lx, y(-0.035), az + 0.04 * fz, 0.022, 0.016, 0.020, 0, sk_dk);
 
     // ── MIDFOOT — arch structure ──
-    // Dorsum (top of foot — convex ridge)
-    mesh::ellipsoid_tris(tris, lx, y(-0.038), az - 0.02, 0.038, 0.018, 0.055, 0, sk);
-    // Lateral border (outer edge — touches ground)
-    mesh::ellipsoid_tris(tris, lx + side * 0.020, y(-0.065), az - 0.01, 0.020, 0.015, 0.050, 0, sk);
-    // Medial arch (inner — doesn't touch ground, concave underneath)
-    mesh::ellipsoid_tris(tris, lx - side * 0.015, y(-0.050), az - 0.005, 0.018, 0.020, 0.045, 0, sk);
+    mesh::ellipsoid_tris(tris, lx, y(-0.038), az - 0.02 * fz, 0.042, 0.020, 0.070, 0, sk);
+    mesh::ellipsoid_tris(tris, lx + side * 0.022, y(-0.065), az - 0.01 * fz, 0.022, 0.016, 0.060, 0, sk);
+    mesh::ellipsoid_tris(tris, lx - side * 0.016, y(-0.050), az - 0.005 * fz, 0.020, 0.022, 0.055, 0, sk);
 
-    // ── FOREFOOT — metatarsal heads (ball of foot) ──
-    // Ball of foot — wide transverse arch
-    mesh::ellipsoid_tris(tris, lx, y(-0.062), az - 0.065, 0.042, 0.016, 0.025, 0, sk);
-    // 1st metatarsal head (big toe side — prominent)
-    mesh::ellipsoid_tris(tris, lx - side * 0.020, y(-0.065), az - 0.068, 0.016, 0.013, 0.016, 0, sk_dk);
-    // 5th metatarsal head (pinky side)
-    mesh::ellipsoid_tris(tris, lx + side * 0.025, y(-0.067), az - 0.060, 0.012, 0.010, 0.014, 0, sk_dk);
+    // ── FOREFOOT — ball of foot ──
+    mesh::ellipsoid_tris(tris, lx, y(-0.062), az - 0.065 * fz, 0.046, 0.018, 0.030, 0, sk);
+    mesh::ellipsoid_tris(tris, lx - side * 0.022, y(-0.065), az - 0.068 * fz, 0.018, 0.014, 0.018, 0, sk_dk);
+    mesh::ellipsoid_tris(tris, lx + side * 0.027, y(-0.067), az - 0.060 * fz, 0.014, 0.012, 0.016, 0, sk_dk);
 
-    // ── EXTENSOR TENDONS (top of foot, subtle ridges) ──
+    // ── EXTENSOR TENDONS ──
     for ti in 0..4 {
-        let tx = lx + (ti as f32 - 1.5) * side * 0.010;
-        mesh::ellipsoid_tris(tris, tx, y(-0.032), az - 0.030, 0.003, 0.004, 0.035, 0, darken(sk, 0.97));
+        let tx = lx + (ti as f32 - 1.5) * side * 0.011;
+        mesh::ellipsoid_tris(tris, tx, y(-0.032), az - 0.030 * fz, 0.003, 0.004, 0.040, 0, darken(sk, 0.97));
     }
 
-    // ── TOES — hallux (big toe) + 4 lesser toes ──
-    // Big toe — 2 phalanges, wider and thicker
-    let btx = lx - side * 0.022;
-    // Proximal phalanx
-    mesh::ellipsoid_tris(tris, btx, y(-0.067), az - 0.088, 0.014, 0.011, 0.018, 0, sk);
-    // Distal phalanx
-    mesh::ellipsoid_tris(tris, btx, y(-0.068), az - 0.108, 0.012, 0.010, 0.014, 0, sk);
-    // Toenail
-    push_box(tris, btx, y(-0.060), az - 0.118, 0.008, 0.003, 0.006, nail_col);
+    // ── TOES ──
+    let btx = lx - side * 0.024;
+    mesh::ellipsoid_tris(tris, btx, y(-0.067), az - 0.095 * fz, 0.016, 0.012, 0.022, 0, sk);
+    mesh::ellipsoid_tris(tris, btx, y(-0.068), az - 0.118 * fz, 0.014, 0.011, 0.016, 0, sk);
+    push_box(tris, btx, y(-0.060), az - 0.128 * fz, 0.009, 0.003, 0.007, nail_col);
 
-    // 4 lesser toes — progressively shorter and thinner
     for ti in 0..4 {
-        let tx = lx - side * 0.008 + (ti as f32 + 0.5) * side * 0.012;
-        let toe_len = 0.014 - ti as f32 * 0.002;
-        let toe_r = 0.008 - ti as f32 * 0.001;
-        let tz = az - 0.082 + ti as f32 * 0.004; // each toe slightly shorter reach
-        // Single phalanx (small toes read as one unit at game scale)
-        mesh::ellipsoid_tris(tris, tx, y(-0.070), tz - toe_len * 0.5, toe_r, 0.006, toe_len, 0, sk);
-        // Toenail
-        push_box(tris, tx, y(-0.065), tz - toe_len + 0.002, 0.005, 0.002, 0.004, nail_col);
+        let tx = lx - side * 0.008 + (ti as f32 + 0.5) * side * 0.013;
+        let toe_len = 0.016 - ti as f32 * 0.002;
+        let toe_r = 0.009 - ti as f32 * 0.001;
+        let tz = az - 0.088 * fz + ti as f32 * 0.005;
+        mesh::ellipsoid_tris(tris, tx, y(-0.070), tz - toe_len * 0.5, toe_r, 0.007, toe_len, 0, sk);
+        push_box(tris, tx, y(-0.065), tz - toe_len + 0.002, 0.006, 0.002, 0.005, nail_col);
     }
 
-    // ── SOLE — flat pad for ground contact ──
-    mesh::ellipsoid_tris(tris, lx, y(-0.076), az - 0.02, 0.038, 0.004, 0.065, 0, sk_dk);
+    // ── SOLE ──
+    mesh::ellipsoid_tris(tris, lx, y(-0.076), az - 0.02 * fz, 0.042, 0.005, 0.085, 0, sk_dk);
 }
 
 /// Generate a limb cross-section ring, mirroring bumps for left-side limbs.
@@ -2882,12 +2862,7 @@ fn gen_nude_player_body(
     let body_base = tris.len();
     gen_nude_torso(tris, skin, &props, 32); // neck merged into torso loft
 
-    // ── CROTCH / INNER THIGH FILL — small bridge between legs ──
-    {
-        let hx = props.hip_joint_x;
-        // Just fill the narrow gap between the inner thighs
-        mesh::ellipsoid_tris(tris, 0.0, 0.84, 0.02, hx * 0.6, 0.03, 0.05, 0, skin);
-    }
+    // Wider torso hips now cover the leg-torso junction naturally.
 
     // ── WALKING ANIMATION — hip sway, counter-rotation, speed-dependent arm bend ──
     // Hip lateral sway: weight shifts toward stance leg
@@ -4658,7 +4633,7 @@ pub fn frame_setup(
 ) -> (Mat4, crate::gpu::GpuPushConstants, [f32; 4]) {
     let aspect = width as f32 / height as f32;
     let view = m4_look_at(eye, target, [0.0, 1.0, 0.0]);
-    let proj = m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.5, 5000.0);
+    let proj = m4_perspective_vk(60.0_f32.to_radians(), aspect, 0.1, WORLD_SIZE * 2.0);
     let vp = m4_mul(&proj, &view);
     let push = gpu_push_constants(hour, eye, target, &vp);
     let clear = sky_color_f32(hour);

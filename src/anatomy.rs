@@ -252,12 +252,14 @@ fn contour_ring(
     // Compute half-widths from centroid (true cross-section dimensions)
     let (cent_hx, cent_hz) = half_widths(&centered);
 
-    // Scale using per-axis to match target, but applied to centered contour.
-    // Now the scaling correctly represents the cross-section shape.
+    // Scale centered contour to match target dimensions.
+    // Centroid offset is NOT reapplied — the caller handles limb positioning.
+    // This prevents the GLTF bone-to-muscle offset from shifting the entire
+    // cross-section (which caused backward knees, forward pelvis, etc.)
     let sx = target_rx / cent_hx;
     let sz = target_rz / cent_hz;
     let mut scaled: Vec<[f32; 2]> = centered.iter()
-        .map(|p| [p[0] * sx + cx * sx, p[1] * sz + cz * sz])
+        .map(|p| [p[0] * sx, p[1] * sz])
         .collect();
 
     // Resample to desired point count
@@ -269,14 +271,9 @@ fn contour_ring(
     // Blend with smooth ellipse based on muscle_def
     if muscle_def < 1.0 {
         let smooth = smooth_ellipse(target_rx, target_rz, n);
-        // Offset smooth ellipse by the scaled centroid
-        let ocx = cx * sx;
-        let ocz = cz * sz;
         for (i, pt) in scaled.iter_mut().enumerate() {
-            let sx_off = smooth[i][0] + ocx;
-            let sz_off = smooth[i][1] + ocz;
-            pt[0] = sx_off + muscle_def * (pt[0] - sx_off);
-            pt[1] = sz_off + muscle_def * (pt[1] - sz_off);
+            pt[0] = smooth[i][0] + muscle_def * (pt[0] - smooth[i][0]);
+            pt[1] = smooth[i][1] + muscle_def * (pt[1] - smooth[i][1]);
         }
     }
 
