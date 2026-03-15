@@ -1002,8 +1002,8 @@ fn generate_terrain_mesh(tris: &mut Vec<WorldTri>, terrain: &Terrain, zone_map: 
         mesh::push_quad_n(tris, [x,h0,z0], [x,skirt_y,z0], [x,skirt_y,z1], [x,h1,z1], east_n, skirt_color);
     }
 
-    // Extended ground floor plane — only for small worlds
-    if WORLD_SIZE < 1100.0 {
+    // Extended ground floor plane — disabled (blocks sky with fog at horizon)
+    if false {
         let ext = WORLD_HALF * 2.0;
         let floor_color = darken(GROUND_LOW, 0.7);
         let floor_tiles = 4;
@@ -2831,9 +2831,23 @@ pub fn generate_world(game: &mut GameState) {
         &game.road_network, &game.world.river_segments,
         &game.world.buildings, &mut rng,
     );
+    let n_arch_models = game.model_library.architecture.len();
+    let n_tree_models = game.model_library.trees.len();
     for (bi, spot) in building_spots.iter().enumerate() {
-        emit_building(&mut tris, &mut game.world.buildings, &game.terrain,
-            &mut rng, spot.x, spot.z, bi);
+        if n_arch_models > 0 {
+            // Use GLTF model — pick variant based on building index
+            let model_idx = bi % n_arch_models;
+            let model_tris = &game.model_library.architecture[model_idx];
+            let h = rng.range(5.0, 15.0); // randomize height
+            let rot = rng.range(0.0, std::f32::consts::TAU);
+            let gy = game.terrain.height_at(spot.x, spot.z);
+            emit_gltf_building(&mut tris, &mut game.world.buildings,
+                model_tris, spot.x, gy, spot.z, h, rot);
+        } else {
+            // Fallback: procedural building
+            emit_building(&mut tris, &mut game.world.buildings, &game.terrain,
+                &mut rng, spot.x, spot.z, bi);
+        }
     }
 
     // Trees: dense in wilderness, sparse in town
@@ -2843,8 +2857,20 @@ pub fn generate_world(game: &mut GameState) {
         &game.world.buildings, &mut rng,
     );
     for (ti, spot) in tree_spots.iter().enumerate() {
-        emit_tree(&mut tris, &mut game.world.trees, &game.terrain,
-            &mut rng, spot.x, spot.z, ti, seed);
+        if n_tree_models > 0 {
+            // Use GLTF tree model
+            let model_idx = ti % n_tree_models;
+            let model_tris = &game.model_library.trees[model_idx];
+            let scale = rng.range(0.7, 1.4); // size variation
+            let rot = rng.range(0.0, std::f32::consts::TAU);
+            let gy = game.terrain.height_at(spot.x, spot.z);
+            emit_gltf_tree(&mut tris, &mut game.world.trees, model_tris,
+                spot.x, gy, spot.z, scale, rot, ti);
+        } else {
+            // Fallback: procedural tree
+            emit_tree(&mut tris, &mut game.world.trees, &game.terrain,
+                &mut rng, spot.x, spot.z, ti, seed);
+        }
     }
 
     // Bushes
@@ -3175,6 +3201,18 @@ pub fn generate_world(game: &mut GameState) {
             violation_timer: 0.0,
             police_target: None,
             terrain_normal: [0.0, 1.0, 0.0],
+            // Height variation: deterministic from brain_idx
+            // Range 0.83–1.11 maps to ~1.5m–2.0m from base 1.8m
+            height_scale: {
+                let h_rand = ((i as u64).wrapping_mul(2654435761) >> 16) % 100;
+                0.83 + h_rand as f32 * 0.0028
+            },
+            walk_speed_mult: {
+                let h_rand = ((i as u64).wrapping_mul(2654435761) >> 16) % 100;
+                let h = 0.83 + h_rand as f32 * 0.0028;
+                // Shorter NPCs walk slower, taller walk faster
+                0.85 + (h - 0.83) / (1.11 - 0.83) * 0.30
+            },
         });
     }
 
@@ -3341,6 +3379,76 @@ fn emit_road_geometry(tris: &mut Vec<WorldTri>, terrain: &Terrain, net: &RoadNet
 
 // ==================== Emit Functions ====================
 // Each emit_* function generates mesh geometry for a single placed asset.
+
+/// Place a GLTF building model at world position with given height and rotation.
+fn emit_gltf_building(
+    tris: &mut Vec<WorldTri>, buildings: &mut Vec<Building>,
+    model_tris: &[WorldTri], x: f32, ground_y: f32, z: f32, height: f32, rot: f32,
+) {
+    // Model is normalized to 8m tall — scale to desired height
+    let scale = height / 8.0;
+    let (sin_r, cos_r) = rot.sin_cos();
+    let base = tris.len();
+    // Find model XZ bounds for Building record
+    let mut max_x = 0.0f32;
+    let mut max_z = 0.0f32;
+    for tri in model_tris {
+        for v in &tri.v {
+            max_x = max_x.max(v[0].abs());
+            max_z = max_z.max(v[2].abs());
+        }
+    }
+    let w = max_x * 2.0 * scale;
+    let d = max_z * 2.0 * scale;
+
+    for tri in model_tris {
+        let mut new_tri = WorldTri { v: tri.v, normal: tri.normal, color: tri.color };
+        for v in &mut new_tri.v {
+            // Scale
+            let sx = v[0] * scale;
+            let sy = v[1] * scale;
+            let sz = v[2] * scale;
+            // Rotate around Y
+            v[0] = sx * cos_r + sz * sin_r + x;
+            v[1] = sy + ground_y;
+            v[2] = -sx * sin_r + sz * cos_r + z;
+        }
+        // Rotate normal
+        let nx = new_tri.normal[0] * cos_r + new_tri.normal[2] * sin_r;
+        let nz = -new_tri.normal[0] * sin_r + new_tri.normal[2] * cos_r;
+        new_tri.normal[0] = nx;
+        new_tri.normal[2] = nz;
+        tris.push(new_tri);
+    }
+    let _ = base;
+    buildings.push(Building { x, z, w, d, h: height, ground_y });
+}
+
+/// Place a GLTF tree model at world position with scale and rotation.
+fn emit_gltf_tree(
+    tris: &mut Vec<WorldTri>, trees: &mut Vec<Tree>,
+    model_tris: &[WorldTri], x: f32, ground_y: f32, z: f32,
+    scale: f32, rot: f32, _ti: usize,
+) {
+    let (sin_r, cos_r) = rot.sin_cos();
+    for tri in model_tris {
+        let mut new_tri = WorldTri { v: tri.v, normal: tri.normal, color: tri.color };
+        for v in &mut new_tri.v {
+            let sx = v[0] * scale;
+            let sy = v[1] * scale;
+            let sz = v[2] * scale;
+            v[0] = sx * cos_r + sz * sin_r + x;
+            v[1] = sy + ground_y;
+            v[2] = -sx * sin_r + sz * cos_r + z;
+        }
+        let nx = new_tri.normal[0] * cos_r + new_tri.normal[2] * sin_r;
+        let nz = -new_tri.normal[0] * sin_r + new_tri.normal[2] * cos_r;
+        new_tri.normal[0] = nx;
+        new_tri.normal[2] = nz;
+        tris.push(new_tri);
+    }
+    trees.push(Tree { x, z, trunk_radius: 0.3 * scale });
+}
 
 fn emit_building(
     tris: &mut Vec<WorldTri>, buildings: &mut Vec<Building>,
