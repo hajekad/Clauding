@@ -659,6 +659,9 @@ pub struct Npc {
     pub violation_timer: f32,
     // Police
     pub police_target: Option<usize>,
+    // Body variation
+    pub height_scale: f32,      // 0.83–1.11 (maps to ~1.5m–2.0m from base 1.8m)
+    pub walk_speed_mult: f32,   // 0.85–1.15 (shorter = slower, taller = faster)
 }
 
 pub const NPC_SHIRT_COLORS: [u32; 6] = [
@@ -722,7 +725,7 @@ pub struct Player {
     // Standing on vehicle (character-on-vehicle stacking)
     pub standing_on_vehicle: Option<usize>,
     pub standing_on_vehicle_timer: f32, // hysteresis: stay "on vehicle" for 0.1s after losing contact
-    // GLTF model selection: 0=beauty_girl (default), 1=male_muscle
+    // GLTF model selection: index into character_models (auto-discovered)
     pub model_index: usize,
 }
 
@@ -788,8 +791,12 @@ pub struct GameState {
     pub time_speed: u32, // 1, 10, 100, 1000
     pub walk_grid: WalkGrid,
     pub zone_map: crate::zone::ZoneMap,
-    /// Cached GLTF character models: [0]=beauty_girl (default), [1]=male_muscle
+    /// Cached GLTF character models (auto-discovered from models/v1/characters/)
     pub character_models: Vec<Vec<WorldTri>>,
+    /// Auto-discovered GLTF models by category, loaded from models/v1/<category>/
+    pub model_library: crate::gltf_loader::ModelLibrary,
+    /// FBX skeletal animation data (Mixamo skeleton + 8 animation clips)
+    pub animation_data: Option<crate::skeleton_anim::AnimationData>,
 }
 
 impl GameState {
@@ -868,6 +875,8 @@ impl GameState {
             walk_grid: WalkGrid::empty(),
             zone_map: crate::zone::ZoneMap::empty(),
             character_models: Vec::new(),
+            model_library: crate::gltf_loader::ModelLibrary::empty(),
+            animation_data: None,
         }
     }
 
@@ -875,17 +884,26 @@ impl GameState {
     /// Common init shared by all binaries.
     pub fn init(w: usize, h: usize, seed: u64) -> Self {
         let mut game = Self::new(w, h, seed);
+
+        // Load GLTF models BEFORE world gen so buildings/trees can use them
+        game.model_library = crate::gltf_loader::ModelLibrary::load_all();
+
         crate::world::generate_world(&mut game);
 
-        // Load GLTF character models: [0]=beauty_girl (default), [1]=male_muscle
-        let default_skin: u32 = 0xFFBBA088;
-        let girl_model = crate::gltf_loader::load_gltf_model(
-            "models/v1/characters/beauty_girl", "beauty_girl", default_skin,
-        );
-        let male_model = crate::gltf_loader::load_gltf_model(
-            "models/v1/characters/male_muscle", "male_muscle", default_skin,
-        );
-        game.character_models = vec![girl_model.tris, male_model.tris];
+        // Use auto-discovered character models from ModelLibrary
+        game.character_models = game.model_library.characters.clone();
+
+        // Load FBX skeletal animations (Mixamo skeleton + 8 clips) for ALL character models
+        if !game.character_models.is_empty() {
+            let anim_data = crate::skeleton_anim::AnimationData::load(
+                "models/v1/animations",
+                &game.character_models, // compute bone assignments for every model
+            );
+            if anim_data.is_ready() {
+                eprintln!("[init] FBX animation loaded: {} clips", anim_data.clips.len());
+                game.animation_data = Some(anim_data);
+            }
+        }
 
         // Load trained NEAT population (try neat_trained.bin first)
         if let Some(loaded) = crate::neat::load_population("neat_trained.bin", NUM_NPCS) {

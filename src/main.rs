@@ -124,7 +124,7 @@ fn main() {
         loading_menu.state = menu::MenuState::Loading;
         loading_menu.loading_seed = world_seed;
         let tmp_keybinds = input::KeyBinds::default_binds();
-        menu::sys_menu_render(&mut fb, &loading_menu, &tmp_keybinds, 1.0, false, false);
+        menu::sys_menu_render(&mut fb, &loading_menu, &tmp_keybinds, 1.0, false, false, 0, &[]);
         window.present(&fb.pixels);
     }
 
@@ -189,6 +189,8 @@ fn main() {
             &game.keys,
             &game.prev_keys,
             game.world_seed,
+            &mut game.player.model_index,
+            game.character_models.len(),
         );
         if quit { break; }
 
@@ -225,6 +227,7 @@ fn main() {
             menu::sys_menu_render(
                 &mut fb, &game.menu, &game.keybinds,
                 game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
+                game.player.model_index, &game.model_library.character_names,
             );
             window.present(&fb.pixels);
 
@@ -438,6 +441,8 @@ fn main() {
                 &mut render_scratch, &mut gpu_dynamic_verts,
                 game.time_of_day,
                 &game.character_models,
+                game.animation_data.as_ref(),
+                &game.model_library.cars,
             );
 
             let aspect = fb.w as f32 / fb.h as f32;
@@ -456,18 +461,20 @@ fn main() {
             menu::sys_menu_render(
                 &mut fb, &game.menu, &game.keybinds,
                 game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
+                game.player.model_index, &game.model_library.character_names,
             );
 
             window.present(&fb.pixels);
         } else {
             fb.clear(render::sky_color(game.time_of_day));
-            render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut render_scratch, &game.character_models);
+            render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut render_scratch, &game.character_models, game.animation_data.as_ref(), &game.model_library.cars);
 
             particle::sys_render_particles(&mut fb, &particles, &game.camera);
             if !in_title { hud::sys_hud(&mut fb, &game); }
             menu::sys_menu_render(
                 &mut fb, &game.menu, &game.keybinds,
                 game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
+                game.player.model_index, &game.model_library.character_names,
             );
 
             window.present(&fb.pixels);

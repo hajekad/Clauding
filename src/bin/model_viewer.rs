@@ -747,6 +747,8 @@ fn make_npc(job: state::NpcJob) -> state::Npc {
         find_item_failures: 0,
         find_bin_failures: 0,
         stuck_recoveries: 0,
+        height_scale: 1.0,
+        walk_speed_mult: 1.0,
     }
 }
 

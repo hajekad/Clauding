@@ -59,7 +59,7 @@ fn main() {
 
         let frame_start = Instant::now();
         fb.clear(render::sky_color(game.time_of_day));
-        render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut scratch, &game.character_models);
+        render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut scratch, &game.character_models, game.animation_data.as_ref(), &game.model_library.cars);
         let frame_dt = frame_start.elapsed().as_secs_f32();
 
         frame_times.push(frame_dt);
