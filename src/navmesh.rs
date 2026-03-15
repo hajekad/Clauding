@@ -5,12 +5,12 @@
 
 use crate::state::*;
 
-/// Walk grid resolution in cells per meter (0.1 = 10m cells for 30km world)
-const CELLS_PER_METER: f32 = 0.1;
+/// Walk grid resolution in cells per meter (0.5 = 2m cells for 3km world → 1500×1500)
+const CELLS_PER_METER: f32 = 0.5;
 /// Margin around obstacles (meters) — prevents NPCs from rubbing against walls
-const OBSTACLE_MARGIN: f32 = 2.0;
+const OBSTACLE_MARGIN: f32 = 0.5;
 /// Max A* iterations before giving up (prevents infinite loops on huge searches)
-const MAX_ASTAR_ITERS: usize = 500_000;
+const MAX_ASTAR_ITERS: usize = 100_000;
 
 pub struct WalkGrid {
     /// Walkable bitmap: true = can walk, false = blocked

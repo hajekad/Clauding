@@ -115,7 +115,8 @@ pub fn place_assets(
             let weight = rule.zone_weights[cell.kind as usize];
             if weight < 0.001 { continue; }
 
-            // Expected count for this cell
+            // Expected count for this cell — density is per-cell (tuned for 10m ref cells)
+            // Don't scale with cell area: density means "trees per cell"
             let expected = rule.density * weight * cell.density;
             // Probabilistic rounding
             let frac = expected - expected.floor();
@@ -206,8 +207,8 @@ pub fn place_assets(
 
 pub const TREE_RULE: PlacementRule = PlacementRule {
     zone_weights: [1.0, 0.15, 0.25, 0.03, 0.0, 0.08, 0.5],
-    density: 0.8,
-    min_spacing: 3.5,
+    density: 0.04,
+    min_spacing: 15.0,
     road_relation: RoadRelation::OffRoad,
     road_offset_min: 0.0,
     road_offset_max: 0.0,
@@ -223,8 +224,8 @@ pub const TREE_RULE: PlacementRule = PlacementRule {
 
 pub const ROCK_RULE: PlacementRule = PlacementRule {
     zone_weights: [0.7, 0.05, 0.03, 0.0, 0.1, 0.15, 0.05],
-    density: 0.6,
-    min_spacing: 2.5,
+    density: 0.03,
+    min_spacing: 12.0,
     road_relation: RoadRelation::OffRoad,
     road_offset_min: 0.0,
     road_offset_max: 0.0,
