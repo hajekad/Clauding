@@ -302,3 +302,106 @@ pub fn mat3_mul(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
 pub fn mat3_diagonal(x: f32, y: f32, z: f32) -> [f32; 9] {
     [x, 0.0, 0.0, 0.0, y, 0.0, 0.0, 0.0, z]
 }
+
+// ── Mat4 utilities for skeletal animation ───────────────────────────────
+
+pub const M4_IDENTITY: Mat4 = [
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0, 1.0,
+];
+
+/// Build a 4x4 rotation matrix from Euler angles (XYZ order, radians).
+/// Rotation order: first X, then Y, then Z — i.e. R = Rz * Ry * Rx.
+pub fn m4_from_euler_xyz(rx: f32, ry: f32, rz: f32) -> Mat4 {
+    let (sx, cx) = rx.sin_cos();
+    let (sy, cy) = ry.sin_cos();
+    let (sz, cz) = rz.sin_cos();
+    // Column-major: m[col*4 + row]
+    [
+        cy*cz,               cy*sz,              -sy,    0.0,
+        sx*sy*cz - cx*sz,    sx*sy*sz + cx*cz,    sx*cy, 0.0,
+        cx*sy*cz + sx*sz,    cx*sy*sz - sx*cz,    cx*cy, 0.0,
+        0.0,                 0.0,                 0.0,   1.0,
+    ]
+}
+
+/// Build a 4x4 translation matrix
+pub fn m4_from_translation(tx: f32, ty: f32, tz: f32) -> Mat4 {
+    [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        tx,  ty,  tz,  1.0,
+    ]
+}
+
+/// Build a 4x4 matrix from a 3x3 rotation (column-major) + translation
+pub fn m4_from_rot3_translation(rot: &[f32; 9], t: Vec3) -> Mat4 {
+    [
+        rot[0], rot[1], rot[2], 0.0,
+        rot[3], rot[4], rot[5], 0.0,
+        rot[6], rot[7], rot[8], 0.0,
+        t[0],   t[1],   t[2],   1.0,
+    ]
+}
+
+/// Transform a point by a 4x4 matrix (assumes w=1, no perspective divide)
+#[inline]
+pub fn m4_transform_point(m: &Mat4, p: Vec3) -> Vec3 {
+    [
+        m[0]*p[0] + m[4]*p[1] + m[8]*p[2]  + m[12],
+        m[1]*p[0] + m[5]*p[1] + m[9]*p[2]  + m[13],
+        m[2]*p[0] + m[6]*p[1] + m[10]*p[2] + m[14],
+    ]
+}
+
+/// Transform a normal (direction) by a 4x4 matrix (ignores translation, uses upper-left 3x3)
+#[inline]
+pub fn m4_transform_normal(m: &Mat4, n: Vec3) -> Vec3 {
+    v3_normalize([
+        m[0]*n[0] + m[4]*n[1] + m[8]*n[2],
+        m[1]*n[0] + m[5]*n[1] + m[9]*n[2],
+        m[2]*n[0] + m[6]*n[1] + m[10]*n[2],
+    ])
+}
+
+/// Invert a 4x4 affine matrix (rotation + translation, no scaling/shear).
+/// For rigid transforms: inverse = transpose(R) with negated rotated translation.
+pub fn m4_inverse_affine(m: &Mat4) -> Mat4 {
+    // Transpose the 3x3 rotation part
+    let r00 = m[0]; let r01 = m[4]; let r02 = m[8];
+    let r10 = m[1]; let r11 = m[5]; let r12 = m[9];
+    let r20 = m[2]; let r21 = m[6]; let r22 = m[10];
+    let tx = m[12]; let ty = m[13]; let tz = m[14];
+    // Inverse translation = -R^T * t
+    let itx = -(r00*tx + r10*ty + r20*tz);
+    let ity = -(r01*tx + r11*ty + r21*tz);
+    let itz = -(r02*tx + r12*ty + r22*tz);
+    [
+        r00, r01, r02, 0.0,
+        r10, r11, r12, 0.0,
+        r20, r21, r22, 0.0,
+        itx, ity, itz, 1.0,
+    ]
+}
+
+/// Build a quaternion from Euler angles in XYZ order (radians)
+pub fn quat_from_euler_xyz(rx: f32, ry: f32, rz: f32) -> Quat {
+    let qx = quat_from_axis_angle([1.0, 0.0, 0.0], rx);
+    let qy = quat_from_axis_angle([0.0, 1.0, 0.0], ry);
+    let qz = quat_from_axis_angle([0.0, 0.0, 1.0], rz);
+    quat_normalize(quat_mul(qz, quat_mul(qy, qx)))
+}
+
+/// Convert quaternion to a 4x4 rotation matrix (column-major)
+pub fn quat_to_mat4(q: Quat) -> Mat4 {
+    let m3 = quat_to_mat3(q);
+    [
+        m3[0], m3[1], m3[2], 0.0,
+        m3[3], m3[4], m3[5], 0.0,
+        m3[6], m3[7], m3[8], 0.0,
+        0.0,   0.0,   0.0,   1.0,
+    ]
+}
