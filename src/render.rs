@@ -612,6 +612,8 @@ pub fn sys_render(
     fb: &mut Framebuffer, world: &WorldData, player: &Player, cam: &Camera,
     hour: f32, scratch: &mut Vec<WorldTri>,
     character_models: &[Vec<WorldTri>],
+    animation_data: Option<&crate::skeleton_anim::AnimationData>,
+    car_models: &[Vec<WorldTri>],
 ) {
     let tc = time_colors(hour);
     let aspect = fb.w as f32 / fb.h as f32;
@@ -631,13 +633,17 @@ pub fn sys_render(
     let is_night = hour < 6.0 || hour > 20.0;
     for (vi, v) in world.vehicles.iter().enumerate() {
         let show_interior = player.in_vehicle == Some(vi);
-        gen_vehicle_mesh(v, scratch, show_interior, is_night);
+        if !car_models.is_empty() {
+            gen_vehicle_mesh_gltf(v, vi, car_models, scratch, show_interior, is_night);
+        } else {
+            gen_vehicle_mesh(v, scratch, show_interior, is_night);
+        }
     }
     for npc in &world.npcs {
         if npc.state == NpcState::Sleeping { continue; }
         if npc.in_vehicle { continue; }
         if !character_models.is_empty() {
-            gen_npc_mesh_gltf(npc, character_models, scratch);
+            gen_npc_mesh_gltf(npc, character_models, scratch, animation_data);
         } else {
             gen_npc_mesh(npc, scratch);
         }
@@ -653,7 +659,7 @@ pub fn sys_render(
     }
     if player.in_vehicle.is_none() {
         if !character_models.is_empty() {
-            gen_player_mesh_gltf(player, character_models, scratch);
+            gen_player_mesh_gltf(player, character_models, scratch, animation_data);
         } else {
             gen_player_mesh(player, scratch);
         }
@@ -2839,13 +2845,34 @@ pub fn gen_player_mesh(player: &Player, tris: &mut Vec<WorldTri>) {
 /// Generate player mesh from a pre-loaded GLTF model.
 /// Clones the selected model's triangles, tints them to the player's skin color,
 /// then applies terrain rotation and world positioning via place_mesh().
-pub fn gen_player_mesh_gltf(player: &Player, models: &[Vec<WorldTri>], tris: &mut Vec<WorldTri>) {
+/// If animation_data is provided, applies skeletal animation based on walk/attack phase.
+pub fn gen_player_mesh_gltf(
+    player: &Player,
+    models: &[Vec<WorldTri>],
+    tris: &mut Vec<WorldTri>,
+    animation_data: Option<&crate::skeleton_anim::AnimationData>,
+) {
     let idx = player.model_index.min(models.len().saturating_sub(1));
     if models.is_empty() { return; }
     let model = &models[idx];
 
     let base = tris.len();
-    tris.extend_from_slice(model);
+
+    // Apply skeletal animation — works for all models (bone assignments computed per-model)
+    {
+        if let Some(anim) = animation_data {
+            if let Some((clip_idx, time)) = anim.select_clip(
+                player.walk_phase, player.attack_phase, player.sitting,
+                player.sprinting, 0,
+            ) {
+                anim.generate_animated_mesh(model, idx, clip_idx, time, tris);
+            } else {
+                tris.extend_from_slice(model);
+            }
+        } else {
+            tris.extend_from_slice(model);
+        }
+    }
 
     // Tint skin color
     let app = player_appearance(player.is_female);
@@ -2865,15 +2892,36 @@ pub fn gen_player_mesh_gltf(player: &Player, models: &[Vec<WorldTri>], tris: &mu
 /// Generate NPC mesh from a pre-loaded GLTF model.
 /// Selects male or female model based on NPC appearance, tints skin color,
 /// then applies terrain rotation and world positioning via place_mesh().
-pub fn gen_npc_mesh_gltf(npc: &Npc, models: &[Vec<WorldTri>], tris: &mut Vec<WorldTri>) {
+/// If animation_data is provided, applies skeletal animation based on NPC state.
+pub fn gen_npc_mesh_gltf(
+    npc: &Npc,
+    models: &[Vec<WorldTri>],
+    tris: &mut Vec<WorldTri>,
+    animation_data: Option<&crate::skeleton_anim::AnimationData>,
+) {
     if models.is_empty() { return; }
     let app = npc_appearance(npc.brain_idx as u32);
-    // All NPCs use beauty_girl (index 0) for now — single default model
-    let idx = 0;
+    // Select model based on brain_idx, cycling through all available models
+    let idx = npc.brain_idx % models.len();
     let model = &models[idx];
 
     let base = tris.len();
-    tris.extend_from_slice(model);
+
+    // Apply skeletal animation if available
+    if let Some(anim) = animation_data {
+        let sitting = false; // NPCs don't have sitting state yet
+        if let Some((clip_idx, time)) = anim.select_clip(
+            npc.walk_phase, npc.attack_phase, sitting,
+            false, // NPCs don't sprint
+            npc.attack_intent, // use attack_intent as attack_type for variety
+        ) {
+            anim.generate_animated_mesh(model, idx, clip_idx, time, tris);
+        } else {
+            tris.extend_from_slice(model);
+        }
+    } else {
+        tris.extend_from_slice(model);
+    }
 
     // Tint skin color
     let shirt = if npc.hit_flash > 0.0 { 0xFFFF4444 } else { job_shirt_color(npc) };
@@ -2884,6 +2932,19 @@ pub fn gen_npc_mesh_gltf(npc: &Npc, models: &[Vec<WorldTri>], tris: &mut Vec<Wor
         for tri in &mut tris[base..] {
             if tri.color == default_skin {
                 tri.color = skin;
+            }
+        }
+    }
+
+    // Height variation: scale Y by height_scale, X/Z by height_scale^0.3
+    let hs = npc.height_scale;
+    if (hs - 1.0).abs() > 0.01 {
+        let xz_scale = hs.powf(0.3); // slight width increase for taller NPCs
+        for tri in &mut tris[base..] {
+            for v in &mut tri.v {
+                v[0] *= xz_scale;
+                v[1] *= hs;
+                v[2] *= xz_scale;
             }
         }
     }
@@ -3106,6 +3167,49 @@ pub fn gen_vehicle_mesh(v: &Vehicle, tris: &mut Vec<WorldTri>, show_interior: bo
     // H5: Projected ground shadow — approximate vehicle silhouette
     gen_vehicle_shadow(v, s, tris);
 }
+
+/// Generate vehicle mesh from a GLTF car model.
+/// Falls back to procedural mesh if car_models is empty or index out of range.
+pub fn gen_vehicle_mesh_gltf(
+    v: &Vehicle, vi: usize, car_models: &[Vec<WorldTri>],
+    tris: &mut Vec<WorldTri>, show_interior: bool, headlights: bool,
+) {
+    if car_models.is_empty() {
+        gen_vehicle_mesh(v, tris, show_interior, headlights);
+        return;
+    }
+    let model_idx = vi % car_models.len();
+    let model = &car_models[model_idx];
+
+    let base = tris.len();
+
+    // Copy model triangles, tint to vehicle color
+    for tri in model {
+        let mut t = tri.clone();
+        // Tint the model's gray placeholder color to vehicle color
+        t.color = v.color;
+        tris.push(t);
+    }
+
+    // Apply vehicle scale + terrain rotation + world position (same as procedural)
+    let s = v.scale;
+    let ch = ((v.color >> 4) ^ (v.color >> 12) ^ (v.color >> 20)) & 0xFF;
+    let sx = s * (1.0 + (ch as f32 - 128.0) * 0.0008);
+    let sz = s * (1.0 - (ch as f32 - 128.0) * 0.0005);
+    let rot = terrain_rot3x3(clamp_normal_tilt(v.terrain_normal, 30.0), v.rot_y);
+    for tri in &mut tris[base..] {
+        for vert in &mut tri.v {
+            let sv = [vert[0] * sx, vert[1] * s, vert[2] * sz];
+            let rv = rot3x3_apply(&rot, sv);
+            vert[0] = rv[0] + v.x;
+            vert[1] = rv[1] + v.y;
+            vert[2] = rv[2] + v.z;
+        }
+        tri.normal = rot3x3_apply(&rot, tri.normal);
+    }
+    gen_vehicle_shadow(v, s, tris);
+}
+
 fn gen_vehicle_shadow(v: &Vehicle, s: f32, tris: &mut Vec<WorldTri>) {
     let sy = v.y + 0.05; let sc: u32 = 0xFF1A3A1A;
     let (snr, csr) = v.rot_y.sin_cos();
@@ -4106,6 +4210,8 @@ pub fn generate_dynamic_gpu_vertices(
     scratch: &mut Vec<WorldTri>, out: &mut Vec<GpuVertex>,
     hour: f32,
     character_models: &[Vec<WorldTri>],
+    animation_data: Option<&crate::skeleton_anim::AnimationData>,
+    car_models: &[Vec<WorldTri>],
 ) {
     let eye = v3(cam.x, cam.y, cam.z);
     let fog_dist_sq = FOG_DIST_SQ;
@@ -4129,7 +4235,11 @@ pub fn generate_dynamic_gpu_vertices(
         if dist_sq < LOD_VEH_FULL_SQ {
             let show_interior = player.in_vehicle == Some(vi);
             let is_night = hour < 6.0 || hour > 20.0;
-            gen_vehicle_mesh(v, scratch, show_interior, is_night);
+            if !car_models.is_empty() {
+                gen_vehicle_mesh_gltf(v, vi, car_models, scratch, show_interior, is_night);
+            } else {
+                gen_vehicle_mesh(v, scratch, show_interior, is_night);
+            }
         } else if dist_sq < LOD_VEH_MID_SQ {
             gen_vehicle_mesh_mid(v, scratch);
         } else {
@@ -4150,7 +4260,7 @@ pub fn generate_dynamic_gpu_vertices(
         };
         if dist_sq < LOD_NPC_FULL_SQ {
             if !character_models.is_empty() {
-                gen_npc_mesh_gltf(npc, character_models, scratch);
+                gen_npc_mesh_gltf(npc, character_models, scratch, animation_data);
             } else {
                 gen_npc_mesh(npc, scratch);
             }
@@ -4172,7 +4282,7 @@ pub fn generate_dynamic_gpu_vertices(
     }
     if player.in_vehicle.is_none() {
         if !character_models.is_empty() {
-            gen_player_mesh_gltf(player, character_models, scratch);
+            gen_player_mesh_gltf(player, character_models, scratch, animation_data);
         } else {
             gen_player_mesh(player, scratch);
         }

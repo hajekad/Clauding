@@ -292,7 +292,7 @@ pub fn npc_walk_toward(
     let surface = surface_at(npc.x, npc.z, net);
     let desired_gait = crate::skeleton::Gait::Walk;
     let terrain_ny = terrain.normal_at(npc.x, npc.z)[1];
-    let max_speed = crate::state::npc_speed_for_surface(surface, terrain_ny);
+    let max_speed = crate::state::npc_speed_for_surface(surface, terrain_ny) * npc.walk_speed_mult;
 
     // Locomotion: walk TOWARD target, not in facing direction
     let surface_friction = crate::material::material_for_surface(surface).dynamic_friction;
@@ -375,7 +375,7 @@ fn npc_home_task(world: &mut WorldData, i: usize, terrain: &Terrain, dt: f32) {
         let walk_force = npc.skeleton.compute_locomotion_force(
             desired_dir, crate::skeleton::Gait::Walk, npc.body.vel, npc.body.mass,
             crate::material::MAT_CONCRETE.dynamic_friction, // indoor floor
-            crate::state::NPC_SPEED_SIDEWALK, // indoor = smooth floor, full walk speed
+            crate::state::NPC_SPEED_SIDEWALK * npc.walk_speed_mult, // indoor = smooth floor, scaled by height
         );
         npc.body.apply_force(walk_force);
     }
