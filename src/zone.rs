@@ -6,8 +6,8 @@ use crate::state::*;
 use crate::noise;
 use crate::rng::Rng;
 
-pub const ZONE_GRID: usize = 100;
-pub const ZONE_CELL_SIZE: f32 = WORLD_SIZE / ZONE_GRID as f32; // 30m cells
+pub const ZONE_GRID: usize = 50;
+pub const ZONE_CELL_SIZE: f32 = WORLD_SIZE / ZONE_GRID as f32;
 pub const NUM_ZONE_KINDS: usize = 7;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -93,14 +93,17 @@ impl ZoneMap {
             // Flat terrain is essential for buildings
             let flat_score = cell.flatness * 3.0;
             // Prefer mid-elevation (not deep valleys or mountain peaks)
-            let elev_score = 1.0 - (cell.elevation.abs() / 80.0).min(1.0);
+            let elev_ref = WORLD_SIZE * 0.02; // scale with world
+            let elev_score = 1.0 - (cell.elevation.abs() / elev_ref).min(1.0);
             // Slight preference for water proximity (trade, fishing, transport)
-            let water_score = if cell.water_dist < 15.0 { 0.0 } // in river
-                else if cell.water_dist < 400.0 { 0.5 * (1.0 - cell.water_dist / 400.0) }
+            let water_near = RIVER_WIDTH * 0.5;
+            let water_far = WORLD_SIZE * 0.12;
+            let water_score = if cell.water_dist < water_near { 0.0 }
+                else if cell.water_dist < water_far { 0.5 * (1.0 - cell.water_dist / water_far) }
                 else { 0.0 };
-            // Penalize world edges (settlements shouldn't be at the very edge)
+            // Penalize world edges
             let edge_dist = (wx.abs() / WORLD_HALF).max(wz.abs() / WORLD_HALF);
-            let edge_penalty = if edge_dist > 0.8 { (edge_dist - 0.8) * 10.0 } else { 0.0 };
+            let edge_penalty = if edge_dist > 0.6 { (edge_dist - 0.6) * 6.0 } else { 0.0 };
 
             (flat_score + elev_score + water_score - edge_penalty, i)
         }).collect();
@@ -108,7 +111,7 @@ impl ZoneMap {
 
         // Step 3: Pick settlement seeds — emergent from terrain (no artificial cap)
         let mut settlement_centers = Vec::new();
-        let min_separation = 500.0; // ~500m between settlements in 3km world
+        let min_separation = WORLD_SIZE * 0.24; // ~24% of world size
 
         for &(score, idx) in &scores {
             if score < 1.5 { break; }
@@ -134,9 +137,9 @@ impl ZoneMap {
         // Step 4: Assign zones radiating from settlements
         for (si, center) in settlement_centers.iter().enumerate() {
             let is_main = si == 0;
-            let core_radius = if is_main { 120.0 } else { 50.0 };
-            let town_radius = if is_main { 250.0 } else { 120.0 };
-            let farm_radius = town_radius + 150.0;
+            let core_radius = if is_main { WORLD_SIZE * 0.11 } else { WORLD_SIZE * 0.05 };
+            let town_radius = if is_main { WORLD_SIZE * 0.17 } else { WORLD_SIZE * 0.09 };
+            let farm_radius = town_radius + WORLD_SIZE * 0.10;
 
             for gz in 0..grid_size {
                 for gx in 0..grid_size {
@@ -146,11 +149,12 @@ impl ZoneMap {
                     let dist = ((wx - center[0]).powi(2) + (wz - center[1]).powi(2)).sqrt();
 
                     // Noise-distorted radius for organic zone boundaries
+                    let noise_freq = 1.5 / WORLD_SIZE;
                     let noise_val = noise::value_noise_2d(
-                        wx * 0.003, wz * 0.003,
+                        wx * noise_freq, wz * noise_freq,
                         seed.wrapping_add(5555 + si as u64 * 7777),
                     );
-                    let noisy_dist = dist - noise_val * 40.0;
+                    let noisy_dist = dist - noise_val * WORLD_SIZE * 0.05;
 
                     if noisy_dist < town_radius {
                         let kind = if is_main { ZoneKind::Town } else { ZoneKind::Village };
@@ -189,16 +193,18 @@ impl ZoneMap {
             let wz = (gz as f32 + 0.5) * cell_size - WORLD_HALF;
 
             // Near water + near settlement → Waterfront/Industrial
-            if cells[i].water_dist < 60.0 && cells[i].water_dist > 8.0 {
+            let wf_near = WORLD_SIZE * 0.05;
+            let wf_far = WORLD_SIZE * 0.28;
+            if cells[i].water_dist < wf_near && cells[i].water_dist > RIVER_WIDTH * 0.3 {
                 let dist_to_main =
                     ((wx - main_center[0]).powi(2) + (wz - main_center[1]).powi(2)).sqrt();
-                if dist_to_main < 400.0 {
-                    let kind = if dist_to_main > 200.0 && cells[i].density < 0.3 {
+                if dist_to_main < wf_far {
+                    let kind = if dist_to_main > wf_far * 0.5 && cells[i].density < 0.3 {
                         ZoneKind::Industrial
                     } else {
                         ZoneKind::Waterfront
                     };
-                    let wd = 0.4 * (1.0 - cells[i].water_dist / 60.0);
+                    let wd = 0.4 * (1.0 - cells[i].water_dist / wf_near);
                     if wd > cells[i].density || cells[i].kind == ZoneKind::Wilderness {
                         cells[i].kind = kind;
                         cells[i].density = wd.max(cells[i].density).max(0.1);
@@ -210,9 +216,12 @@ impl ZoneMap {
             if cells[i].kind == ZoneKind::Wilderness || cells[i].kind == ZoneKind::Farmland {
                 let dist_to_main =
                     ((wx - main_center[0]).powi(2) + (wz - main_center[1]).powi(2)).sqrt();
-                let park_noise = noise::value_noise_2d(wx * 0.006, wz * 0.006, seed + 8888);
-                if dist_to_main > 200.0
-                    && dist_to_main < 400.0
+                let park_freq = 3.0 / WORLD_SIZE;
+                let park_noise = noise::value_noise_2d(wx * park_freq, wz * park_freq, seed + 8888);
+                let park_inner = WORLD_SIZE * 0.14;
+                let park_outer = WORLD_SIZE * 0.26;
+                if dist_to_main > park_inner
+                    && dist_to_main < park_outer
                     && park_noise > 0.5
                     && cells[i].flatness > 0.5
                 {

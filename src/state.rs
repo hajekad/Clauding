@@ -10,12 +10,12 @@ pub const DEFAULT_HEIGHT: usize = 1080;
 pub const MAX_FPS: f32 = 500.0;
 pub const FRAME_TIME_MIN: f32 = 1.0 / MAX_FPS;
 
-pub const WORLD_SIZE: f32 = 1100.0;
+pub const WORLD_SIZE: f32 = 500.0;
 pub const WORLD_HALF: f32 = WORLD_SIZE * 0.5;
-pub const NUM_BUILDINGS: usize = 200;
-pub const NUM_TREES: usize = 2000;
-pub const NUM_ROCKS: usize = 1500;
-pub const NUM_STREET_LIGHTS: usize = 500;
+pub const NUM_BUILDINGS: usize = 125;
+pub const NUM_TREES: usize = 1000;
+pub const NUM_ROCKS: usize = 1000;
+pub const NUM_STREET_LIGHTS: usize = 300;
 pub const CAR_ROAD_WIDTH: f32 = 10.0;
 pub const SIDEWALK_WIDTH: f32 = 4.0;
 pub const FIELD_ROAD_WIDTH: f32 = 2.5;
@@ -55,18 +55,18 @@ pub const PARKING_SPOT_LENGTH: f32 = 5.0;
 pub const PARKING_SPOT_WIDTH: f32 = 2.5;
 pub const VEHICLE_GROUND_OFFSET: f32 = 0.03; // lift vehicles above terrain to prevent slope clipping
 pub const VEHICLE_COLLISION_RADIUS: f32 = 2.2; // half-length of vehicle for separation (~4.6m car)
-pub const FOG_DIST: f32 = 1200.0;
+pub const FOG_DIST: f32 = WORLD_SIZE * 0.75;
 pub const PLAYER_SPEED: f32 = 3.06;  // 11 km/h Run gait
 pub const SPRINT_SPEED: f32 = 7.78;  // 28 km/h Sprint gait
 pub const PLAYER_RADIUS: f32 = 0.4;
 pub const DAY_LENGTH: f32 = 1440.0; // 1 game-minute = 1 real second (24 real minutes per day)
 pub const HEADLESS_DT: f32 = 1.0 / 30.0; // shared timestep for headless simulation (observe, etc.)
-pub const NUM_NPCS: usize = 150;
-pub const NUM_ITEMS: usize = 400;
+pub const NUM_NPCS: usize = 100;
+pub const NUM_ITEMS: usize = 250;
 pub const NPC_SPEED: f32 = 2.22; // 8 km/h Walk gait
 pub const WORK_DURATION: f32 = 720.0;
 pub const TERRAIN_GRID: usize = 250;
-pub const TERRAIN_CELL: f32 = WORLD_SIZE / TERRAIN_GRID as f32; // 12m per cell
+pub const TERRAIN_CELL: f32 = WORLD_SIZE / TERRAIN_GRID as f32;
 pub const GRAVITY: f32 = 20.0;
 pub const JUMP_VELOCITY: f32 = 8.0;
 
@@ -122,20 +122,20 @@ pub const VISION_CONE_COS: f32 = 0.5; // cos(60°) = 120° full cone
 pub const SOUND_CHANNELS: usize = 3;
 
 // NPC life simulation constants
-pub const NUM_TRASH_BINS: usize = 80;
+pub const NUM_TRASH_BINS: usize = 60;
 pub const NPC_DRIVE_THRESHOLD: f32 = 15.0;
 pub const NPC_PICKUP_DIST: f32 = 4.0;  // generous range for 500m world
 pub const NPC_BIN_DIST: f32 = 1.5;
 pub const INTERACT_DIST: f32 = 2.0;
 pub const NIGHT_SPAWN_START: f32 = 20.0; // 8 PM
 pub const NIGHT_SPAWN_END: f32 = 4.0;    // 4 AM
-pub const DOCK_Z_START: f32 = 1050.0;
+pub const DOCK_Z_START: f32 = WORLD_HALF * 0.7;
 pub const WATER_Y: f32 = -1.0;
-pub const RIVER_WIDTH: f32 = 20.0;
-pub const RIVER_DEPTH: f32 = 4.0;
+pub const RIVER_WIDTH: f32 = WORLD_SIZE * 0.024;
+pub const RIVER_DEPTH: f32 = 3.0;
 pub const RIVER_CURRENT: f32 = 2.0;
 pub const DROWN_DAMAGE: f32 = 8.0;
-pub const PARKING_LOT_COUNT: usize = 8;
+pub const PARKING_LOT_COUNT: usize = 4;
 
 
 pub struct Wall { pub x: f32, pub z: f32, pub hw: f32, pub hd: f32, pub height: f32 }
