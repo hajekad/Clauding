@@ -41,3 +41,5 @@ pub mod zone;
 pub mod placement;
 pub mod anatomy;
 pub mod gltf_loader;
+pub mod fbx_anim;
+pub mod skeleton_anim;
