@@ -210,8 +210,8 @@ pub fn place_assets(
 
 pub const TREE_RULE: PlacementRule = PlacementRule {
     zone_weights: [1.0, 0.15, 0.25, 0.03, 0.0, 0.08, 0.5],
-    density: 0.8,
-    min_spacing: 3.5,
+    density: 0.4,
+    min_spacing: 5.0,
     road_relation: RoadRelation::OffRoad,
     road_offset_min: 0.0,
     road_offset_max: 0.0,

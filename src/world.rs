@@ -2833,8 +2833,12 @@ pub fn generate_world(game: &mut GameState) {
     );
     let n_arch = game.model_library.architecture.len();
     let n_trees = game.model_library.trees.len();
+    // Limit GLTF buildings to avoid exceeding GPU vert budget
+    // Mix: ~50% GLTF, ~50% procedural — keeps visual variety AND performance
+    let max_gltf_buildings = 80;
+    let mut gltf_count = 0;
     for (bi, spot) in building_spots.iter().enumerate() {
-        if n_arch > 0 {
+        if n_arch > 0 && gltf_count < max_gltf_buildings {
             // Pick model randomly (not round-robin — avoids repeating patterns)
             let model_idx = rng.next() as usize % n_arch;
             let entry = &game.model_library.architecture[model_idx];
@@ -2849,8 +2853,21 @@ pub fn generate_world(game: &mut GameState) {
             // Use actual model proportions for the Building record
             let w = entry.width * scale;
             let d = entry.depth * scale;
+            // Random building color from palette
+            let building_colors: [u32; 8] = [
+                0xFFDDCCBB, // warm beige
+                0xFFCCBBAA, // cool beige
+                0xFFE8DDD0, // cream
+                0xFFBBAAAA, // dusty rose
+                0xFFCCCCBB, // pale sage
+                0xFFD0C8B8, // sandstone
+                0xFFBBBBBB, // concrete gray
+                0xFFD5C8B0, // buff
+            ];
+            let tint = building_colors[rng.next() as usize % building_colors.len()];
             emit_gltf_building_scaled(&mut tris, &mut game.world.buildings,
-                &entry.tris, spot.x, gy, spot.z, w, d, h, scale, rot);
+                &entry.tris, spot.x, gy, spot.z, w, d, h, scale, rot, tint);
+            gltf_count += 1;
         } else {
             emit_building(&mut tris, &mut game.world.buildings, &game.terrain,
                 &mut rng, spot.x, spot.z, bi);
@@ -3392,11 +3409,11 @@ fn emit_road_geometry(tris: &mut Vec<WorldTri>, terrain: &Terrain, net: &RoadNet
 fn emit_gltf_building_scaled(
     tris: &mut Vec<WorldTri>, buildings: &mut Vec<Building>,
     model_tris: &[WorldTri], x: f32, ground_y: f32, z: f32,
-    w: f32, d: f32, h: f32, scale: f32, rot: f32,
+    w: f32, d: f32, h: f32, scale: f32, rot: f32, tint: u32,
 ) {
     let (sin_r, cos_r) = rot.sin_cos();
     for tri in model_tris {
-        let mut new_tri = WorldTri { v: tri.v, normal: tri.normal, color: tri.color };
+        let mut new_tri = WorldTri { v: tri.v, normal: tri.normal, color: tint };
         for v in &mut new_tri.v {
             let sx = v[0] * scale;
             let sy = v[1] * scale;
