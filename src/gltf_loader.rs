@@ -62,25 +62,30 @@ impl ModelLibrary {
         let base = "models/v1";
         let mut lib = Self::empty();
 
-        // Budget: ~3M static verts total. Buildings get ~1800 tris each, trees ~160.
-        let max_tris_arch: usize = 1_800;
-        let max_tris_tree: usize = 160;
+        // Budget per model instance, and max raw tris to attempt decimation.
+        // Models over skip_above are photogrammetry scans — too detailed to decimate usefully.
+        let max_tris_arch: usize = 2_000;
+        let skip_above_arch: usize = 20_000;
+        let max_tris_tree: usize = 500;
+        let skip_above_tree: usize = 10_000;
 
         let arch_dirs = discover_gltf_dirs(&format!("{base}/architecture"));
         for dir in &arch_dirs {
             let name = dir.rsplit('/').next().unwrap_or("?");
             if let Some(mut m) = try_load_gltf_scaled(dir, name, 0xFFCCBBAA, 8.0) {
-                // Reject models with broken aspect ratios:
-                // - Paper-thin (any axis < 15% of tallest)
-                // - Mega-wide (footprint > 4× height — likely a pack of buildings)
+                let raw_tris = m.tris.len();
                 let min_dim = m.width.min(m.depth);
                 let max_footprint = m.width.max(m.depth);
-                if min_dim < m.height * 0.25 {
+                if min_dim < m.height * 0.35 {
                     eprintln!("  SKIP '{}': too thin ({:.1}×{:.1}×{:.1}m)", name, m.width, m.height, m.depth);
                     continue;
                 }
-                if max_footprint > m.height * 3.0 {
-                    eprintln!("  SKIP '{}': too wide ({:.1}×{:.1}×{:.1}m) — likely a pack", name, m.width, m.height, m.depth);
+                if max_footprint > m.height * 2.2 {
+                    eprintln!("  SKIP '{}': too wide ({:.1}×{:.1}×{:.1}m)", name, m.width, m.height, m.depth);
+                    continue;
+                }
+                if raw_tris > skip_above_arch {
+                    eprintln!("  SKIP '{}': too detailed ({} tris > {} max)", name, raw_tris, skip_above_arch);
                     continue;
                 }
                 decimate_to_budget(&mut m.tris, max_tris_arch);
@@ -95,10 +100,14 @@ impl ModelLibrary {
         for dir in &nature_dirs {
             let name = dir.rsplit('/').next().unwrap_or("?");
             if let Some(mut m) = try_load_gltf_scaled(dir, name, 0xFF447733, 6.0) {
-                // Reject tree packs that are too wide (> 3× height — multiple trees in one file)
+                let raw_tris = m.tris.len();
                 let max_footprint = m.width.max(m.depth);
                 if max_footprint > m.height * 2.0 {
-                    eprintln!("  SKIP tree '{}': too wide ({:.1}×{:.1}×{:.1}m) — likely a pack", name, m.width, m.height, m.depth);
+                    eprintln!("  SKIP tree '{}': too wide ({:.1}×{:.1}×{:.1}m)", name, m.width, m.height, m.depth);
+                    continue;
+                }
+                if raw_tris > skip_above_tree {
+                    eprintln!("  SKIP tree '{}': too detailed ({} tris > {} max)", name, raw_tris, skip_above_tree);
                     continue;
                 }
                 decimate_to_budget(&mut m.tris, max_tris_tree);
@@ -109,21 +118,22 @@ impl ModelLibrary {
             }
         }
 
-        // Characters: dynamic per-frame rendering — must be low poly
-        // 100 NPCs × tris × 3 verts × 28 bytes = per-frame upload budget
-        // At 2000 tris: 100 × 2000 × 3 × 28 = 16.8MB/frame — manageable
-        let max_tris_char: usize = 2_000;
+        // Characters: load at 1.8m, skip models over 200K tris (too dense).
+        // No decimation — character models need full fidelity for animation.
+        // Player uses full mesh; NPCs can use LOD later.
+        let max_raw_char: usize = 200_000;
         let char_dirs = discover_gltf_dirs(&format!("{base}/characters"));
         for dir in &char_dirs {
             let name = dir.rsplit('/').next().unwrap_or("?");
             let default_skin: u32 = 0xFFBBA088;
-            if let Some(mut m) = try_load_gltf_scaled(dir, name, default_skin, 1.8) {
-                decimate_to_budget(&mut m.tris, max_tris_char);
-                if !m.tris.is_empty() {
-                    eprintln!("  character '{}': {} tris", name, m.tris.len());
-                    lib.characters.push(m.tris);
-                    lib.character_names.push(name.to_string());
+            if let Some(m) = try_load_gltf_scaled(dir, name, default_skin, 1.8) {
+                if m.tris.len() > max_raw_char {
+                    eprintln!("  SKIP character '{}': {} tris > {} max", name, m.tris.len(), max_raw_char);
+                    continue;
                 }
+                eprintln!("  character '{}': {} tris", name, m.tris.len());
+                lib.characters.push(m.tris);
+                lib.character_names.push(name.to_string());
             }
         }
 
@@ -289,6 +299,23 @@ fn scan_for_gltf(dir: &str, out: &mut Vec<String>) {
     }
 }
 
+/// Ensure all triangles have CCW winding (front face for Vulkan).
+/// If cross-product normal disagrees with stored normal, swap v1/v2 to flip winding.
+fn fix_winding_ccw(tris: &mut [WorldTri]) {
+    for tri in tris.iter_mut() {
+        let e1 = [tri.v[1][0]-tri.v[0][0], tri.v[1][1]-tri.v[0][1], tri.v[1][2]-tri.v[0][2]];
+        let e2 = [tri.v[2][0]-tri.v[0][0], tri.v[2][1]-tri.v[0][1], tri.v[2][2]-tri.v[0][2]];
+        let cx = e1[1]*e2[2] - e1[2]*e2[1];
+        let cy = e1[2]*e2[0] - e1[0]*e2[2];
+        let cz = e1[0]*e2[1] - e1[1]*e2[0];
+        // If cross product disagrees with normal, flip winding
+        let dot = cx * tri.normal[0] + cy * tri.normal[1] + cz * tri.normal[2];
+        if dot < 0.0 {
+            tri.v.swap(1, 2);
+        }
+    }
+}
+
 /// Load a GLTF model and normalize to a specific target height.
 /// Returns None if files don't exist or can't be parsed.
 pub fn try_load_gltf_scaled(dir: &str, name: &str, color: u32, target_height: f32) -> Option<LoadedModel> {
@@ -331,11 +358,12 @@ pub fn try_load_gltf_scaled(dir: &str, name: &str, color: u32, target_height: f3
     }
     if all_tris.is_empty() { return None; }
     normalize_model_to_height(&mut all_tris, target_height);
-    // Filter out tris with NaN/Inf vertices (corrupt data from some GLTF files)
+    // Filter NaN/Inf and fix winding for backface culling (CCW = front face)
     all_tris.retain(|tri| {
         tri.v.iter().all(|v| v.iter().all(|c| c.is_finite()))
             && tri.normal.iter().all(|c| c.is_finite())
     });
+    fix_winding_ccw(&mut all_tris);
     if all_tris.is_empty() { return None; }
     let (w, h, d) = measure_bounds(&all_tris);
     eprintln!("gltf_loader: loaded '{}' ({} tris, {:.1}×{:.1}×{:.1}m)", name, all_tris.len(), w, h, d);
@@ -527,6 +555,8 @@ pub fn load_gltf_model(dir: &str, name: &str, skin_color: u32) -> LoadedModel {
 }
 
 /// Normalize model to game coordinates: Y=0 at base, centered X/Z, target height.
+/// GLTF spec: Y is always up. We scale uniformly so Y extent = target_height.
+/// Normalize to target height. Auto-detects up axis (tallest dimension).
 fn normalize_model_to_height(tris: &mut [WorldTri], target_height: f32) {
     if tris.is_empty() { return; }
     let mut min = [f32::MAX; 3];
@@ -537,6 +567,7 @@ fn normalize_model_to_height(tris: &mut [WorldTri], target_height: f32) {
         }
     }
     let dims = [max[0]-min[0], max[1]-min[1], max[2]-min[2]];
+    // Auto-detect up axis: tallest dimension
     let up = if dims[1] >= dims[0] && dims[1] >= dims[2] { 1 }
              else if dims[2] >= dims[0] && dims[2] >= dims[1] { 2 }
              else { 1 };
@@ -566,9 +597,13 @@ fn normalize_model_to_height(tris: &mut [WorldTri], target_height: f32) {
 
 /// Normalize model to game coordinates: Y=0 at feet, centered X/Z, 1.8m tall.
 fn normalize_model(tris: &mut [WorldTri]) {
+    normalize_model_to_height(tris, 1.8);
+}
+
+#[allow(dead_code)]
+fn _normalize_model_old(tris: &mut [WorldTri]) {
     if tris.is_empty() { return; }
 
-    // Find bounding box
     let mut min = [f32::MAX; 3];
     let mut max = [f32::MIN; 3];
     for tri in tris.iter() {
@@ -582,7 +617,6 @@ fn normalize_model(tris: &mut [WorldTri]) {
 
     let dims = [max[0]-min[0], max[1]-min[1], max[2]-min[2]];
 
-    // Detect up axis (tallest dimension)
     let up = if dims[1] >= dims[0] && dims[1] >= dims[2] { 1 }
              else if dims[2] >= dims[0] && dims[2] >= dims[1] { 2 }
              else { 1 };
