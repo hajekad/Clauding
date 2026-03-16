@@ -893,11 +893,12 @@ impl GameState {
         // Use auto-discovered character models from ModelLibrary
         game.character_models = game.model_library.characters.clone();
 
-        // Load FBX skeletal animations (Mixamo skeleton + clips) for ALL character models
+        // Load FBX skeletal animations — only models with matching OBJ get rigged
         if !game.character_models.is_empty() {
             let anim_data = crate::skeleton_anim::AnimationData::load(
                 "models/v1/animations",
                 &game.character_models,
+                &game.model_library.character_names,
             );
             if anim_data.is_ready() {
                 eprintln!("[init] FBX animation loaded: {} clips", anim_data.clips.len());

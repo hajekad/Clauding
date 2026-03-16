@@ -186,35 +186,39 @@ fn interpolate_channel_translation(channel: &BoneChannel, trans_keys: &[[f32; 3]
 
 // ── Bone assignment ─────────────────────────────────────────────────────
 
-/// Assign each vertex to the nearest bone based on position.
-/// Returns a Vec of bone indices, one per vertex (3 per triangle).
-/// Uses the bind-pose bone world positions for nearest-bone lookup.
+/// Assign each vertex to the nearest bone with side-awareness and head clamping.
 pub fn compute_bone_assignments(
     skeleton: &FbxSkeleton,
     bind_world: &[Mat4],
     tris: &[WorldTri],
 ) -> Vec<usize> {
-    // Extract world-space bone positions from the bind pose
     let bone_positions: Vec<Vec3> = bind_world.iter()
-        .map(|m| [m[12], m[13], m[14]]) // translation column
+        .map(|m| [m[12], m[13], m[14]])
         .collect();
 
-    // Find the Hips bone Y position to know the model's coordinate system
-    let hips_idx = skeleton.bones.iter().position(|b| b.name.contains("Hips")).unwrap_or(0);
-    let hips_y = bone_positions[hips_idx][1];
+    let hips_idx = skeleton.bones.iter()
+        .position(|b| b.name.contains("Hips") && !b.name.contains("UpLeg"))
+        .unwrap_or(0);
+    let head_idx = skeleton.bones.iter()
+        .position(|b| b.name.contains("Head") && !b.name.contains("Top"))
+        .unwrap_or(0);
+    let head_y = bone_positions[head_idx][1];
 
-    // Build a list of "important" bones (skip finger bones and end bones for efficiency)
-    // The Mixamo skeleton has 65 bones, but for skinning we only need ~20 major ones
+    // Classify each bone as left(1), right(-1), or center(0)
+    let bone_side: Vec<i8> = skeleton.bones.iter().map(|b| {
+        if b.name.contains("Left") { 1 }
+        else if b.name.contains("Right") { -1 }
+        else { 0 }
+    }).collect();
+
+    // Skip finger and end bones
     let important_bones: Vec<usize> = (0..skeleton.bones.len())
         .filter(|&i| {
             let name = &skeleton.bones[i].name;
-            // Skip end bones (HeadTop_End, Toe_End, etc.)
-            if name.contains("_End") || name.contains("End") { return false; }
-            // Skip individual finger bones — assign them to the Hand bone
-            if name.contains("Thumb") || name.contains("Index") ||
-               name.contains("Middle") || name.contains("Ring") ||
-               name.contains("Pinky") { return false; }
-            true
+            !name.contains("_End") && !name.contains("End") &&
+            !name.contains("Thumb") && !name.contains("Index") &&
+            !name.contains("Middle") && !name.contains("Ring") &&
+            !name.contains("Pinky")
         })
         .collect();
 
@@ -222,37 +226,42 @@ pub fn compute_bone_assignments(
 
     for tri in tris {
         for v in &tri.v {
-            // Find the nearest important bone to this vertex
+            // Everything above head bone Y → head (catches all hair)
+            if v[1] > head_y - 0.02 {
+                assignments.push(head_idx);
+                continue;
+            }
+
+            // Vertex side: +X = left, -X = right, near center = either
+            let v_side: i8 = if v[0] > 0.02 { 1 }
+                             else if v[0] < -0.02 { -1 }
+                             else { 0 };
+
             let mut best_bone = hips_idx;
             let mut best_dist = f32::MAX;
 
             for &bi in &important_bones {
+                // Side filter: don't let left bones grab right vertices
+                if v_side != 0 && bone_side[bi] != 0 && v_side != bone_side[bi] {
+                    continue;
+                }
+
                 let bp = bone_positions[bi];
                 let dx = v[0] - bp[0];
                 let dy = v[1] - bp[1];
                 let dz = v[2] - bp[2];
                 let d = dx*dx + dy*dy + dz*dz;
 
-                // Weight Y distance more heavily — bones are arranged vertically
-                let dy_weight = (v[1] - bp[1]).abs() * 2.0;
-                let weighted_d = d + dy_weight * dy_weight;
-
-                if weighted_d < best_dist {
-                    best_dist = weighted_d;
+                if d < best_dist {
+                    best_dist = d;
                     best_bone = bi;
                 }
             }
 
-            // For finger vertices, remap to the Hand bone
             let final_bone = remap_to_parent_if_finger(skeleton, best_bone);
             assignments.push(final_bone);
         }
     }
-
-    // Hips root motion offset: for the walk animation, we want the character
-    // to stay in place (the game drives world position). Record the hips Y so
-    // we can subtract root translation in skinning.
-    let _ = hips_y;
 
     assignments
 }
@@ -372,9 +381,10 @@ pub struct AnimationData {
 }
 
 impl AnimationData {
-    /// Load all FBX animations and compute bone assignments for ALL character models.
-    /// Each model gets its own bone assignment set — the Mixamo skeleton is reused.
-    pub fn load(anim_dir: &str, all_models: &[Vec<WorldTri>]) -> Self {
+    /// Load all FBX animations and compute bone assignments for character models.
+    /// Only models whose names are in `rigged_names` get bone assignments.
+    /// Others get empty assignments and will render in bind pose.
+    pub fn load(anim_dir: &str, all_models: &[Vec<WorldTri>], model_names: &[String]) -> Self {
         let (mut skeleton, clips) = crate::fbx_anim::load_all_animations(anim_dir);
 
         if skeleton.bones.is_empty() {
@@ -400,13 +410,23 @@ impl AnimationData {
         eprintln!("[skeleton_anim] hips Y={:.3}, {} bones",
             bind_transforms[hips_bone][13], skeleton.bones.len());
 
-        // Compute bone assignments for every character model
+        // Compute bone assignments only for models that were rigged through Mixamo.
+        // Other models get empty assignments → will render in bind pose (T-pose).
+        // A model is considered rigged if it has an OBJ file (created for Mixamo upload).
         let mut model_bone_assignments = Vec::with_capacity(all_models.len());
         for (i, model_tris) in all_models.iter().enumerate() {
-            let assignments = compute_bone_assignments(&skeleton, &bind_transforms, model_tris);
-            eprintln!("[skeleton_anim] model[{}]: {} verts assigned to {} bones",
-                i, assignments.len(), skeleton.bones.len());
-            model_bone_assignments.push(assignments);
+            let name = model_names.get(i).map(|s| s.as_str()).unwrap_or("");
+            let obj_path = format!("models/v1/characters/{}/{}.obj", name, name);
+            let has_obj = std::path::Path::new(&obj_path).exists();
+
+            if has_obj && !model_tris.is_empty() {
+                let assignments = compute_bone_assignments(&skeleton, &bind_transforms, model_tris);
+                eprintln!("[skeleton_anim] model[{}] '{}': {} verts rigged", i, name, assignments.len());
+                model_bone_assignments.push(assignments);
+            } else {
+                eprintln!("[skeleton_anim] model[{}] '{}': no OBJ → bind pose only", i, name);
+                model_bone_assignments.push(Vec::new()); // empty = no animation
+            }
         }
 
         AnimationData {
@@ -421,7 +441,7 @@ impl AnimationData {
 
     /// Backward-compatible load for a single mesh (used by body_view)
     pub fn load_single(anim_dir: &str, mesh_tris: &[WorldTri]) -> Self {
-        Self::load(anim_dir, &[mesh_tris.to_vec()])
+        Self::load(anim_dir, &[mesh_tris.to_vec()], &["beauty_girl".to_string()])
     }
 
     /// Check if animation data is available
@@ -499,9 +519,11 @@ impl AnimationData {
         time: f32,
         output: &mut Vec<WorldTri>,
     ) {
-        let assignments = self.model_bone_assignments.get(model_index)
-            .or_else(|| self.model_bone_assignments.first());
-        if !self.is_ready() || clip_index >= self.clips.len() || assignments.is_none() {
+        let assignments = self.model_bone_assignments.get(model_index);
+        // Fall back to bind pose if no assignments (model not rigged) or no clips
+        if !self.is_ready() || clip_index >= self.clips.len()
+            || assignments.is_none() || assignments.map_or(true, |a| a.is_empty())
+        {
             output.extend_from_slice(bind_tris);
             return;
         }
