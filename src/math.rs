@@ -388,6 +388,8 @@ pub fn m4_inverse_affine(m: &Mat4) -> Mat4 {
 }
 
 /// Build a quaternion from Euler angles in XYZ order (radians)
+/// Euler XYZ decomposition: Rz * Ry * Rx (matrix right-to-left).
+/// In quaternion terms: Qz * Qy * Qx.
 pub fn quat_from_euler_xyz(rx: f32, ry: f32, rz: f32) -> Quat {
     let qx = quat_from_axis_angle([1.0, 0.0, 0.0], rx);
     let qy = quat_from_axis_angle([0.0, 1.0, 0.0], ry);

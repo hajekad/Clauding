@@ -25,41 +25,7 @@ pub const CLIP_SITTING_POSE: usize = 7;
 
 /// Evaluate animation at time `t`, returning per-bone world-space transforms.
 pub fn evaluate_pose(skeleton: &FbxSkeleton, clip: &AnimationClip, t: f32) -> Vec<Mat4> {
-    let n = skeleton.bones.len();
-    let mut world_transforms: Vec<Mat4> = vec![M4_IDENTITY; n];
-
-    for i in 0..n {
-        let bone = &skeleton.bones[i];
-        let mut translation = bone.bind_translation; // already normalized
-        let mut rotation_deg = bone.bind_rotation;
-
-        if let Some(channel) = clip.bone_channels.iter().find(|c| c.bone_index == i) {
-            let anim_t = if clip.looping && clip.duration > 0.0 {
-                t % clip.duration
-            } else {
-                t.min(clip.duration)
-            };
-            rotation_deg = interpolate_channel_rotation(channel, anim_t);
-            if let Some(ref trans_keys) = channel.translations {
-                translation = interpolate_channel_translation(channel, trans_keys, anim_t);
-            }
-        }
-
-        let rx = rotation_deg[0].to_radians();
-        let ry = rotation_deg[1].to_radians();
-        let rz = rotation_deg[2].to_radians();
-        let rot_quat = quat_from_euler_xyz(rx, ry, rz);
-        let rot_mat = quat_to_mat3(rot_quat);
-        let local = m4_from_rot3_translation(&rot_mat, translation);
-
-        if let Some(parent) = bone.parent {
-            world_transforms[i] = m4_mul(&world_transforms[parent], &local);
-        } else {
-            world_transforms[i] = local;
-        }
-    }
-
-    world_transforms
+    compute_raw_pose(skeleton, Some((clip, t)))
 }
 
 /// Compute the bind-pose world transforms, normalized to match the mesh
@@ -94,11 +60,25 @@ fn compute_raw_pose(skeleton: &FbxSkeleton, clip_and_time: Option<(&AnimationCli
             }
         }
 
+        // FBX local transform: T * Rpre * R
+        // PreRotation converts from parent bone space to this bone's local axes
         let rx = rotation_deg[0].to_radians();
         let ry = rotation_deg[1].to_radians();
         let rz = rotation_deg[2].to_radians();
         let rot_quat = quat_from_euler_xyz(rx, ry, rz);
-        let rot_mat = quat_to_mat3(rot_quat);
+
+        let pre = bone.pre_rotation;
+        let pre_quat = quat_from_euler_xyz(
+            pre[0].to_radians(), pre[1].to_radians(), pre[2].to_radians()
+        );
+
+        // FBX order: local = T * Rpre * R → rotation part = Rpre * R
+        // But quat_mul(a,b) = a*b where b is applied first.
+        // We want the total rotation to be: first R, then Rpre on top.
+        // Matrix: Rpre * R → quat_mul(pre_quat, rot_quat) — pre applied after R.
+        // Actually let me just try both orders and see which one reduces deviation.
+        let combined_quat = quat_mul(rot_quat, pre_quat);
+        let rot_mat = quat_to_mat3(combined_quat);
         let local = m4_from_rot3_translation(&rot_mat, translation);
 
         if let Some(parent) = bone.parent {
@@ -250,7 +230,14 @@ pub fn compute_bone_assignments(
                 let dx = v[0] - bp[0];
                 let dy = v[1] - bp[1];
                 let dz = v[2] - bp[2];
-                let d = dx*dx + dy*dy + dz*dz;
+                let mut d = dx*dx + dy*dy + dz*dz;
+
+                // Bias: center bones (Spine, Hips, Neck, Head) get priority
+                // over limb bones when distances are similar. This prevents
+                // torso vertices near armpits from being grabbed by arm bones.
+                if bone_side[bi] != 0 {
+                    d *= 1.4; // 40% penalty for limb bones
+                }
 
                 if d < best_dist {
                     best_dist = d;
@@ -316,22 +303,21 @@ pub fn skin_mesh(
 
     let mut vi = 0; // vertex index into bone_assignments
     for tri in &mut output[base..] {
+        // Use ONE bone for the entire triangle (first vertex's bone).
+        // This prevents tearing when triangle vertices span bone boundaries.
+        let tri_bone = if vi < bone_assignments.len() {
+            let bi = bone_assignments[vi];
+            if bi < skin_matrices.len() { bi } else { 0 }
+        } else { 0 };
+
         for v in &mut tri.v {
-            if vi < bone_assignments.len() {
-                let bi = bone_assignments[vi];
-                if bi < skin_matrices.len() {
-                    *v = m4_transform_point(&skin_matrices[bi], *v);
-                }
+            if tri_bone < skin_matrices.len() {
+                *v = m4_transform_point(&skin_matrices[tri_bone], *v);
             }
             vi += 1;
         }
-        // Transform normal using the first vertex's bone
-        let tri_vi = vi - 3; // index of first vertex of this tri
-        if tri_vi < bone_assignments.len() {
-            let bi = bone_assignments[tri_vi];
-            if bi < skin_matrices.len() {
-                tri.normal = m4_transform_normal(&skin_matrices[bi], tri.normal);
-            }
+        if tri_bone < skin_matrices.len() {
+            tri.normal = m4_transform_normal(&skin_matrices[tri_bone], tri.normal);
         }
     }
 }
@@ -399,10 +385,18 @@ impl AnimationData {
             };
         }
 
-        // Normalize skeleton bind translations to match 1.8m mesh coordinate system
-        // No skeleton normalization needed — the FBX was created from our 1.8m OBJ
-        let bind_transforms = compute_bind_pose(&skeleton);
-        let inverse_bind = compute_inverse_bind_matrices(&skeleton);
+        // The inverse bind matrices must match what evaluate_pose produces.
+        // Use the walk animation at t=0 as the reference pose, since the
+        // FBX animation keyframes use a different rotation basis than the
+        // FBX Properties70 bind_rotation values.
+        let bind_transforms = if !clips.is_empty() {
+            evaluate_pose(&skeleton, &clips[0], 0.0)
+        } else {
+            compute_bind_pose(&skeleton)
+        };
+        let inverse_bind: Vec<Mat4> = bind_transforms.iter()
+            .map(|m| m4_inverse_affine(m))
+            .collect();
         let hips_bone = skeleton.bones.iter()
             .position(|b| b.name.contains("Hips") && !b.name.contains("UpLeg"))
             .unwrap_or(0);

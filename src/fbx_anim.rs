@@ -11,6 +11,7 @@ pub struct FbxBone {
     pub parent: Option<usize>,
     pub bind_translation: [f32; 3],
     pub bind_rotation: [f32; 3], // Euler degrees (XYZ order)
+    pub pre_rotation: [f32; 3],  // FBX PreRotation (degrees, applied before Lcl Rotation)
 }
 
 /// The skeleton: ordered list of bones with parent indices
@@ -487,6 +488,7 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
         name: String,
         bind_translation: [f32; 3],
         bind_rotation: [f32; 3],
+        pre_rotation: [f32; 3],  // FBX PreRotation (applied before Lcl Rotation)
     }
 
     let mut models: Vec<ModelInfo> = Vec::new();
@@ -505,6 +507,7 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
 
         let mut trans = [0.0f32; 3];
         let mut rot = [0.0f32; 3];
+        let mut pre_rot = [0.0f32; 3];
 
         if let Some(props70) = node.child("Properties70") {
             for p in props70.children_named("P") {
@@ -518,6 +521,10 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
                         rot[0] = p.prop_f64(4) as f32;
                         rot[1] = p.prop_f64(5) as f32;
                         rot[2] = p.prop_f64(6) as f32;
+                    } else if pname == "PreRotation" {
+                        pre_rot[0] = p.prop_f64(4) as f32;
+                        pre_rot[1] = p.prop_f64(5) as f32;
+                        pre_rot[2] = p.prop_f64(6) as f32;
                     }
                 }
             }
@@ -525,7 +532,7 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
 
         let idx = models.len();
         model_id_to_idx.insert(id, idx);
-        models.push(ModelInfo { id, name, bind_translation: trans, bind_rotation: rot });
+        models.push(ModelInfo { id, name, bind_translation: trans, bind_rotation: rot, pre_rotation: pre_rot });
     }
 
     // Step 2: Parse connections to build parent-child hierarchy
@@ -599,6 +606,7 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
             parent: parent_idx,
             bind_translation: model.bind_translation,
             bind_rotation: model.bind_rotation,
+            pre_rotation: model.pre_rotation,
         });
     }
 
