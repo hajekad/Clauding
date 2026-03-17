@@ -371,7 +371,7 @@ impl AnimationData {
     /// Only models whose names are in `rigged_names` get bone assignments.
     /// Others get empty assignments and will render in bind pose.
     pub fn load(anim_dir: &str, all_models: &[Vec<WorldTri>], model_names: &[String]) -> Self {
-        let (mut skeleton, clips) = crate::fbx_anim::load_all_animations(anim_dir);
+        let (skeleton, clips) = crate::fbx_anim::load_all_animations(anim_dir);
 
         if skeleton.bones.is_empty() {
             eprintln!("[skeleton_anim] No bones found — animation disabled");

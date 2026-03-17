@@ -205,7 +205,7 @@ pub fn compute_tire_forces(
     // Tire angular velocity update: torque balance on wheel
     // Use implicit integration to prevent oscillation: solve for ang_vel that balances
     // drive torque against the tire's grip reaction (linearized Pacejka around current slip)
-    let ground_speed_ang = vx_tire / wheel.radius;
+    let _ground_speed_ang = vx_tire / wheel.radius;
     let tire_reaction_torque = -fx * wheel.radius;
     let net_torque = effective_drive + tire_reaction_torque
         - effective_brake * wheel.ang_vel.signum();

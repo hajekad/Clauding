@@ -2835,7 +2835,7 @@ pub fn generate_world(game: &mut GameState) {
     let n_trees = game.model_library.trees.len();
     // Limit GLTF buildings to avoid exceeding GPU vert budget
     // Mix: ~50% GLTF, ~50% procedural — keeps visual variety AND performance
-    let max_gltf_buildings = 80;
+    let max_gltf_buildings = 40; // 40 × ~15K avg = 600K tris, fits GPU budget
     let mut gltf_count = 0;
     for (bi, spot) in building_spots.iter().enumerate() {
         if n_arch > 0 && gltf_count < max_gltf_buildings {
@@ -3463,6 +3463,7 @@ fn emit_gltf_tree_scaled(
 }
 
 /// Place a GLTF building model at world position with given height and rotation.
+#[allow(dead_code)]
 fn emit_gltf_building(
     tris: &mut Vec<WorldTri>, buildings: &mut Vec<Building>,
     model_tris: &[WorldTri], x: f32, ground_y: f32, z: f32, height: f32, rot: f32,
@@ -3507,6 +3508,7 @@ fn emit_gltf_building(
 }
 
 /// Place a GLTF tree model at world position with scale and rotation.
+#[allow(dead_code)]
 fn emit_gltf_tree(
     tris: &mut Vec<WorldTri>, trees: &mut Vec<Tree>,
     model_tris: &[WorldTri], x: f32, ground_y: f32, z: f32,
