@@ -62,12 +62,12 @@ impl ModelLibrary {
         let base = "models/v1";
         let mut lib = Self::empty();
 
-        // Budget per model instance, and max raw tris to attempt decimation.
+        // Same budget as cars — full detail for models under 20K, decimate larger ones.
         // Models over skip_above are photogrammetry scans — too detailed to decimate usefully.
-        let max_tris_arch: usize = 2_000;
-        let skip_above_arch: usize = 20_000;
-        let max_tris_tree: usize = 800;
-        let skip_above_tree: usize = 50_000; // islands can be large
+        let max_tris_arch: usize = 20_000;
+        let skip_above_arch: usize = 100_000;
+        let max_tris_tree: usize = 2_000;
+        let _skip_above_tree: usize = 50_000; // islands can be large
 
         let arch_dirs = discover_gltf_dirs(&format!("{base}/architecture"));
         for dir in &arch_dirs {
@@ -111,12 +111,23 @@ impl ModelLibrary {
                         tri.v.iter().all(|v| v.iter().all(|c| c.is_finite()))
                             && tri.normal.iter().all(|c| c.is_finite())
                     });
-                    // Strip ground plates from each island (pots, soil discs)
-                    let ground_y = 6.0 * 0.08;
+                    // Strip ground plates from each island (pots, soil discs, base geometry)
+                    // Remove any tri where ALL vertices are in the bottom 15% of the model
+                    // and the tri extends wider than it is tall (ground-like proportions)
+                    let ground_y = 6.0 * 0.15;
                     island.retain(|tri| {
                         let all_low = tri.v.iter().all(|v| v[1] < ground_y);
-                        let horizontal = tri.normal[1].abs() > 0.5;
-                        !(all_low && horizontal)
+                        if !all_low { return true; }
+                        // Check if this tri is wider than tall (ground plate shape)
+                        let dx = tri.v.iter().map(|v| v[0]).fold(f32::MIN, f32::max)
+                               - tri.v.iter().map(|v| v[0]).fold(f32::MAX, f32::min);
+                        let dz = tri.v.iter().map(|v| v[2]).fold(f32::MIN, f32::max)
+                               - tri.v.iter().map(|v| v[2]).fold(f32::MAX, f32::min);
+                        let dy = tri.v.iter().map(|v| v[1]).fold(f32::MIN, f32::max)
+                               - tri.v.iter().map(|v| v[1]).fold(f32::MAX, f32::min);
+                        let horiz_span = dx.max(dz);
+                        // Keep vertical tris (walls/trunks), strip horizontal ones (ground)
+                        horiz_span <= dy * 3.0 || dy > 0.3
                     });
                     if island.len() < 4 { continue; }
                     let (w, h, d) = measure_bounds(&island);
@@ -401,34 +412,69 @@ pub fn try_load_gltf_scaled(dir: &str, name: &str, color: u32, target_height: f3
 
     let accessors = parse_accessors(&json_str);
     let buffer_views = parse_buffer_views(&json_str);
-    let primitives = parse_all_primitives(&json_str);
+
+    // Parse nodes to get mesh→transform mapping
+    let nodes = parse_nodes(&json_str);
+    // Build mesh_index → world_transform map by walking node hierarchy
+    let mesh_transforms = compute_mesh_transforms(&nodes);
+
+    // Parse meshes with their primitives, keeping mesh index
+    let meshes = parse_meshes_with_index(&json_str);
 
     let mut all_tris: Vec<WorldTri> = Vec::new();
-    for prim in &primitives {
-        let pos_acc = prim.position_accessor;
-        if pos_acc >= accessors.len() { continue; }
-        let positions = extract_vec3(&accessors[pos_acc], &buffer_views, &bin_data);
-        let normals = if let Some(na) = prim.normal_accessor {
-            if na < accessors.len() { extract_vec3(&accessors[na], &buffer_views, &bin_data) }
-            else { Vec::new() }
-        } else { Vec::new() };
-        let indices = if let Some(ia) = prim.index_accessor {
-            if ia < accessors.len() { extract_indices_flat(&accessors[ia], &buffer_views, &bin_data) }
-            else { Vec::new() }
-        } else { (0..positions.len()).collect() };
+    for (mesh_idx, prims) in &meshes {
+        // Get world transform for this mesh (identity if no node references it)
+        let xform = mesh_transforms.get(mesh_idx).copied().unwrap_or([
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]);
+        let has_transform = xform != [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0];
 
-        for tri_idx in indices.chunks_exact(3) {
-            let (i0, i1, i2) = (tri_idx[0], tri_idx[1], tri_idx[2]);
-            if i0 >= positions.len() || i1 >= positions.len() || i2 >= positions.len() { continue; }
-            let normal = if !normals.is_empty() && i0 < normals.len() { normals[i0] }
-            else {
-                let e1 = [positions[i1][0]-positions[i0][0], positions[i1][1]-positions[i0][1], positions[i1][2]-positions[i0][2]];
-                let e2 = [positions[i2][0]-positions[i0][0], positions[i2][1]-positions[i0][1], positions[i2][2]-positions[i0][2]];
-                let (nx,ny,nz) = (e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]);
-                let nl = (nx*nx+ny*ny+nz*nz).sqrt();
-                if nl > 1e-10 { [nx/nl, ny/nl, nz/nl] } else { [0.0, 1.0, 0.0] }
-            };
-            all_tris.push(WorldTri { v: [positions[i0], positions[i1], positions[i2]], normal, color });
+        for prim in prims {
+            let pos_acc = prim.position_accessor;
+            if pos_acc >= accessors.len() { continue; }
+            let mut positions = extract_vec3(&accessors[pos_acc], &buffer_views, &bin_data);
+            let mut normals = if let Some(na) = prim.normal_accessor {
+                if na < accessors.len() { extract_vec3(&accessors[na], &buffer_views, &bin_data) }
+                else { Vec::new() }
+            } else { Vec::new() };
+            let indices = if let Some(ia) = prim.index_accessor {
+                if ia < accessors.len() { extract_indices_flat(&accessors[ia], &buffer_views, &bin_data) }
+                else { Vec::new() }
+            } else { (0..positions.len()).collect() };
+
+            // Apply node transform to positions and normals
+            if has_transform {
+                for p in &mut positions {
+                    let x = xform[0]*p[0] + xform[4]*p[1] + xform[8]*p[2] + xform[12];
+                    let y = xform[1]*p[0] + xform[5]*p[1] + xform[9]*p[2] + xform[13];
+                    let z = xform[2]*p[0] + xform[6]*p[1] + xform[10]*p[2] + xform[14];
+                    *p = [x, y, z];
+                }
+                for n in &mut normals {
+                    let x = xform[0]*n[0] + xform[4]*n[1] + xform[8]*n[2];
+                    let y = xform[1]*n[0] + xform[5]*n[1] + xform[9]*n[2];
+                    let z = xform[2]*n[0] + xform[6]*n[1] + xform[10]*n[2];
+                    let len = (x*x + y*y + z*z).sqrt();
+                    if len > 1e-6 { *n = [x/len, y/len, z/len]; }
+                }
+            }
+
+            for tri_idx in indices.chunks_exact(3) {
+                let (i0, i1, i2) = (tri_idx[0], tri_idx[1], tri_idx[2]);
+                if i0 >= positions.len() || i1 >= positions.len() || i2 >= positions.len() { continue; }
+                let normal = if !normals.is_empty() && i0 < normals.len() { normals[i0] }
+                else {
+                    let e1 = [positions[i1][0]-positions[i0][0], positions[i1][1]-positions[i0][1], positions[i1][2]-positions[i0][2]];
+                    let e2 = [positions[i2][0]-positions[i0][0], positions[i2][1]-positions[i0][1], positions[i2][2]-positions[i0][2]];
+                    let (nx,ny,nz) = (e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]);
+                    let nl = (nx*nx+ny*ny+nz*nz).sqrt();
+                    if nl > 1e-10 { [nx/nl, ny/nl, nz/nl] } else { [0.0, 1.0, 0.0] }
+                };
+                all_tris.push(WorldTri { v: [positions[i0], positions[i1], positions[i2]], normal, color });
+            }
         }
     }
     if all_tris.is_empty() { return None; }
@@ -752,14 +798,14 @@ struct Accessor {
     byte_offset: usize,
     comp_type: u32,
     count: usize,
-    acc_type: String, // "VEC3", "SCALAR", etc.
+    _acc_type: String, // "VEC3", "SCALAR", etc.
 }
 
 #[derive(Debug)]
 struct BufferView {
     byte_offset: usize,
     byte_stride: usize,
-    byte_length: usize,
+    _byte_length: usize,
 }
 
 struct MeshPrimitive {
@@ -827,7 +873,7 @@ fn parse_accessors(json: &str) -> Vec<Accessor> {
             byte_offset: find_int(&obj, "\"byteOffset\"").unwrap_or(0) as usize,
             comp_type: find_int(&obj, "\"componentType\"").unwrap_or(0) as u32,
             count: find_int(&obj, "\"count\"").unwrap_or(0) as usize,
-            acc_type: find_string(&obj, "\"type\"").unwrap_or_default(),
+            _acc_type: find_string(&obj, "\"type\"").unwrap_or_default(),
         });
     }
     result
@@ -841,13 +887,158 @@ fn parse_buffer_views(json: &str) -> Vec<BufferView> {
         result.push(BufferView {
             byte_offset: find_int(&obj, "\"byteOffset\"").unwrap_or(0) as usize,
             byte_stride: find_int(&obj, "\"byteStride\"").unwrap_or(0) as usize,
-            byte_length: find_int(&obj, "\"byteLength\"").unwrap_or(0) as usize,
+            _byte_length: find_int(&obj, "\"byteLength\"").unwrap_or(0) as usize,
         });
     }
     result
 }
 
 /// Parse all mesh primitives, extracting POSITION, NORMAL, and indices accessor indices.
+// ── Node transform support ──────────────────────────────────────────────
+
+struct GltfNode {
+    mesh: Option<usize>,
+    children: Vec<usize>,
+    matrix: [f32; 16], // column-major 4×4 local transform
+}
+
+fn parse_nodes(json: &str) -> Vec<GltfNode> {
+    let mut result = Vec::new();
+    let Some(start) = find_array(json, "\"nodes\"") else { return result; };
+    let arr = extract_array(json, start);
+    for obj in iter_objects(&arr) {
+        let mesh = find_int(&obj, "\"mesh\"").map(|v| v as usize);
+        let mut children = Vec::new();
+        if let Some(cs) = find_array(&obj, "\"children\"") {
+            let ca = extract_array(&obj, cs);
+            // Parse integer array
+            for num_str in ca.split(',') {
+                let num_str = num_str.trim().trim_matches(|c: char| !c.is_ascii_digit() && c != '-');
+                if let Ok(v) = num_str.parse::<usize>() { children.push(v); }
+            }
+        }
+        // Parse transform: either "matrix" or TRS
+        let matrix = if let Some(mat_start) = find_array(&obj, "\"matrix\"") {
+            let mat_arr = extract_array(&obj, mat_start);
+            parse_float_array_16(&mat_arr)
+        } else {
+            // Build from TRS
+            let tx = find_float_at(&obj, "\"translation\"", 0).unwrap_or(0.0);
+            let ty = find_float_at(&obj, "\"translation\"", 1).unwrap_or(0.0);
+            let tz = find_float_at(&obj, "\"translation\"", 2).unwrap_or(0.0);
+            let sx = find_float_at(&obj, "\"scale\"", 0).unwrap_or(1.0);
+            let sy = find_float_at(&obj, "\"scale\"", 1).unwrap_or(1.0);
+            let sz = find_float_at(&obj, "\"scale\"", 2).unwrap_or(1.0);
+            let qx = find_float_at(&obj, "\"rotation\"", 0).unwrap_or(0.0);
+            let qy = find_float_at(&obj, "\"rotation\"", 1).unwrap_or(0.0);
+            let qz = find_float_at(&obj, "\"rotation\"", 2).unwrap_or(0.0);
+            let qw = find_float_at(&obj, "\"rotation\"", 3).unwrap_or(1.0);
+            trs_to_matrix(tx, ty, tz, qx, qy, qz, qw, sx, sy, sz)
+        };
+        result.push(GltfNode { mesh, children, matrix });
+    }
+    result
+}
+
+fn trs_to_matrix(tx: f32, ty: f32, tz: f32, qx: f32, qy: f32, qz: f32, qw: f32, sx: f32, sy: f32, sz: f32) -> [f32; 16] {
+    // Quaternion to rotation matrix, then apply scale and translation
+    let x2 = qx+qx; let y2 = qy+qy; let z2 = qz+qz;
+    let xx = qx*x2; let xy = qx*y2; let xz = qx*z2;
+    let yy = qy*y2; let yz = qy*z2; let zz = qz*z2;
+    let wx = qw*x2; let wy = qw*y2; let wz = qw*z2;
+    // Column-major
+    [
+        (1.0-yy-zz)*sx, (xy+wz)*sx, (xz-wy)*sx, 0.0,
+        (xy-wz)*sy, (1.0-xx-zz)*sy, (yz+wx)*sy, 0.0,
+        (xz+wy)*sz, (yz-wx)*sz, (1.0-xx-yy)*sz, 0.0,
+        tx, ty, tz, 1.0,
+    ]
+}
+
+fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+    let mut r = [0.0f32; 16];
+    for c in 0..4 {
+        for row in 0..4 {
+            r[c*4+row] = a[0*4+row]*b[c*4+0] + a[1*4+row]*b[c*4+1] + a[2*4+row]*b[c*4+2] + a[3*4+row]*b[c*4+3];
+        }
+    }
+    r
+}
+
+/// Walk node hierarchy, compute world transform for each mesh
+fn compute_mesh_transforms(nodes: &[GltfNode]) -> std::collections::HashMap<usize, [f32; 16]> {
+    use std::collections::HashMap;
+    let mut result: HashMap<usize, [f32; 16]> = HashMap::new();
+    let identity: [f32; 16] = [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0];
+
+    fn walk(nodes: &[GltfNode], idx: usize, parent_xform: &[f32; 16], result: &mut HashMap<usize, [f32; 16]>) {
+        if idx >= nodes.len() { return; }
+        let world = mat4_mul(parent_xform, &nodes[idx].matrix);
+        if let Some(mesh_idx) = nodes[idx].mesh {
+            result.insert(mesh_idx, world);
+        }
+        for &child in &nodes[idx].children {
+            walk(nodes, child, &world, result);
+        }
+    }
+
+    // Find root nodes (nodes not referenced as children)
+    let mut is_child = vec![false; nodes.len()];
+    for n in nodes {
+        for &c in &n.children { if c < is_child.len() { is_child[c] = true; } }
+    }
+    for i in 0..nodes.len() {
+        if !is_child[i] {
+            walk(nodes, i, &identity, &mut result);
+        }
+    }
+    result
+}
+
+/// Parse meshes keeping their index, returning (mesh_index, primitives) pairs
+fn parse_meshes_with_index(json: &str) -> Vec<(usize, Vec<MeshPrimitive>)> {
+    let mut result = Vec::new();
+    let Some(meshes_start) = find_array(json, "\"meshes\"") else { return result; };
+    let meshes_arr = extract_array(json, meshes_start);
+
+    for (mi, mesh_obj) in iter_objects(&meshes_arr).into_iter().enumerate() {
+        let mut prims = Vec::new();
+        let Some(prims_start) = find_array(&mesh_obj, "\"primitives\"") else { continue; };
+        let prims_arr = extract_array(&mesh_obj, prims_start);
+        for prim_obj in iter_objects(&prims_arr) {
+            let pos = find_attr_accessor(&prim_obj, "POSITION");
+            let norm = find_attr_accessor(&prim_obj, "NORMAL");
+            let idx = find_int(&prim_obj, "\"indices\"").map(|v| v as usize);
+            if let Some(pos_acc) = pos {
+                prims.push(MeshPrimitive { position_accessor: pos_acc, normal_accessor: norm, index_accessor: idx });
+            }
+        }
+        if !prims.is_empty() { result.push((mi, prims)); }
+    }
+    result
+}
+
+fn parse_float_array_16(s: &str) -> [f32; 16] {
+    let mut result = [0.0f32; 16];
+    let mut i = 0;
+    for part in s.split(',') {
+        if i >= 16 { break; }
+        let trimmed = part.trim().trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-' && c != 'e' && c != 'E' && c != '+');
+        if let Ok(v) = trimmed.parse::<f32>() { result[i] = v; i += 1; }
+    }
+    result
+}
+
+fn find_float_at(json: &str, key: &str, index: usize) -> Option<f32> {
+    let start = find_array(json, key)?;
+    let arr = extract_array(json, start);
+    let parts: Vec<&str> = arr.split(',').collect();
+    if index >= parts.len() { return None; }
+    let trimmed = parts[index].trim().trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-' && c != 'e' && c != 'E' && c != '+');
+    trimmed.parse::<f32>().ok()
+}
+
+// Keep the old function for backward compat (legacy load_gltf_model)
 fn parse_all_primitives(json: &str) -> Vec<MeshPrimitive> {
     let mut result = Vec::new();
 
