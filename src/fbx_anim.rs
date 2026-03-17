@@ -97,6 +97,18 @@ impl FbxNode {
             _ => "",
         }
     }
+
+    fn prop_arr_i32(&self, idx: usize) -> &[i32] {
+        match &self.props[idx] { FbxProp::ArrI32(v) => v, _ => &[] }
+    }
+
+    fn prop_arr_f64(&self, idx: usize) -> &[f64] {
+        match &self.props[idx] { FbxProp::ArrF64(v) => v, _ => &[] }
+    }
+
+    fn prop_arr_f32(&self, idx: usize) -> &[f32] {
+        match &self.props[idx] { FbxProp::ArrF32(v) => v, _ => &[] }
+    }
 }
 
 // ── DEFLATE / zlib decompression ────────────────────────────────────────
@@ -816,4 +828,241 @@ pub fn load_all_animations(dir: &str) -> (FbxSkeleton, Vec<AnimationClip>) {
     }
 
     (skeleton, clips)
+}
+
+// ── FBX inspection + skin data extraction ──────────────────────────────
+
+/// Per-bone skin cluster data extracted from FBX Deformers
+pub struct SkinCluster {
+    pub bone_name: String,
+    pub vertex_indices: Vec<i32>,
+    pub weights: Vec<f64>,
+    pub transform: [f64; 16],       // inverse bind matrix (row-major)
+    pub transform_link: [f64; 16],  // bind pose matrix (row-major)
+}
+
+/// Complete skin data from an FBX file
+pub struct FbxSkinData {
+    pub clusters: Vec<SkinCluster>,
+    pub vertex_count: usize,  // total vertices in the FBX mesh
+}
+
+/// Inspect FBX file structure — returns human-readable summary for studio
+pub fn inspect_fbx(path: &str) -> String {
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => return format!("Failed to read {}: {}", path, e),
+    };
+    let nodes = parse_fbx(&data);
+    let mut out = String::new();
+
+    // Find Objects
+    let objects = match nodes.iter().find(|n| n.name == "Objects") {
+        Some(n) => n,
+        None => return "No Objects node found".to_string(),
+    };
+
+    // Count node types
+    let mut type_counts: HashMap<String, usize> = HashMap::new();
+    for child in &objects.children {
+        *type_counts.entry(child.name.clone()).or_insert(0) += 1;
+    }
+    out.push_str(&format!("FBX Objects: {:?}\n", type_counts));
+
+    // List Deformers
+    for node in objects.children.iter().filter(|n| n.name == "Deformer") {
+        let id = if !node.props.is_empty() { node.prop_i64(0) } else { 0 };
+        let name = if node.props.len() > 1 { node.prop_str(1) } else { "" };
+        let dtype = if node.props.len() > 2 { node.prop_str(2) } else { "" };
+        out.push_str(&format!("  Deformer ID={} name='{}' type='{}'\n", id, name, dtype));
+
+        // Show children of Cluster deformers
+        if dtype == "Cluster" {
+            for child in &node.children {
+                let desc = match child.name.as_str() {
+                    "Indexes" if !child.props.is_empty() => {
+                        match &child.props[0] {
+                            FbxProp::ArrI32(v) => format!("int[{}]", v.len()),
+                            _ => format!("{} props", child.props.len()),
+                        }
+                    }
+                    "Weights" if !child.props.is_empty() => {
+                        match &child.props[0] {
+                            FbxProp::ArrF64(v) => format!("f64[{}]", v.len()),
+                            FbxProp::ArrF32(v) => format!("f32[{}]", v.len()),
+                            _ => format!("{} props", child.props.len()),
+                        }
+                    }
+                    "Transform" | "TransformLink" if !child.props.is_empty() => {
+                        match &child.props[0] {
+                            FbxProp::ArrF64(v) => format!("mat4x4 ({} doubles)", v.len()),
+                            _ => format!("{} props", child.props.len()),
+                        }
+                    }
+                    _ => format!("{} children, {} props", child.children.len(), child.props.len()),
+                };
+                out.push_str(&format!("    {}: {}\n", child.name, desc));
+            }
+        }
+    }
+
+    // List Geometry nodes
+    for node in objects.children.iter().filter(|n| n.name == "Geometry") {
+        let id = if !node.props.is_empty() { node.prop_i64(0) } else { 0 };
+        let name = if node.props.len() > 1 { node.prop_str(1) } else { "" };
+        let gtype = if node.props.len() > 2 { node.prop_str(2) } else { "" };
+        let mut vert_count = 0;
+        let mut idx_count = 0;
+        for child in &node.children {
+            if child.name == "Vertices" && !child.props.is_empty() {
+                if let FbxProp::ArrF64(v) = &child.props[0] { vert_count = v.len() / 3; }
+            }
+            if child.name == "PolygonVertexIndex" && !child.props.is_empty() {
+                if let FbxProp::ArrI32(v) = &child.props[0] { idx_count = v.len(); }
+            }
+        }
+        out.push_str(&format!("  Geometry ID={} '{}' type='{}' verts={} indices={}\n",
+            id, name, gtype, vert_count, idx_count));
+    }
+
+    // Connections summary
+    if let Some(conns) = nodes.iter().find(|n| n.name == "Connections") {
+        out.push_str(&format!("Connections: {} total\n", conns.children.len()));
+    }
+
+    out
+}
+
+/// Extract skin data (bone weights + bind matrices) from an FBX file.
+/// Returns None if no skin deformers found.
+pub fn extract_skin_data(path: &str) -> Option<FbxSkinData> {
+    let data = std::fs::read(path).ok()?;
+    let nodes = parse_fbx(&data);
+
+    let objects = nodes.iter().find(|n| n.name == "Objects")?;
+    let connections = nodes.iter().find(|n| n.name == "Connections")?;
+
+    // Build connection map: child_id -> parent_id
+    let mut conn_child_to_parent: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut conn_parent_to_child: HashMap<i64, Vec<i64>> = HashMap::new();
+    for c in &connections.children {
+        if c.props.len() >= 3 {
+            let child_id = c.prop_i64(1);
+            let parent_id = c.prop_i64(2);
+            conn_child_to_parent.entry(child_id).or_default().push(parent_id);
+            conn_parent_to_child.entry(parent_id).or_default().push(child_id);
+        }
+    }
+
+    // Map Model IDs to bone names
+    let mut model_id_to_name: HashMap<i64, String> = HashMap::new();
+    for node in objects.children.iter().filter(|n| n.name == "Model") {
+        if node.props.len() >= 2 {
+            let id = node.prop_i64(0);
+            let raw_name = node.prop_str(1);
+            let name = raw_name.split('\x00').next().unwrap_or(raw_name).to_string();
+            model_id_to_name.insert(id, name);
+        }
+    }
+
+    // Find mesh vertex count from Geometry node
+    let mut vertex_count = 0;
+    for node in objects.children.iter().filter(|n| n.name == "Geometry") {
+        for child in &node.children {
+            if child.name == "Vertices" && !child.props.is_empty() {
+                if let FbxProp::ArrF64(v) = &child.props[0] { vertex_count = v.len() / 3; }
+            }
+        }
+    }
+
+    // Extract Cluster deformers
+    let mut clusters: Vec<SkinCluster> = Vec::new();
+
+    for node in objects.children.iter().filter(|n| n.name == "Deformer") {
+        if node.props.len() < 3 { continue; }
+        let dtype = node.prop_str(2);
+        if dtype != "Cluster" { continue; }
+
+        let cluster_id = node.prop_i64(0);
+
+        // Get vertex indices and weights
+        let mut indices: Vec<i32> = Vec::new();
+        let mut weights: Vec<f64> = Vec::new();
+        let mut transform = [0.0f64; 16];
+        let mut transform_link = [0.0f64; 16];
+
+        for child in &node.children {
+            match child.name.as_str() {
+                "Indexes" if !child.props.is_empty() => {
+                    if let FbxProp::ArrI32(v) = &child.props[0] {
+                        indices = v.clone();
+                    }
+                }
+                "Weights" if !child.props.is_empty() => {
+                    match &child.props[0] {
+                        FbxProp::ArrF64(v) => weights = v.clone(),
+                        FbxProp::ArrF32(v) => weights = v.iter().map(|&f| f as f64).collect(),
+                        _ => {}
+                    }
+                }
+                "Transform" if !child.props.is_empty() => {
+                    if let FbxProp::ArrF64(v) = &child.props[0] {
+                        if v.len() >= 16 {
+                            transform.copy_from_slice(&v[..16]);
+                        }
+                    }
+                }
+                "TransformLink" if !child.props.is_empty() => {
+                    if let FbxProp::ArrF64(v) = &child.props[0] {
+                        if v.len() >= 16 {
+                            transform_link.copy_from_slice(&v[..16]);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Find which bone this cluster connects to via Connections
+        // Cluster -> SubDeformer(Skin) -> Geometry, but also Cluster -> Model(bone)
+        let mut bone_name = String::new();
+        if let Some(parents) = conn_child_to_parent.get(&cluster_id) {
+            for &pid in parents {
+                if let Some(name) = model_id_to_name.get(&pid) {
+                    bone_name = name.clone();
+                    break;
+                }
+            }
+        }
+        // Also check children connected TO this cluster
+        if bone_name.is_empty() {
+            if let Some(children) = conn_parent_to_child.get(&cluster_id) {
+                for &cid in children {
+                    if let Some(name) = model_id_to_name.get(&cid) {
+                        bone_name = name.clone();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !indices.is_empty() {
+            clusters.push(SkinCluster {
+                bone_name,
+                vertex_indices: indices,
+                weights,
+                transform,
+                transform_link,
+            });
+        }
+    }
+
+    if clusters.is_empty() {
+        return None;
+    }
+
+    eprintln!("[fbx_anim] Extracted skin data: {} clusters, {} mesh verts",
+        clusters.len(), vertex_count);
+
+    Some(FbxSkinData { clusters, vertex_count })
 }
