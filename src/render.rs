@@ -4698,6 +4698,96 @@ pub fn sky_color_f32(hour: f32) -> [f32; 4] {
     ]
 }
 
+/// Software-rasterize a set of triangles from a given camera orbit, returning a pixel buffer.
+/// Used by studio and body_view for model preview rendering.
+///   tris: world-space triangles to render
+///   bearing: camera bearing in degrees (0 = front, 90 = right)
+///   pitch: camera pitch in degrees (positive = looking down)
+///   dist: camera distance from model center
+///   width, height: output image dimensions
+///   bg_color: background fill color (ARGB)
+pub fn render_model_to_pixels(
+    tris: &[WorldTri],
+    bearing: f32, pitch: f32, dist: f32,
+    width: usize, height: usize,
+    bg_color: u32,
+) -> Vec<u32> {
+    // Find model vertical center for camera target
+    let mut cy = 0.0f32;
+    let mut count = 0usize;
+    for tri in tris {
+        for v in &tri.v { cy += v[1]; count += 1; }
+    }
+    if count > 0 { cy /= count as f32; }
+
+    // Camera orbiting model center
+    let br = bearing.to_radians();
+    let pr = pitch.to_radians();
+    let eye_x = dist * br.sin() * pr.cos();
+    let eye_z = -dist * br.cos() * pr.cos();
+    let eye_y = cy + dist * pr.sin();
+
+    let view = m4_look_at([eye_x, eye_y, eye_z], [0.0, cy, 0.0], [0.0, 1.0, 0.0]);
+    let proj = m4_perspective(45.0f32.to_radians(), width as f32 / height as f32, 0.05, 50.0);
+    let vp = m4_mul(&proj, &view);
+
+    // Software rasterize
+    let mut fb = Framebuffer::new(width, height);
+    fb.clear(bg_color);
+
+    // Ground plane
+    let ground_col = 0xFF0F0F1Au32;
+    let ground_tris = [
+        WorldTri { v: [[-2.0, 0.0, -2.0], [2.0, 0.0, -2.0], [2.0, 0.0, 2.0]], normal: [0.0, 1.0, 0.0], color: ground_col },
+        WorldTri { v: [[-2.0, 0.0, -2.0], [2.0, 0.0, 2.0], [-2.0, 0.0, 2.0]], normal: [0.0, 1.0, 0.0], color: ground_col },
+    ];
+
+    // Light direction (sun from above-front-right)
+    let light = [0.4f32, 0.8, -0.45];
+    let ll = (light[0]*light[0]+light[1]*light[1]+light[2]*light[2]).sqrt();
+    let light_n = [light[0]/ll, light[1]/ll, light[2]/ll];
+
+    for tri in ground_tris.iter().chain(tris.iter()) {
+        // Transform to clip space
+        let mut sv = [[0.0f32; 4]; 3];
+        for i in 0..3 {
+            sv[i] = m4_transform_no_div(&vp, tri.v[i]);
+        }
+        // Clip behind near plane
+        if sv[0][3] <= 0.01 && sv[1][3] <= 0.01 && sv[2][3] <= 0.01 { continue; }
+
+        // Perspective divide + viewport
+        let mut sx = [[0.0f32; 3]; 3];
+        let mut any_behind = false;
+        for i in 0..3 {
+            if sv[i][3] <= 0.01 { any_behind = true; break; }
+            let inv_w = 1.0 / sv[i][3];
+            sx[i][0] = (0.5 + sv[i][0] * inv_w * 0.5) * width as f32;
+            sx[i][1] = (0.5 - sv[i][1] * inv_w * 0.5) * height as f32;
+            sx[i][2] = sv[i][2] * inv_w;
+        }
+        if any_behind { continue; }
+
+        // Backface cull
+        let cross = (sx[1][0]-sx[0][0])*(sx[2][1]-sx[0][1]) - (sx[1][1]-sx[0][1])*(sx[2][0]-sx[0][0]);
+        if cross <= 0.0 { continue; }
+
+        // Simple diffuse lighting
+        let dot = tri.normal[0]*light_n[0] + tri.normal[1]*light_n[1] + tri.normal[2]*light_n[2];
+        let shade = 0.45 + 0.55 * dot.max(0.0);
+
+        let r = ((tri.color >> 16) & 0xFF) as f32 * shade;
+        let g = ((tri.color >> 8) & 0xFF) as f32 * shade;
+        let b = (tri.color & 0xFF) as f32 * shade;
+        let col = 0xFF000000 | ((r.min(255.0) as u32) << 16) | ((g.min(255.0) as u32) << 8) | (b.min(255.0) as u32);
+
+        let screen_tri = ScreenTri { v: sx, color: col };
+        draw_triangle(&mut fb, &screen_tri);
+    }
+
+    fb.pixels
+}
+
 /// Build VP matrix, push constants, and clear color for a frame.
 pub fn frame_setup(
     width: usize, height: usize,

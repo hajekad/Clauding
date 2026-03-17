@@ -2842,8 +2842,8 @@ pub fn generate_world(game: &mut GameState) {
             // Pick model randomly (not round-robin — avoids repeating patterns)
             let model_idx = rng.next() as usize % n_arch;
             let entry = &game.model_library.architecture[model_idx];
-            // Height varies per building — scale from model's normalized 8m base
-            let h = rng.range(5.0, 14.0);
+            // Height varies per building — keep reasonable (3-10m)
+            let h = rng.range(4.0, 10.0);
             let scale = h / entry.height.max(0.1);
             // Orient randomly but prefer 90° increments for street alignment
             let rot_choice = rng.next() % 8;
