@@ -14,7 +14,7 @@ pub struct LoadedModel {
 }
 
 /// Compute bounding box dimensions of a set of triangles.
-fn measure_bounds(tris: &[WorldTri]) -> (f32, f32, f32) {
+pub fn measure_bounds(tris: &[WorldTri]) -> (f32, f32, f32) {
     let mut min = [f32::MAX; 3];
     let mut max = [f32::MIN; 3];
     for tri in tris {
@@ -66,8 +66,8 @@ impl ModelLibrary {
         // Models over skip_above are photogrammetry scans — too detailed to decimate usefully.
         let max_tris_arch: usize = 2_000;
         let skip_above_arch: usize = 20_000;
-        let max_tris_tree: usize = 500;
-        let skip_above_tree: usize = 10_000;
+        let max_tris_tree: usize = 800;
+        let skip_above_tree: usize = 50_000; // islands can be large
 
         let arch_dirs = discover_gltf_dirs(&format!("{base}/architecture"));
         for dir in &arch_dirs {
@@ -80,7 +80,7 @@ impl ModelLibrary {
                     eprintln!("  SKIP '{}': too thin ({:.1}×{:.1}×{:.1}m)", name, m.width, m.height, m.depth);
                     continue;
                 }
-                if max_footprint > m.height * 2.2 {
+                if max_footprint > m.height * 1.8 {
                     eprintln!("  SKIP '{}': too wide ({:.1}×{:.1}×{:.1}m)", name, m.width, m.height, m.depth);
                     continue;
                 }
@@ -99,22 +99,37 @@ impl ModelLibrary {
         let nature_dirs = discover_gltf_dirs(&format!("{base}/nature"));
         for dir in &nature_dirs {
             let name = dir.rsplit('/').next().unwrap_or("?");
-            if let Some(mut m) = try_load_gltf_scaled(dir, name, 0xFF447733, 6.0) {
-                let raw_tris = m.tris.len();
-                let max_footprint = m.width.max(m.depth);
-                if max_footprint > m.height * 2.0 {
-                    eprintln!("  SKIP tree '{}': too wide ({:.1}×{:.1}×{:.1}m)", name, m.width, m.height, m.depth);
-                    continue;
+            if let Some(m) = try_load_gltf_scaled(dir, name, 0xFF447733, 6.0) {
+                // Split packs into individual trees by finding connected components
+                let individuals = split_into_islands(&m.tris);
+                eprintln!("  tree '{}': {} raw tris -> {} islands", name, m.tris.len(), individuals.len());
+                for (ii, mut island) in individuals.into_iter().enumerate() {
+                    // Re-normalize each island to 6m tall, centered
+                    normalize_model_to_height(&mut island, 6.0);
+                    fix_winding_ccw(&mut island);
+                    island.retain(|tri| {
+                        tri.v.iter().all(|v| v.iter().all(|c| c.is_finite()))
+                            && tri.normal.iter().all(|c| c.is_finite())
+                    });
+                    // Strip ground plates from each island (pots, soil discs)
+                    let ground_y = 6.0 * 0.08;
+                    island.retain(|tri| {
+                        let all_low = tri.v.iter().all(|v| v[1] < ground_y);
+                        let horizontal = tri.normal[1].abs() > 0.5;
+                        !(all_low && horizontal)
+                    });
+                    if island.len() < 4 { continue; }
+                    let (w, h, d) = measure_bounds(&island);
+                    if h < w * 0.3 && h < d * 0.3 { continue; }
+                    if w > h * 3.0 || d > h * 3.0 { continue; }
+                    decimate_to_budget(&mut island, max_tris_tree);
+                    if island.is_empty() { continue; }
+                    eprintln!("    island[{}]: {} tris, {:.1}×{:.1}×{:.1}m", ii, island.len(), w, h, d);
+                    lib.trees.push(ModelEntry {
+                        height: h, width: w, depth: d,
+                        tris: island, name: format!("{}_{}", name, ii),
+                    });
                 }
-                if raw_tris > skip_above_tree {
-                    eprintln!("  SKIP tree '{}': too detailed ({} tris > {} max)", name, raw_tris, skip_above_tree);
-                    continue;
-                }
-                decimate_to_budget(&mut m.tris, max_tris_tree);
-                lib.trees.push(ModelEntry {
-                    height: m.height, width: m.width, depth: m.depth,
-                    tris: m.tris, name: m.name,
-                });
             }
         }
 
@@ -271,6 +286,11 @@ fn cluster_decimate(tris: &[WorldTri], grid_res: u32) -> Vec<WorldTri> {
 }
 
 /// Recursively discover directories containing scene.gltf files.
+/// Public: discover model directories for the studio models command.
+pub fn discover_model_dirs(root: &str) -> Vec<String> {
+    discover_gltf_dirs(root)
+}
+
 fn discover_gltf_dirs(root: &str) -> Vec<String> {
     let mut result = Vec::new();
     scan_for_gltf(root, &mut result);
@@ -297,6 +317,61 @@ fn scan_for_gltf(dir: &str, out: &mut Vec<String>) {
     for sub in subdirs {
         scan_for_gltf(&sub, out);
     }
+}
+
+/// Split a mesh into disconnected islands (connected components).
+/// Two triangles are connected if they share a vertex within epsilon distance.
+fn split_into_islands(tris: &[WorldTri]) -> Vec<Vec<WorldTri>> {
+    if tris.is_empty() { return Vec::new(); }
+
+    // Quantize vertex positions to a grid for fast neighbor lookup
+    let eps = 0.01f32;
+    let inv_eps = 1.0 / eps;
+    let vert_key = |v: [f32; 3]| -> (i32, i32, i32) {
+        ((v[0] * inv_eps) as i32, (v[1] * inv_eps) as i32, (v[2] * inv_eps) as i32)
+    };
+
+    // Map each vertex key to a list of triangle indices that use it
+    use std::collections::HashMap;
+    let mut vert_to_tris: HashMap<(i32,i32,i32), Vec<usize>> = HashMap::new();
+    for (ti, tri) in tris.iter().enumerate() {
+        for v in &tri.v {
+            vert_to_tris.entry(vert_key(*v)).or_default().push(ti);
+        }
+    }
+
+    // Union-Find to group connected triangles
+    let n = tris.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    let find = |parent: &mut Vec<usize>, mut x: usize| -> usize {
+        while parent[x] != x { parent[x] = parent[parent[x]]; x = parent[x]; }
+        x
+    };
+
+    // For each vertex, union all triangles sharing that vertex
+    for tri_list in vert_to_tris.values() {
+        if tri_list.len() < 2 { continue; }
+        let root_a = find(&mut parent, tri_list[0]);
+        for &ti in &tri_list[1..] {
+            let root_b = find(&mut parent, ti);
+            if root_a != root_b {
+                parent[root_b] = root_a;
+            }
+        }
+    }
+
+    // Collect islands
+    let mut islands: HashMap<usize, Vec<WorldTri>> = HashMap::new();
+    for (ti, tri) in tris.iter().enumerate() {
+        let root = find(&mut parent, ti);
+        islands.entry(root).or_default().push(
+            WorldTri { v: tri.v, normal: tri.normal, color: tri.color }
+        );
+    }
+
+    let mut result: Vec<Vec<WorldTri>> = islands.into_values().collect();
+    result.sort_by(|a, b| b.len().cmp(&a.len())); // largest first
+    result
 }
 
 /// Ensure all triangles have CCW winding (front face for Vulkan).
@@ -358,11 +433,23 @@ pub fn try_load_gltf_scaled(dir: &str, name: &str, color: u32, target_height: f3
     }
     if all_tris.is_empty() { return None; }
     normalize_model_to_height(&mut all_tris, target_height);
-    // Filter NaN/Inf and fix winding for backface culling (CCW = front face)
+    // Filter NaN/Inf
     all_tris.retain(|tri| {
         tri.v.iter().all(|v| v.iter().all(|c| c.is_finite()))
             && tri.normal.iter().all(|c| c.is_finite())
     });
+    // Strip ground geometry: tris where all vertices near Y=0 and facing up or down.
+    // These are base plates, floor planes, and foundation undersides.
+    let ground_y = target_height * 0.05;
+    let before = all_tris.len();
+    all_tris.retain(|tri| {
+        let all_low = tri.v.iter().all(|v| v[1] < ground_y);
+        let horizontal = tri.normal[1].abs() > 0.5; // facing up or down
+        !(all_low && horizontal)
+    });
+    if all_tris.len() < before {
+        eprintln!("  stripped {} ground tris", before - all_tris.len());
+    }
     fix_winding_ccw(&mut all_tris);
     if all_tris.is_empty() { return None; }
     let (w, h, d) = measure_bounds(&all_tris);
@@ -578,12 +665,18 @@ fn normalize_model_to_height(tris: &mut [WorldTri], target_height: f32) {
     let cx = (min[0] + max[0]) * 0.5;
     let cy_base = min[up];
     let cz = (min[depth_ax] + max[depth_ax]) * 0.5;
+    // Swapping axes changes handedness → flip winding to fix backface culling
+    let need_flip = up != 1; // any axis swap from Y-up flips handedness
+
     for tri in tris.iter_mut() {
         for v in &mut tri.v {
             let old = *v;
             v[0] = (old[0] - cx) * scale;
             v[1] = (old[up] - cy_base) * scale;
             v[2] = (old[depth_ax] - cz) * scale;
+        }
+        if need_flip {
+            tri.v.swap(1, 2); // reverse winding order
         }
         let e1 = [tri.v[1][0]-tri.v[0][0], tri.v[1][1]-tri.v[0][1], tri.v[1][2]-tri.v[0][2]];
         let e2 = [tri.v[2][0]-tri.v[0][0], tri.v[2][1]-tri.v[0][1], tri.v[2][2]-tri.v[0][2]];
