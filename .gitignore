@@ -1,2 +1,18 @@
 /target
 /debug
+
+# IDE / editor scratch
+.vscode/
+.idea/
+.claude/
+*.swp
+
+# Generated runtime artefacts (NEAT trainer dump, telemetry)
+clauding_state.txt
+clauding_neat.bin
+floating
+
+# Large/unredistributable assets — fetched separately, not in repo.
+# `models/` contains GLTF/FBX (some Mixamo, ~3 GB). `inspiration/` is third-party reference imagery.
+models/
+inspiration/

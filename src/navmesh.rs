@@ -1,7 +1,7 @@
-// Navigation mesh: walkability grid, A* pathfinding, reachability analysis
-//
-// Replaces all NPC stuck/teleport band-aids with proper pathfinding.
-// Grid-based approach: 1m resolution over 500m world = 500x500 cells.
+//! Navigation mesh — walkability grid, A* pathfinding, reachability analysis.
+//!
+//! Grid-based: 1m resolution over a 500m world = 500×500 cells.
+//! Replaces NPC stuck/teleport workarounds with proper pathfinding.
 
 use crate::state::*;
 
@@ -29,9 +29,14 @@ pub struct WalkGrid {
 impl WalkGrid {
     pub fn empty() -> Self {
         WalkGrid {
-            cells: Vec::new(), grid_w: 0, grid_h: 0,
-            cell_size: 1.0, origin_x: 0.0, origin_z: 0.0,
-            components: Vec::new(), main_component: 0,
+            cells: Vec::new(),
+            grid_w: 0,
+            grid_h: 0,
+            cell_size: 1.0,
+            origin_x: 0.0,
+            origin_z: 0.0,
+            components: Vec::new(),
+            main_component: 0,
         }
     }
 
@@ -64,7 +69,9 @@ impl WalkGrid {
     /// Check if a world position is walkable
     pub fn is_walkable(&self, wx: f32, wz: f32) -> bool {
         let (cx, cz) = self.world_to_cell(wx, wz);
-        if !self.in_bounds(cx, cz) { return false; }
+        if !self.in_bounds(cx, cz) {
+            return false;
+        }
         self.cells[self.idx(cx, cz)]
     }
 
@@ -72,7 +79,9 @@ impl WalkGrid {
     pub fn is_reachable(&self, from_x: f32, from_z: f32, to_x: f32, to_z: f32) -> bool {
         let (fx, fz) = self.world_to_cell(from_x, from_z);
         let (tx, tz) = self.world_to_cell(to_x, to_z);
-        if !self.in_bounds(fx, fz) || !self.in_bounds(tx, tz) { return false; }
+        if !self.in_bounds(fx, fz) || !self.in_bounds(tx, tz) {
+            return false;
+        }
         let ca = self.components[self.idx(fx, fz)];
         let cb = self.components[self.idx(tx, tz)];
         ca != 0 && ca == cb
@@ -88,13 +97,19 @@ impl WalkGrid {
         let (sx, sz) = self.nearest_walkable(sx, sz);
         let (gx, gz) = self.nearest_walkable(gx, gz);
 
-        if !self.in_bounds(sx, sz) || !self.in_bounds(gx, gz) { return Vec::new(); }
+        if !self.in_bounds(sx, sz) || !self.in_bounds(gx, gz) {
+            return Vec::new();
+        }
         let si = self.idx(sx, sz);
         let gi = self.idx(gx, gz);
-        if !self.cells[si] || !self.cells[gi] { return Vec::new(); }
+        if !self.cells[si] || !self.cells[gi] {
+            return Vec::new();
+        }
 
         // Quick reachability check
-        if self.components[si] != self.components[gi] { return Vec::new(); }
+        if self.components[si] != self.components[gi] {
+            return Vec::new();
+        }
 
         // Trivial case: already at goal
         if sx == gx && sz == gz {
@@ -120,16 +135,21 @@ impl WalkGrid {
             if ci as usize == gi {
                 // Reconstruct path as cell indices, convert to world coords
                 let idx_path = reconstruct(came_from.as_slice(), si, gi, self.grid_w);
-                let world_path: Vec<[f32; 2]> = idx_path.iter().map(|&i| {
-                    let cx = (i % self.grid_w) as i32;
-                    let cz = (i / self.grid_w) as i32;
-                    let (wx, wz) = self.cell_to_world(cx, cz);
-                    [wx, wz]
-                }).collect();
+                let world_path: Vec<[f32; 2]> = idx_path
+                    .iter()
+                    .map(|&i| {
+                        let cx = (i % self.grid_w) as i32;
+                        let cz = (i / self.grid_w) as i32;
+                        let (wx, wz) = self.cell_to_world(cx, cz);
+                        [wx, wz]
+                    })
+                    .collect();
                 return smooth_path(&world_path, self);
             }
 
-            if iters >= MAX_ASTAR_ITERS as u32 { break; }
+            if iters >= MAX_ASTAR_ITERS as u32 {
+                break;
+            }
             iters += 1;
 
             let cx = (ci as usize % self.grid_w) as i32;
@@ -140,9 +160,13 @@ impl WalkGrid {
             for &(dx, dz, cost) in &NEIGHBORS {
                 let nx = cx + dx;
                 let nz = cz + dz;
-                if !self.in_bounds(nx, nz) { continue; }
+                if !self.in_bounds(nx, nz) {
+                    continue;
+                }
                 let ni = self.idx(nx, nz);
-                if !self.cells[ni] { continue; }
+                if !self.cells[ni] {
+                    continue;
+                }
 
                 // Diagonal movement: check both adjacent cells to prevent corner-cutting
                 if dx != 0 && dz != 0 {
@@ -191,14 +215,19 @@ impl WalkGrid {
         }
         (cx, cz) // fallback
     }
-
 }
 
 // 8-directional neighbors: (dx, dz, cost)
 const DIAG: f32 = 1.414;
 const NEIGHBORS: [(i32, i32, f32); 8] = [
-    ( 0, -1, 1.0), ( 0,  1, 1.0), (-1,  0, 1.0), ( 1,  0, 1.0),
-    (-1, -1, DIAG), ( 1, -1, DIAG), (-1,  1, DIAG), ( 1,  1, DIAG),
+    (0, -1, 1.0),
+    (0, 1, 1.0),
+    (-1, 0, 1.0),
+    (1, 0, 1.0),
+    (-1, -1, DIAG),
+    (1, -1, DIAG),
+    (-1, 1, DIAG),
+    (1, 1, DIAG),
 ];
 
 #[inline]
@@ -217,7 +246,9 @@ fn reconstruct(came_from: &[u32], start: usize, goal: usize, _grid_w: usize) -> 
     let mut count = 0;
     while cur != start && count < max_len {
         path.push(cur);
-        if came_from[cur] == u32::MAX { break; }
+        if came_from[cur] == u32::MAX {
+            break;
+        }
         cur = came_from[cur] as usize;
         count += 1;
     }
@@ -253,8 +284,9 @@ pub fn build_walk_grid(
         let max_x = b.x + hw;
         let min_z = b.z - hd;
         let max_z = b.z + hd;
-        fill_rect_blocked(&mut cells, grid_w, grid_h, cell_size, origin_x, origin_z,
-            min_x, max_x, min_z, max_z);
+        fill_rect_blocked(
+            &mut cells, grid_w, grid_h, cell_size, origin_x, origin_z, min_x, max_x, min_z, max_z,
+        );
     }
 
     // Walls (AABB + margin)
@@ -263,29 +295,33 @@ pub fn build_walk_grid(
         let max_x = w.x + w.hw + OBSTACLE_MARGIN;
         let min_z = w.z - w.hd - OBSTACLE_MARGIN;
         let max_z = w.z + w.hd + OBSTACLE_MARGIN;
-        fill_rect_blocked(&mut cells, grid_w, grid_h, cell_size, origin_x, origin_z,
-            min_x, max_x, min_z, max_z);
+        fill_rect_blocked(
+            &mut cells, grid_w, grid_h, cell_size, origin_x, origin_z, min_x, max_x, min_z, max_z,
+        );
     }
 
     // Rocks (circle + margin)
     for r in rocks {
         let radius = r.size + OBSTACLE_MARGIN;
-        fill_circle_blocked(&mut cells, grid_w, grid_h, cell_size, origin_x, origin_z,
-            r.x, r.z, radius);
+        fill_circle_blocked(
+            &mut cells, grid_w, grid_h, cell_size, origin_x, origin_z, r.x, r.z, radius,
+        );
     }
 
     // Trees (trunk only — small circle)
     for t in trees {
         let radius = t.trunk_radius + OBSTACLE_MARGIN;
-        fill_circle_blocked(&mut cells, grid_w, grid_h, cell_size, origin_x, origin_z,
-            t.x, t.z, radius);
+        fill_circle_blocked(
+            &mut cells, grid_w, grid_h, cell_size, origin_x, origin_z, t.x, t.z, radius,
+        );
     }
 
     // Clutter (barrels, crates, sacks, handcarts)
     for c in clutter {
         let radius = c[2] + OBSTACLE_MARGIN;
-        fill_circle_blocked(&mut cells, grid_w, grid_h, cell_size, origin_x, origin_z,
-            c[0], c[1], radius);
+        fill_circle_blocked(
+            &mut cells, grid_w, grid_h, cell_size, origin_x, origin_z, c[0], c[1], radius,
+        );
     }
 
     // River segments (blocked, except bridges)
@@ -293,7 +329,9 @@ pub fn build_walk_grid(
         let dx = seg.x2 - seg.x1;
         let dz = seg.z2 - seg.z1;
         let len = (dx * dx + dz * dz).sqrt();
-        if len < 0.01 { continue; }
+        if len < 0.01 {
+            continue;
+        }
         let hw = seg.width * 0.5 + OBSTACLE_MARGIN;
 
         // Walk along segment, marking cells within half-width as blocked
@@ -302,8 +340,9 @@ pub fn build_walk_grid(
             let t = s as f32 / steps as f32;
             let cx = seg.x1 + dx * t;
             let cz = seg.z1 + dz * t;
-            fill_circle_blocked(&mut cells, grid_w, grid_h, cell_size, origin_x, origin_z,
-                cx, cz, hw);
+            fill_circle_blocked(
+                &mut cells, grid_w, grid_h, cell_size, origin_x, origin_z, cx, cz, hw,
+            );
         }
     }
 
@@ -335,7 +374,9 @@ pub fn build_walk_grid(
     // Mark steep terrain as blocked (slope > 45°)
     for iz in 0..grid_h {
         for ix in 0..grid_w {
-            if !cells[iz * grid_w + ix] { continue; }
+            if !cells[iz * grid_w + ix] {
+                continue;
+            }
             let (wx, wz) = (
                 origin_x + (ix as f32 + 0.5) * cell_size,
                 origin_z + (iz as f32 + 0.5) * cell_size,
@@ -352,8 +393,10 @@ pub fn build_walk_grid(
     let margin_cells = (5.0 / cell_size) as usize;
     for iz in 0..grid_h {
         for ix in 0..grid_w {
-            if ix < margin_cells || ix >= grid_w - margin_cells
-                || iz < margin_cells || iz >= grid_h - margin_cells
+            if ix < margin_cells
+                || ix >= grid_w - margin_cells
+                || iz < margin_cells
+                || iz >= grid_h - margin_cells
             {
                 cells[iz * grid_w + ix] = false;
             }
@@ -365,7 +408,9 @@ pub fn build_walk_grid(
     let mut component_id = 0u16;
     let mut component_sizes: Vec<usize> = Vec::new();
     for start in 0..n {
-        if !cells[start] || components[start] != 0 { continue; }
+        if !cells[start] || components[start] != 0 {
+            continue;
+        }
         component_id += 1;
         let size = flood_fill(&cells, &mut components, grid_w, grid_h, start, component_id);
         component_sizes.push(size);
@@ -399,27 +444,44 @@ pub fn build_walk_grid(
 }
 
 fn fill_rect_blocked(
-    cells: &mut [bool], grid_w: usize, grid_h: usize,
-    cell_size: f32, origin_x: f32, origin_z: f32,
-    min_x: f32, max_x: f32, min_z: f32, max_z: f32,
+    cells: &mut [bool],
+    grid_w: usize,
+    grid_h: usize,
+    cell_size: f32,
+    origin_x: f32,
+    origin_z: f32,
+    min_x: f32,
+    max_x: f32,
+    min_z: f32,
+    max_z: f32,
 ) {
     let cx0 = ((min_x - origin_x) / cell_size).floor() as i32;
     let cx1 = ((max_x - origin_x) / cell_size).ceil() as i32;
     let cz0 = ((min_z - origin_z) / cell_size).floor() as i32;
     let cz1 = ((max_z - origin_z) / cell_size).ceil() as i32;
     for cz in cz0..=cz1 {
-        if cz < 0 || cz as usize >= grid_h { continue; }
+        if cz < 0 || cz as usize >= grid_h {
+            continue;
+        }
         for cx in cx0..=cx1 {
-            if cx < 0 || cx as usize >= grid_w { continue; }
+            if cx < 0 || cx as usize >= grid_w {
+                continue;
+            }
             cells[cz as usize * grid_w + cx as usize] = false;
         }
     }
 }
 
 fn fill_circle_blocked(
-    cells: &mut [bool], grid_w: usize, grid_h: usize,
-    cell_size: f32, origin_x: f32, origin_z: f32,
-    wx: f32, wz: f32, radius: f32,
+    cells: &mut [bool],
+    grid_w: usize,
+    grid_h: usize,
+    cell_size: f32,
+    origin_x: f32,
+    origin_z: f32,
+    wx: f32,
+    wz: f32,
+    radius: f32,
 ) {
     let cx0 = ((wx - radius - origin_x) / cell_size).floor() as i32;
     let cx1 = ((wx + radius - origin_x) / cell_size).ceil() as i32;
@@ -427,9 +489,13 @@ fn fill_circle_blocked(
     let cz1 = ((wz + radius - origin_z) / cell_size).ceil() as i32;
     let r2 = radius * radius;
     for cz in cz0..=cz1 {
-        if cz < 0 || cz as usize >= grid_h { continue; }
+        if cz < 0 || cz as usize >= grid_h {
+            continue;
+        }
         for cx in cx0..=cx1 {
-            if cx < 0 || cx as usize >= grid_w { continue; }
+            if cx < 0 || cx as usize >= grid_w {
+                continue;
+            }
             let px = origin_x + (cx as f32 + 0.5) * cell_size;
             let pz = origin_z + (cz as f32 + 0.5) * cell_size;
             let dx = px - wx;
@@ -442,14 +508,22 @@ fn fill_circle_blocked(
 }
 
 fn flood_fill(
-    cells: &[bool], components: &mut [u16],
-    grid_w: usize, grid_h: usize, start: usize, id: u16,
+    cells: &[bool],
+    components: &mut [u16],
+    grid_w: usize,
+    grid_h: usize,
+    start: usize,
+    id: u16,
 ) -> usize {
     let mut stack = vec![start];
     let mut count = 0;
     while let Some(idx) = stack.pop() {
-        if components[idx] != 0 { continue; }
-        if !cells[idx] { continue; }
+        if components[idx] != 0 {
+            continue;
+        }
+        if !cells[idx] {
+            continue;
+        }
         components[idx] = id;
         count += 1;
 
@@ -476,7 +550,9 @@ struct BinaryMinHeap {
 
 impl BinaryMinHeap {
     fn new() -> Self {
-        BinaryMinHeap { data: Vec::with_capacity(1024) }
+        BinaryMinHeap {
+            data: Vec::with_capacity(1024),
+        }
     }
 
     fn push(&mut self, f_score: f32, node: u32) {
@@ -486,7 +562,9 @@ impl BinaryMinHeap {
     }
 
     fn pop(&mut self) -> Option<(u32, u32)> {
-        if self.data.is_empty() { return None; }
+        if self.data.is_empty() {
+            return None;
+        }
         let top = self.data[0];
         let last = self.data.len() - 1;
         self.data.swap(0, last);
@@ -533,7 +611,9 @@ impl BinaryMinHeap {
 
 /// Smooth a grid path by removing unnecessary waypoints using line-of-sight checks
 fn smooth_path(path: &[[f32; 2]], grid: &WalkGrid) -> Vec<[f32; 2]> {
-    if path.len() <= 2 { return path.to_vec(); }
+    if path.len() <= 2 {
+        return path.to_vec();
+    }
 
     let mut result = vec![path[0]];
     let mut anchor = 0;
@@ -542,7 +622,13 @@ fn smooth_path(path: &[[f32; 2]], grid: &WalkGrid) -> Vec<[f32; 2]> {
         let mut furthest = anchor + 1;
         // Find the furthest point we can see from anchor
         for i in (anchor + 2)..path.len() {
-            if line_walkable(grid, path[anchor][0], path[anchor][1], path[i][0], path[i][1]) {
+            if line_walkable(
+                grid,
+                path[anchor][0],
+                path[anchor][1],
+                path[i][0],
+                path[i][1],
+            ) {
                 furthest = i;
             }
         }
@@ -559,12 +645,16 @@ fn line_walkable(grid: &WalkGrid, x0: f32, z0: f32, x1: f32, z1: f32) -> bool {
     let dz = z1 - z0;
     let dist = (dx * dx + dz * dz).sqrt();
     let steps = (dist / (grid.cell_size * 0.5)).ceil() as usize;
-    if steps == 0 { return true; }
+    if steps == 0 {
+        return true;
+    }
     for s in 0..=steps {
         let t = s as f32 / steps as f32;
         let px = x0 + dx * t;
         let pz = z0 + dz * t;
-        if !grid.is_walkable(px, pz) { return false; }
+        if !grid.is_walkable(px, pz) {
+            return false;
+        }
     }
     true
 }

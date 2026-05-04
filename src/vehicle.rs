@@ -1,15 +1,17 @@
-// sys_vehicle: GTA V-style traffic AI — lane discipline, pathfinding, intersection stops,
-// following distance, speed variation, smooth steering, parking
-// Player enters/exits with Interact key, drives with movement keys
+//! Vehicle traffic AI — GTA V-style: lane discipline, pathfinding, intersection stops,
+//! following distance, speed variation, smooth steering, parking.
+//! The player enters/exits with the Interact key and drives with the movement keys.
 
+use crate::input::Action;
 use crate::state::*;
 use crate::world::surface_at;
-use crate::input::Action;
 
 pub fn sys_vehicle(state: &mut GameState, dt: f32) {
     // Handle enter/exit toggle (Interact key, with edge detection)
     let interact_now = state.keybinds.is_pressed(Action::Interact, &state.keys);
-    let interact_prev = state.keybinds.is_pressed(Action::Interact, &state.prev_keys);
+    let interact_prev = state
+        .keybinds
+        .is_pressed(Action::Interact, &state.prev_keys);
     if interact_now && !interact_prev {
         if let Some(vi) = state.player.in_vehicle {
             // Exit vehicle — sync player body from vehicle state
@@ -33,9 +35,17 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
             let mut best_dist = VEHICLE_ENTER_DIST * VEHICLE_ENTER_DIST;
             let mut best_idx = None;
             for (i, v) in state.world.vehicles.iter().enumerate() {
-                if v.occupied { continue; }
-                let npc_driving = state.world.npcs.iter().any(|npc| npc.in_vehicle && npc.car_idx == i);
-                if npc_driving { continue; }
+                if v.occupied {
+                    continue;
+                }
+                let npc_driving = state
+                    .world
+                    .npcs
+                    .iter()
+                    .any(|npc| npc.in_vehicle && npc.car_idx == i);
+                if npc_driving {
+                    continue;
+                }
                 let dx = state.player.x - v.x;
                 let dz = state.player.z - v.z;
                 let d2 = dx * dx + dz * dz;
@@ -72,21 +82,33 @@ pub fn sys_vehicle(state: &mut GameState, dt: f32) {
     // AI for NPC-driven vehicles
     let n = state.world.vehicles.len();
     for i in 0..n {
-        if state.world.vehicles[i].occupied { continue; }
-        if !state.world.vehicles[i].ai_active { continue; }
-        if state.world.vehicles[i].parked { continue; }
+        if state.world.vehicles[i].occupied {
+            continue;
+        }
+        if !state.world.vehicles[i].ai_active {
+            continue;
+        }
+        if state.world.vehicles[i].parked {
+            continue;
+        }
         ai_drive(i, &mut state.world, &state.road_network, dt);
     }
 
     // Snap newly-parked vehicles that ended up off-road to nearest parking/road position
     for i in 0..n {
-        if !state.world.vehicles[i].parked { continue; }
-        if state.world.vehicles[i].parking_target.is_some() { continue; } // already at a spot
+        if !state.world.vehicles[i].parked {
+            continue;
+        }
+        if state.world.vehicles[i].parking_target.is_some() {
+            continue;
+        } // already at a spot
         // Check if vehicle is on a road
         let vx = state.world.vehicles[i].x;
         let vz = state.world.vehicles[i].z;
         let surf = surface_at(vx, vz, &state.road_network);
-        if surf == Surface::CarRoad { continue; } // already on road, fine
+        if surf == Surface::CarRoad {
+            continue;
+        } // already on road, fine
         // Off-road — snap to nearest parking spot or road edge
         snap_to_parking(i, &mut state.world, &mut state.road_network, &state.terrain);
     }
@@ -113,24 +135,30 @@ fn drive_vehicle(state: &mut GameState, vi: usize, _dt: f32) {
     // S while moving forward = brake, S while stopped = reverse
     let (throttle, brake) = if fwd && !back {
         if speed < -1.0 {
-            (0.0, 1.0)   // W while reversing: brake to stop
+            (0.0, 1.0) // W while reversing: brake to stop
         } else {
-            (1.0, 0.0)   // W: forward throttle
+            (1.0, 0.0) // W: forward throttle
         }
     } else if back && !fwd {
         if speed > 1.0 {
-            (0.0, 1.0)   // S while moving forward: full brake
+            (0.0, 1.0) // S while moving forward: full brake
         } else if speed > 0.3 {
-            (0.0, 0.5)   // S near stop: moderate brake (smooth stop)
+            (0.0, 0.5) // S near stop: moderate brake (smooth stop)
         } else {
-            (-0.5, 0.0)  // S while stopped/slow: reverse gear
+            (-0.5, 0.0) // S while stopped/slow: reverse gear
         }
     } else {
         // Neither or both: coast (engine braking handles decel)
         (0.0, 0.0)
     };
 
-    let steer = if left { -1.0 } else if right { 1.0 } else { 0.0 };
+    let steer = if left {
+        -1.0
+    } else if right {
+        1.0
+    } else {
+        0.0
+    };
     v.drivetrain.handbrake = handbrake;
     crate::vehicle_physics::player_drive_input(v, throttle, brake, steer);
 
@@ -138,9 +166,12 @@ fn drive_vehicle(state: &mut GameState, vi: usize, _dt: f32) {
     state.player.x = state.world.vehicles[vi].x;
     state.player.z = state.world.vehicles[vi].z;
     // Cabin Y offset from average suspension compression
-    let avg_comp = state.world.vehicles[vi].suspension.iter()
+    let avg_comp = state.world.vehicles[vi]
+        .suspension
+        .iter()
         .map(|s| s.compression)
-        .sum::<f32>() * 0.25;
+        .sum::<f32>()
+        * 0.25;
     let rest = state.world.vehicles[vi].suspension[0].params.rest_length;
     let seat_offset = (avg_comp - rest * 0.5) * 0.3;
     state.player.y = state.world.vehicles[vi].y + seat_offset;
@@ -161,7 +192,10 @@ fn drive_vehicle(state: &mut GameState, vi: usize, _dt: f32) {
         state.world.vehicles[vi].suspension[3].compression,
     ];
     let veh_speed = state.world.vehicles[vi].speed;
-    state.player.skeleton.step_driving_animation(&susp_comp, veh_speed, steer, _dt);
+    state
+        .player
+        .skeleton
+        .step_driving_animation(&susp_comp, veh_speed, steer, _dt);
 
     // Steering wheel IK: compute wheel world position and apply arm IK
     {
@@ -178,13 +212,23 @@ fn drive_vehicle(state: &mut GameState, vi: usize, _dt: f32) {
         // Compute world transforms for the skeleton before IK
         let root_rot = crate::math::quat_from_rot_y(state.player.rot_y);
         let skel_pos = [state.player.x, state.player.y, state.player.z];
-        state.player.skeleton.compute_world_transforms(skel_pos, root_rot);
-        state.player.skeleton.apply_steering_wheel_ik(wheel_world, steer_angle);
+        state
+            .player
+            .skeleton
+            .compute_world_transforms(skel_pos, root_rot);
+        state
+            .player
+            .skeleton
+            .apply_steering_wheel_ik(wheel_world, steer_angle);
     }
 
     // Speed limit check
     if state.world.vehicles[vi].speed.abs() > SPEED_LIMIT {
-        let surf = surface_at(state.world.vehicles[vi].x, state.world.vehicles[vi].z, &state.road_network);
+        let surf = surface_at(
+            state.world.vehicles[vi].x,
+            state.world.vehicles[vi].z,
+            &state.road_network,
+        );
         if surf == Surface::CarRoad {
             state.player.wanted_vehicle_hit = true;
             state.player.bounty += 5.0 * _dt;
@@ -201,13 +245,18 @@ fn find_nearest_node(x: f32, z: f32, nodes: &[[f32; 2]]) -> usize {
         let dx = x - n[0];
         let dz = z - n[1];
         let d = dx * dx + dz * dz;
-        if d < best_d { best_d = d; best = i; }
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
     }
     best
 }
 
 fn dijkstra(graph: &RoadGraph, start: usize, end: usize, node_count: usize) -> Vec<PathWaypoint> {
-    if start == end || node_count == 0 { return Vec::new(); }
+    if start == end || node_count == 0 {
+        return Vec::new();
+    }
 
     let mut dist = vec![f32::MAX; node_count];
     let mut prev: Vec<Option<(usize, usize)>> = vec![None; node_count]; // (prev_node, seg_idx)
@@ -224,10 +273,14 @@ fn dijkstra(graph: &RoadGraph, start: usize, end: usize, node_count: usize) -> V
                 u = n;
             }
         }
-        if u == usize::MAX || u == end { break; }
+        if u == usize::MAX || u == end {
+            break;
+        }
         visited[u] = true;
 
-        if u >= graph.adjacency.len() { break; }
+        if u >= graph.adjacency.len() {
+            break;
+        }
         for &(neighbor, seg_idx, edge_dist) in &graph.adjacency[u] {
             let alt = dist[u] + edge_dist;
             if alt < dist[neighbor] {
@@ -238,11 +291,16 @@ fn dijkstra(graph: &RoadGraph, start: usize, end: usize, node_count: usize) -> V
     }
 
     // Reconstruct path
-    if dist[end] == f32::MAX { return Vec::new(); }
+    if dist[end] == f32::MAX {
+        return Vec::new();
+    }
     let mut path = Vec::new();
     let mut cur = end;
     while let Some((p, seg)) = prev[cur] {
-        path.push(PathWaypoint { node_idx: cur, segment_idx: seg });
+        path.push(PathWaypoint {
+            node_idx: cur,
+            segment_idx: seg,
+        });
         cur = p;
     }
     path.reverse();
@@ -250,7 +308,9 @@ fn dijkstra(graph: &RoadGraph, start: usize, end: usize, node_count: usize) -> V
 }
 
 fn plan_route(v: &mut Vehicle, net: &RoadNetwork) {
-    if net.nodes.is_empty() || net.graph.adjacency.is_empty() { return; }
+    if net.nodes.is_empty() || net.graph.adjacency.is_empty() {
+        return;
+    }
 
     let start = find_nearest_node(v.x, v.z, &net.nodes);
     let end = v.rng.next() as usize % net.nodes.len();
@@ -282,8 +342,8 @@ fn lane_center(seg: &RoadSegment, t: f32, dir: LaneDirection) -> (f32, f32) {
 
     // Perpendicular: always offset to right of travel direction
     let (perp_x, perp_z) = match dir {
-        LaneDirection::Forward => (dir_z, -dir_x),   // right of A→B
-        LaneDirection::Reverse => (-dir_z, dir_x),    // right of B→A (left of A→B)
+        LaneDirection::Forward => (dir_z, -dir_x), // right of A→B
+        LaneDirection::Reverse => (-dir_z, dir_x), // right of B→A (left of A→B)
     };
 
     let cx = seg.x0 + dx * t + perp_x * LANE_OFFSET;
@@ -292,7 +352,13 @@ fn lane_center(seg: &RoadSegment, t: f32, dir: LaneDirection) -> (f32, f32) {
 }
 
 /// Determine lane direction for a vehicle on a segment
-fn compute_lane_dir(vx: f32, vz: f32, seg: &RoadSegment, target_x: f32, target_z: f32) -> LaneDirection {
+fn compute_lane_dir(
+    vx: f32,
+    vz: f32,
+    seg: &RoadSegment,
+    target_x: f32,
+    target_z: f32,
+) -> LaneDirection {
     let dx = seg.x1 - seg.x0;
     let dz = seg.z1 - seg.z0;
     // Direction we're heading
@@ -300,14 +366,22 @@ fn compute_lane_dir(vx: f32, vz: f32, seg: &RoadSegment, target_x: f32, target_z
     let tz = target_z - vz;
     // Dot with segment direction
     let dot = tx * dx + tz * dz;
-    if dot >= 0.0 { LaneDirection::Forward } else { LaneDirection::Reverse }
+    if dot >= 0.0 {
+        LaneDirection::Forward
+    } else {
+        LaneDirection::Reverse
+    }
 }
 
 /// Wrap angle difference to [-PI, PI]
 fn angle_diff(a: f32, b: f32) -> f32 {
     let mut d = a - b;
-    while d > std::f32::consts::PI { d -= 2.0 * std::f32::consts::PI; }
-    while d < -std::f32::consts::PI { d += 2.0 * std::f32::consts::PI; }
+    while d > std::f32::consts::PI {
+        d -= 2.0 * std::f32::consts::PI;
+    }
+    while d < -std::f32::consts::PI {
+        d += 2.0 * std::f32::consts::PI;
+    }
     d
 }
 
@@ -402,7 +476,9 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, dt: f32) {
 
             // Re-check yield each frame, force through after max wait
             let has_cross_traffic = check_cross_traffic(vi, world, net, waypoint.node_idx);
-            if !has_cross_traffic || world.vehicles[vi].intersection_wait_timer > INTERSECTION_WAIT_MAX {
+            if !has_cross_traffic
+                || world.vehicles[vi].intersection_wait_timer > INTERSECTION_WAIT_MAX
+            {
                 world.vehicles[vi].intersection_state = IntersectionState::Turning;
             }
         }
@@ -414,9 +490,13 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, dt: f32) {
     // 5. Compute turn angle for speed adjustment
     let desired = (-dx_node).atan2(-dz_node);
     let turn_angle = angle_diff(desired, world.vehicles[vi].rot_y).abs();
-    let turn_factor = if turn_angle < 0.3 { 1.0 }
-                      else if turn_angle < 1.0 { 0.6 }
-                      else { 0.35 };
+    let turn_factor = if turn_angle < 0.3 {
+        1.0
+    } else if turn_angle < 1.0 {
+        0.6
+    } else {
+        0.35
+    };
     target_speed *= turn_factor;
 
     // 6. Vehicle-ahead awareness + OBB-based close-range avoidance
@@ -432,7 +512,9 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, dt: f32) {
 
         let n_veh = world.vehicles.len();
         for j in 0..n_veh {
-            if j == vi { continue; }
+            if j == vi {
+                continue;
+            }
             let ojx = world.vehicles[j].x - vx;
             let ojz = world.vehicles[j].z - vz;
             let dist_sq = ojx * ojx + ojz * ojz;
@@ -442,8 +524,10 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, dt: f32) {
                 let other_obb = crate::collision::Obb2d::from_vehicle(&world.vehicles[j]);
                 // Expand OBBs slightly for a 0.5m safety margin
                 let expanded = crate::collision::Obb2d::new(
-                    our_obb.cx, our_obb.cz,
-                    (our_obb.half_w + 0.5) * 2.0, (our_obb.half_d + 0.5) * 2.0,
+                    our_obb.cx,
+                    our_obb.cz,
+                    (our_obb.half_w + 0.5) * 2.0,
+                    (our_obb.half_d + 0.5) * 2.0,
                     rot,
                 );
                 if crate::collision::obb_intersect(&expanded, &other_obb).is_some() {
@@ -463,21 +547,29 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, dt: f32) {
             }
 
             // Forward-lane following distance (longer range, directional)
-            if world.vehicles[j].parked { continue; }
+            if world.vehicles[j].parked {
+                continue;
+            }
 
             // Project onto forward vector
             let proj = ojx * fwd_x + ojz * fwd_z;
-            if proj < 0.0 || proj > FOLLOW_DISTANCE { continue; }
+            if proj < 0.0 || proj > FOLLOW_DISTANCE {
+                continue;
+            }
 
             // Lateral offset — only brake for same-lane vehicles (within car width)
             let lateral = (ojx * fwd_z - ojz * fwd_x).abs();
-            if lateral > 1.8 { continue; }
+            if lateral > 1.8 {
+                continue;
+            }
 
             // Same lane ahead — reduce speed
             if proj < MIN_FOLLOW_DISTANCE {
                 target_speed = 0.0; // emergency brake
             } else {
-                let factor = ((proj - MIN_FOLLOW_DISTANCE) / (FOLLOW_DISTANCE - MIN_FOLLOW_DISTANCE)).clamp(0.0, 1.0);
+                let factor = ((proj - MIN_FOLLOW_DISTANCE)
+                    / (FOLLOW_DISTANCE - MIN_FOLLOW_DISTANCE))
+                    .clamp(0.0, 1.0);
                 let follow_speed = cruise_speed * factor;
                 if follow_speed < target_speed {
                     target_speed = follow_speed;
@@ -508,7 +600,9 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, dt: f32) {
         let len_sq = sdx * sdx + sdz * sdz;
         let t = if len_sq > 1e-8 {
             ((vx - seg.x0) * sdx + (vz - seg.z0) * sdz) / len_sq
-        } else { 0.5 };
+        } else {
+            0.5
+        };
 
         // Look 5m ahead along segment
         let seg_len = len_sq.sqrt().max(0.01);
@@ -578,7 +672,9 @@ fn ai_drive(vi: usize, world: &mut WorldData, net: &RoadNetwork, dt: f32) {
 
 /// Check if there's cross-traffic at intersection node that we should yield to
 fn check_cross_traffic(vi: usize, world: &WorldData, net: &RoadNetwork, node_idx: usize) -> bool {
-    if node_idx >= net.nodes.len() { return false; }
+    if node_idx >= net.nodes.len() {
+        return false;
+    }
     let node = net.nodes[node_idx];
     let our_rot = world.vehicles[vi].rot_y;
     let (our_sin, our_cos) = our_rot.sin_cos();
@@ -591,13 +687,19 @@ fn check_cross_traffic(vi: usize, world: &WorldData, net: &RoadNetwork, node_idx
     };
 
     for (j, other) in world.vehicles.iter().enumerate() {
-        if j == vi { continue; }
-        if other.parked || other.speed < 0.5 { continue; }
+        if j == vi {
+            continue;
+        }
+        if other.parked || other.speed < 0.5 {
+            continue;
+        }
 
         let dx = other.x - node[0];
         let dz = other.z - node[1];
         let dist = (dx * dx + dz * dz).sqrt();
-        if dist > 12.0 { continue; }
+        if dist > 12.0 {
+            continue;
+        }
 
         // Check if perpendicular heading (|dot product| < 0.5)
         let (o_sin, o_cos) = other.rot_y.sin_cos();
@@ -616,16 +718,26 @@ fn check_cross_traffic(vi: usize, world: &WorldData, net: &RoadNetwork, node_idx
 }
 
 /// Find nearest free parking spot within max_dist of (x, z)
-pub fn find_nearest_parking_spot(net: &RoadNetwork, x: f32, z: f32, max_dist: f32) -> Option<usize> {
+pub fn find_nearest_parking_spot(
+    net: &RoadNetwork,
+    x: f32,
+    z: f32,
+    max_dist: f32,
+) -> Option<usize> {
     let max_d2 = max_dist * max_dist;
     let mut best_d2 = max_d2;
     let mut best = None;
     for (i, spot) in net.parking_spots.iter().enumerate() {
-        if spot.occupied_by.is_some() { continue; }
+        if spot.occupied_by.is_some() {
+            continue;
+        }
         let dx = spot.x - x;
         let dz = spot.z - z;
         let d2 = dx * dx + dz * dz;
-        if d2 < best_d2 { best_d2 = d2; best = Some(i); }
+        if d2 < best_d2 {
+            best_d2 = d2;
+            best = Some(i);
+        }
     }
     best
 }
@@ -636,11 +748,15 @@ pub fn nearest_road_position(net: &RoadNetwork, x: f32, z: f32) -> Option<(f32, 
     let mut best_d2 = f32::MAX;
     let mut best_pos: Option<(f32, f32, f32)> = None;
     for seg in &net.segments {
-        if seg.tier != RoadTier::CarRoad { continue; }
+        if seg.tier != RoadTier::CarRoad {
+            continue;
+        }
         let dx = seg.x1 - seg.x0;
         let dz = seg.z1 - seg.z0;
         let len_sq = dx * dx + dz * dz;
-        if len_sq < 0.01 { continue; }
+        if len_sq < 0.01 {
+            continue;
+        }
         // Project (x,z) onto segment
         let t = ((x - seg.x0) * dx + (z - seg.z0) * dz) / len_sq;
         let t = t.clamp(0.05, 0.95); // stay away from intersections
@@ -678,7 +794,12 @@ pub fn nearest_road_position(net: &RoadNetwork, x: f32, z: f32) -> Option<(f32, 
 
 /// Snap a vehicle to the nearest parking spot or road edge when it needs to park.
 /// Returns true if the vehicle was snapped to a valid position.
-pub fn snap_to_parking(vi: usize, world: &mut WorldData, net: &mut RoadNetwork, terrain: &Terrain) -> bool {
+pub fn snap_to_parking(
+    vi: usize,
+    world: &mut WorldData,
+    net: &mut RoadNetwork,
+    terrain: &Terrain,
+) -> bool {
     let vx = world.vehicles[vi].x;
     let vz = world.vehicles[vi].z;
 
@@ -720,6 +841,7 @@ fn sync_vehicle_terrain(world: &mut WorldData, terrain: &Terrain) {
         world.vehicles[i].y = terrain.height_at(vx, vz) + VEHICLE_GROUND_OFFSET;
         let target_n = crate::math::clamp_normal_tilt(terrain.normal_at(vx, vz), 30.0);
         let cur = world.vehicles[i].terrain_normal;
-        world.vehicles[i].terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(cur, target_n, 0.5));
+        world.vehicles[i].terrain_normal =
+            crate::math::v3_normalize(crate::math::v3_lerp(cur, target_n, 0.5));
     }
 }

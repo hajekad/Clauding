@@ -1,17 +1,18 @@
-// Surface material properties for physics interactions
+//! Surface material properties for physics interactions
+//! (friction coefficients, restitution, rolling resistance).
 
 #[derive(Clone, Copy)]
 pub struct SurfaceMaterial {
     pub static_friction: f32,
     pub dynamic_friction: f32,
-    pub restitution: f32,       // bounciness 0..1
+    pub restitution: f32,        // bounciness 0..1
     pub rolling_resistance: f32, // tire rolling friction
 }
 
 // Per-surface material constants
 pub const MAT_ASPHALT: SurfaceMaterial = SurfaceMaterial {
     static_friction: 1.1,
-    dynamic_friction: 0.9,  // performance tires on dry asphalt
+    dynamic_friction: 0.9, // performance tires on dry asphalt
     restitution: 0.1,
     rolling_resistance: 0.012,
 };

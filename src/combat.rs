@@ -1,8 +1,9 @@
-// Combat system: melee attacks for player and NPCs, knockback, knockout/recovery
+//! Combat system: melee attacks for player and NPCs.
+//! Handles knockback, knockout, and recovery for all combatants.
 
-use crate::state::*;
 use crate::input::{Action, KeyBinds};
 use crate::particle::ParticleSystem;
+use crate::state::*;
 
 /// Apply knockout to an NPC: zero health, set KO state, drop items, track fitness.
 pub fn knockout_npc(npc: &mut Npc) {
@@ -16,9 +17,14 @@ pub fn knockout_npc(npc: &mut Npc) {
 }
 
 pub fn sys_combat(
-    world: &mut WorldData, player: &mut Player, particles: &mut ParticleSystem,
-    terrain: &Terrain, keys: &[bool; 256], prev_keys: &[bool; 256],
-    keybinds: &KeyBinds, dt: f32,
+    world: &mut WorldData,
+    player: &mut Player,
+    particles: &mut ParticleSystem,
+    terrain: &Terrain,
+    keys: &[bool; 256],
+    prev_keys: &[bool; 256],
+    keybinds: &KeyBinds,
+    dt: f32,
 ) {
     // Tick cooldowns
     player.attack_cooldown = (player.attack_cooldown - dt).max(0.0);
@@ -47,10 +53,18 @@ pub fn sys_combat(
         let intent = world.npcs[i].attack_intent;
         world.npcs[i].attack_intent = 0;
 
-        if intent == 0 { continue; }
-        if world.npcs[i].attack_cooldown > 0.0 { continue; }
-        if world.npcs[i].state == NpcState::KnockedOut { continue; }
-        if world.npcs[i].state == NpcState::Sleeping { continue; }
+        if intent == 0 {
+            continue;
+        }
+        if world.npcs[i].attack_cooldown > 0.0 {
+            continue;
+        }
+        if world.npcs[i].state == NpcState::KnockedOut {
+            continue;
+        }
+        if world.npcs[i].state == NpcState::Sleeping {
+            continue;
+        }
 
         if intent == 1 {
             // Attack player
@@ -68,8 +82,12 @@ pub fn sys_combat(
             let mut best_dist = ATTACK_RANGE * ATTACK_RANGE;
             let mut best_j = None;
             for j in 0..n {
-                if j == i { continue; }
-                if world.npcs[j].state == NpcState::KnockedOut { continue; }
+                if j == i {
+                    continue;
+                }
+                if world.npcs[j].state == NpcState::KnockedOut {
+                    continue;
+                }
                 let dx = world.npcs[j].x - ax;
                 let dz = world.npcs[j].z - az;
                 let d2 = dx * dx + dz * dz;
@@ -157,10 +175,18 @@ pub fn sys_combat_headless(world: &mut WorldData, terrain: &Terrain, dt: f32) {
     for i in 0..n {
         let intent = world.npcs[i].attack_intent;
         world.npcs[i].attack_intent = 0;
-        if intent == 0 { continue; }
-        if world.npcs[i].attack_cooldown > 0.0 { continue; }
-        if world.npcs[i].state == NpcState::KnockedOut { continue; }
-        if world.npcs[i].state == NpcState::Sleeping { continue; }
+        if intent == 0 {
+            continue;
+        }
+        if world.npcs[i].attack_cooldown > 0.0 {
+            continue;
+        }
+        if world.npcs[i].state == NpcState::KnockedOut {
+            continue;
+        }
+        if world.npcs[i].state == NpcState::Sleeping {
+            continue;
+        }
 
         if intent == 2 {
             // Attack nearest NPC
@@ -170,23 +196,34 @@ pub fn sys_combat_headless(world: &mut WorldData, terrain: &Terrain, dt: f32) {
             let mut best_dist = ATTACK_RANGE * ATTACK_RANGE;
             let mut best_j = None;
             for j in 0..n {
-                if j == i { continue; }
-                if world.npcs[j].state == NpcState::KnockedOut { continue; }
+                if j == i {
+                    continue;
+                }
+                if world.npcs[j].state == NpcState::KnockedOut {
+                    continue;
+                }
                 let dx = world.npcs[j].x - ax;
                 let dz = world.npcs[j].z - az;
                 let d2 = dx * dx + dz * dz;
-                if d2 < best_dist { best_dist = d2; best_j = Some(j); }
+                if d2 < best_dist {
+                    best_dist = d2;
+                    best_j = Some(j);
+                }
             }
             if let Some(j) = best_j {
                 let dx = world.npcs[j].x - ax;
                 let dz = world.npcs[j].z - az;
                 let dist = (dx * dx + dz * dz).sqrt();
-                if dist < 0.01 { continue; }
+                if dist < 0.01 {
+                    continue;
+                }
                 let (sin_r, cos_r) = arot.sin_cos();
                 let fwd_x = -sin_r;
                 let fwd_z = -cos_r;
                 let dot = (dx / dist) * fwd_x + (dz / dist) * fwd_z;
-                if dot < ATTACK_CONE_COS { continue; }
+                if dot < ATTACK_CONE_COS {
+                    continue;
+                }
 
                 world.npcs[i].attack_cooldown = ATTACK_COOLDOWN;
                 world.npcs[i].attack_phase = ATTACK_ANIM_DURATION;
@@ -229,7 +266,9 @@ pub fn sys_combat_headless(world: &mut WorldData, terrain: &Terrain, dt: f32) {
         }
 
         let ground = terrain.height_at(npc.x, npc.z);
-        if npc.y < ground { npc.y = ground; }
+        if npc.y < ground {
+            npc.y = ground;
+        }
     }
 }
 
@@ -239,19 +278,27 @@ fn player_attack_npcs(world: &mut WorldData, player: &mut Player, particles: &mu
     let fwd_z = -cos_r;
 
     for npc in &mut world.npcs {
-        if npc.state == NpcState::KnockedOut || npc.state == NpcState::Sleeping { continue; }
+        if npc.state == NpcState::KnockedOut || npc.state == NpcState::Sleeping {
+            continue;
+        }
 
         let dx = npc.x - player.x;
         let dz = npc.z - player.z;
         let dist_sq = dx * dx + dz * dz;
-        if dist_sq > ATTACK_RANGE * ATTACK_RANGE { continue; }
+        if dist_sq > ATTACK_RANGE * ATTACK_RANGE {
+            continue;
+        }
 
         let dist = dist_sq.sqrt();
-        if dist < 0.01 { continue; }
+        if dist < 0.01 {
+            continue;
+        }
 
         // Facing cone check
         let dot = (dx / dist) * fwd_x + (dz / dist) * fwd_z;
-        if dot < ATTACK_CONE_COS { continue; }
+        if dot < ATTACK_CONE_COS {
+            continue;
+        }
 
         // Hit!
         npc.health -= ATTACK_DAMAGE;
@@ -275,21 +322,33 @@ fn player_attack_npcs(world: &mut WorldData, player: &mut Player, particles: &mu
     }
 }
 
-fn npc_attack_player(nx: f32, nz: f32, nrot: f32, player: &mut Player, particles: &mut ParticleSystem) -> bool {
+fn npc_attack_player(
+    nx: f32,
+    nz: f32,
+    nrot: f32,
+    player: &mut Player,
+    particles: &mut ParticleSystem,
+) -> bool {
     let dx = player.x - nx;
     let dz = player.z - nz;
     let dist_sq = dx * dx + dz * dz;
-    if dist_sq > ATTACK_RANGE * ATTACK_RANGE { return false; }
+    if dist_sq > ATTACK_RANGE * ATTACK_RANGE {
+        return false;
+    }
 
     let dist = dist_sq.sqrt();
-    if dist < 0.01 { return false; }
+    if dist < 0.01 {
+        return false;
+    }
 
     // Facing cone
     let (sin_r, cos_r) = nrot.sin_cos();
     let fwd_x = -sin_r;
     let fwd_z = -cos_r;
     let dot = (dx / dist) * fwd_x + (dz / dist) * fwd_z;
-    if dot < ATTACK_CONE_COS { return false; }
+    if dot < ATTACK_CONE_COS {
+        return false;
+    }
 
     player.health = (player.health - NPC_ATTACK_DAMAGE).max(0.0);
     player.hit_flash = HIT_FLASH_DURATION;
@@ -311,10 +370,14 @@ fn npc_attack_npc_check(ax: f32, az: f32, arot: f32, tx: f32, tz: f32) -> bool {
     let dx = tx - ax;
     let dz = tz - az;
     let dist_sq = dx * dx + dz * dz;
-    if dist_sq > ATTACK_RANGE * ATTACK_RANGE { return false; }
+    if dist_sq > ATTACK_RANGE * ATTACK_RANGE {
+        return false;
+    }
 
     let dist = dist_sq.sqrt();
-    if dist < 0.01 { return false; }
+    if dist < 0.01 {
+        return false;
+    }
 
     let (sin_r, cos_r) = arot.sin_cos();
     let fwd_x = -sin_r;
@@ -328,7 +391,9 @@ fn npc_attack_npc_check(ax: f32, az: f32, arot: f32, tx: f32, tz: f32) -> bool {
 /// timer expiry, state transitions, and syncs skeleton → legacy ragdoll_points.
 pub fn sys_ragdoll_update(world: &mut WorldData, terrain: &Terrain, dt: f32) {
     for npc in &mut world.npcs {
-        if !npc.ragdoll_active { continue; }
+        if !npc.ragdoll_active {
+            continue;
+        }
 
         // Sync skeleton ragdoll → legacy rendering points
         if npc.skeleton.ragdoll_active {
@@ -346,7 +411,12 @@ pub fn sys_ragdoll_update(world: &mut WorldData, terrain: &Terrain, dt: f32) {
             let hips = npc.skeleton.bones[0].world_pos;
             let snap_x = hips[0];
             let snap_z = hips[2];
-            if !crate::world::on_river_not_bridge(snap_x, snap_z, &world.river_segments, &world.bridges) {
+            if !crate::world::on_river_not_bridge(
+                snap_x,
+                snap_z,
+                &world.river_segments,
+                &world.bridges,
+            ) {
                 npc.x = snap_x;
                 npc.z = snap_z;
             }

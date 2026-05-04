@@ -1,9 +1,11 @@
-// GameState: global mutable game state, entity stores, constants
+//! `GameState` — top-level mutable game state.
+//! Owns all entity stores (NPCs, vehicles, items, particles, road graph)
+//! and the world data shared across systems.
 
-use crate::rng::Rng;
 use crate::input::KeyBinds;
 use crate::menu::MenuData;
 use crate::navmesh::WalkGrid;
+use crate::rng::Rng;
 
 pub const DEFAULT_WIDTH: usize = 1920;
 pub const DEFAULT_HEIGHT: usize = 1080;
@@ -19,11 +21,11 @@ pub const NUM_STREET_LIGHTS: usize = 300;
 pub const CAR_ROAD_WIDTH: f32 = 10.0;
 pub const SIDEWALK_WIDTH: f32 = 4.0;
 pub const FIELD_ROAD_WIDTH: f32 = 2.5;
-pub const NPC_SPEED_SIDEWALK: f32 = 2.22;    // 8 km/h — smooth concrete
-pub const NPC_SPEED_FIELD_ROAD: f32 = 1.80;  // 6.5 km/h — uneven gravel/dirt
-pub const NPC_SPEED_CAR_ROAD: f32 = 2.22;    // 8 km/h — smooth asphalt
-pub const NPC_SPEED_TERRAIN: f32 = 1.50;     // 5.4 km/h — grass, uneven ground
-pub const NPC_SPEED_STEEP: f32 = 1.0;        // 3.6 km/h — steep slopes, careful footing
+pub const NPC_SPEED_SIDEWALK: f32 = 2.22; // 8 km/h — smooth concrete
+pub const NPC_SPEED_FIELD_ROAD: f32 = 1.80; // 6.5 km/h — uneven gravel/dirt
+pub const NPC_SPEED_CAR_ROAD: f32 = 2.22; // 8 km/h — smooth asphalt
+pub const NPC_SPEED_TERRAIN: f32 = 1.50; // 5.4 km/h — grass, uneven ground
+pub const NPC_SPEED_STEEP: f32 = 1.0; // 3.6 km/h — steep slopes, careful footing
 
 /// Max NPC walking speed for a given surface type, factoring in terrain slope
 pub fn npc_speed_for_surface(surface: Surface, terrain_normal_y: f32) -> f32 {
@@ -56,8 +58,8 @@ pub const PARKING_SPOT_WIDTH: f32 = 2.5;
 pub const VEHICLE_GROUND_OFFSET: f32 = 0.03; // lift vehicles above terrain to prevent slope clipping
 pub const VEHICLE_COLLISION_RADIUS: f32 = 2.2; // half-length of vehicle for separation (~4.6m car)
 pub const FOG_DIST: f32 = WORLD_SIZE * 0.75;
-pub const PLAYER_SPEED: f32 = 3.06;  // 11 km/h Run gait
-pub const SPRINT_SPEED: f32 = 7.78;  // 28 km/h Sprint gait
+pub const PLAYER_SPEED: f32 = 3.06; // 11 km/h Run gait
+pub const SPRINT_SPEED: f32 = 7.78; // 28 km/h Sprint gait
 pub const PLAYER_RADIUS: f32 = 0.4;
 pub const DAY_LENGTH: f32 = 1440.0; // 1 game-minute = 1 real second (24 real minutes per day)
 pub const HEADLESS_DT: f32 = 1.0 / 30.0; // shared timestep for headless simulation (observe, etc.)
@@ -71,10 +73,10 @@ pub const GRAVITY: f32 = 20.0;
 pub const JUMP_VELOCITY: f32 = 8.0;
 
 // Collision/vehicle damage constants
-pub const VEHICLE_HIT_DAMAGE_MULT: f32 = 5.0;  // damage = speed * this
-pub const VEHICLE_HIT_LAUNCH_UP: f32 = 5.0;    // upward velocity on hit
+pub const VEHICLE_HIT_DAMAGE_MULT: f32 = 5.0; // damage = speed * this
+pub const VEHICLE_HIT_LAUNCH_UP: f32 = 5.0; // upward velocity on hit
 pub const VEHICLE_CRASH_SELF_DAMAGE: f32 = 0.3; // fraction of speed as damage to vehicle occupant
-pub const SPEED_LIMIT: f32 = 10.0;              // speeding threshold on CarRoad
+pub const SPEED_LIMIT: f32 = 10.0; // speeding threshold on CarRoad
 
 // Ragdoll constants
 pub const RAGDOLL_DURATION: f32 = 3.0;
@@ -124,11 +126,11 @@ pub const SOUND_CHANNELS: usize = 3;
 // NPC life simulation constants
 pub const NUM_TRASH_BINS: usize = 60;
 pub const NPC_DRIVE_THRESHOLD: f32 = 15.0;
-pub const NPC_PICKUP_DIST: f32 = 4.0;  // generous range for 500m world
+pub const NPC_PICKUP_DIST: f32 = 4.0; // generous range for 500m world
 pub const NPC_BIN_DIST: f32 = 1.5;
 pub const INTERACT_DIST: f32 = 2.0;
 pub const NIGHT_SPAWN_START: f32 = 20.0; // 8 PM
-pub const NIGHT_SPAWN_END: f32 = 4.0;    // 4 AM
+pub const NIGHT_SPAWN_END: f32 = 4.0; // 4 AM
 pub const DOCK_Z_START: f32 = WORLD_HALF * 0.7;
 pub const WATER_Y: f32 = -1.0;
 pub const RIVER_WIDTH: f32 = WORLD_SIZE * 0.024;
@@ -137,25 +139,53 @@ pub const RIVER_CURRENT: f32 = 2.0;
 pub const DROWN_DAMAGE: f32 = 8.0;
 pub const PARKING_LOT_COUNT: usize = 4;
 
+pub struct Wall {
+    pub x: f32,
+    pub z: f32,
+    pub hw: f32,
+    pub hd: f32,
+    pub height: f32,
+}
 
-pub struct Wall { pub x: f32, pub z: f32, pub hw: f32, pub hd: f32, pub height: f32 }
-
-pub struct RiverSegment { pub x1: f32, pub z1: f32, pub x2: f32, pub z2: f32, pub width: f32 }
+pub struct RiverSegment {
+    pub x1: f32,
+    pub z1: f32,
+    pub x2: f32,
+    pub z2: f32,
+    pub width: f32,
+}
 
 /// Bridge zone: oriented rectangle where NPCs can walk across river.
 /// dir = road direction unit vector, hw = half-width, hl = half-length.
-pub struct Bridge { pub cx: f32, pub cz: f32, pub dir_x: f32, pub dir_z: f32, pub hw: f32, pub hl: f32 }
+pub struct Bridge {
+    pub cx: f32,
+    pub cz: f32,
+    pub dir_x: f32,
+    pub dir_z: f32,
+    pub hw: f32,
+    pub hl: f32,
+}
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum RoadTier { CarRoad, FieldRoad }
+pub enum RoadTier {
+    CarRoad,
+    FieldRoad,
+}
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Surface { Sidewalk, CarRoad, FieldRoad, Terrain }
+pub enum Surface {
+    Sidewalk,
+    CarRoad,
+    FieldRoad,
+    Terrain,
+}
 
 #[derive(Clone)]
 pub struct RoadSegment {
-    pub x0: f32, pub z0: f32,
-    pub x1: f32, pub z1: f32,
+    pub x0: f32,
+    pub z0: f32,
+    pub x1: f32,
+    pub z1: f32,
     pub tier: RoadTier,
 }
 
@@ -167,36 +197,53 @@ pub struct RoadNetwork {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum LaneDirection { Forward, Reverse }
+pub enum LaneDirection {
+    Forward,
+    Reverse,
+}
 
 #[derive(Clone, Copy)]
-pub struct PathWaypoint { pub node_idx: usize, pub segment_idx: usize }
+pub struct PathWaypoint {
+    pub node_idx: usize,
+    pub segment_idx: usize,
+}
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum IntersectionState { Cruising, Approaching, Waiting, Turning }
+pub enum IntersectionState {
+    Cruising,
+    Approaching,
+    Waiting,
+    Turning,
+}
 
 pub struct ParkingSpot {
-    pub x: f32, pub z: f32, pub rot_y: f32,
+    pub x: f32,
+    pub z: f32,
+    pub rot_y: f32,
     pub occupied_by: Option<usize>, // vehicle index
 }
 
 pub struct RoadGraph {
     pub adjacency: Vec<Vec<(usize, usize, f32)>>, // per-node: (neighbor, seg_idx, dist)
-    pub segment_nodes: Vec<(usize, usize)>,        // per-segment: (node_a, node_b)
+    pub segment_nodes: Vec<(usize, usize)>,       // per-segment: (node_a, node_b)
 }
 
 impl RoadNetwork {
     pub fn new() -> Self {
         RoadNetwork {
-            segments: Vec::new(), nodes: Vec::new(),
-            graph: RoadGraph { adjacency: Vec::new(), segment_nodes: Vec::new() },
+            segments: Vec::new(),
+            nodes: Vec::new(),
+            graph: RoadGraph {
+                adjacency: Vec::new(),
+                segment_nodes: Vec::new(),
+            },
             parking_spots: Vec::new(),
         }
     }
 }
 
 pub struct Terrain {
-    pub heights: Vec<f32>,   // (TERRAIN_GRID+1)^2 height samples
+    pub heights: Vec<f32>, // (TERRAIN_GRID+1)^2 height samples
     pub grid: usize,
     pub cell_size: f32,
 }
@@ -240,47 +287,62 @@ impl Terrain {
         let nz = hz0 - hz1;
         let ny = 2.0 * d;
         let l = (nx * nx + ny * ny + nz * nz).sqrt();
-        if l < 1e-10 { [0.0, 1.0, 0.0] } else { [nx / l, ny / l, nz / l] }
+        if l < 1e-10 {
+            [0.0, 1.0, 0.0]
+        } else {
+            [nx / l, ny / l, nz / l]
+        }
     }
 }
 
 #[allow(dead_code)]
 pub struct Building {
-    pub x: f32, pub z: f32,
-    pub w: f32, pub d: f32,
-    pub h: f32, pub ground_y: f32,
+    pub x: f32,
+    pub z: f32,
+    pub w: f32,
+    pub d: f32,
+    pub h: f32,
+    pub ground_y: f32,
 }
 
 pub struct Rock {
-    pub x: f32, pub z: f32,
+    pub x: f32,
+    pub z: f32,
     pub size: f32,
 }
 
 pub struct Tree {
-    pub x: f32, pub z: f32,
+    pub x: f32,
+    pub z: f32,
     pub trunk_radius: f32,
 }
 
 pub struct StreetLight {
-    pub x: f32, pub z: f32, pub ground_y: f32,
+    pub x: f32,
+    pub z: f32,
+    pub ground_y: f32,
 }
 
 pub struct TrashBin {
-    pub x: f32, pub y: f32, pub z: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
     pub items_held: u32,
     pub carried_by: Option<usize>, // NPC index carrying this bin
     pub terrain_normal: [f32; 3],
 }
 
 pub struct Vehicle {
-    pub x: f32, pub y: f32, pub z: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
     pub rot_y: f32,
     pub speed: f32,
     pub terrain_normal: [f32; 3],
     pub color: u32,
-    pub scale: f32,            // 0.90–1.10 per-vehicle size variation
-    pub occupied: bool,       // player is driving
-    pub ai_active: bool,      // AI drives when not occupied and on road
+    pub scale: f32,      // 0.90–1.10 per-vehicle size variation
+    pub occupied: bool,  // player is driving
+    pub ai_active: bool, // AI drives when not occupied and on road
     pub ai_target_x: f32,
     pub ai_target_z: f32,
     pub rng: Rng,
@@ -292,14 +354,14 @@ pub struct Vehicle {
     pub lane_dir: LaneDirection,
     pub intersection_state: IntersectionState,
     pub intersection_wait_timer: f32,
-    pub cruise_speed: f32,       // per-vehicle 7.0–12.0 m/s
+    pub cruise_speed: f32, // per-vehicle 7.0–12.0 m/s
     pub target_speed: f32,
     pub parking_target: Option<usize>,
     pub parked: bool,
-    pub idle_timer: f32,          // tracks how long vehicle has been at speed < 0.5
+    pub idle_timer: f32, // tracks how long vehicle has been at speed < 0.5
     // Physics rigid body
     pub body: crate::physics::RigidBody,
-    pub wheels: [crate::tire::WheelState; 4],        // FL, FR, RL, RR
+    pub wheels: [crate::tire::WheelState; 4], // FL, FR, RL, RR
     pub suspension: [crate::suspension::SuspensionState; 4],
     pub drivetrain: crate::tire::Drivetrain,
     pub deformation: crate::deform::VehicleDeformation,
@@ -308,37 +370,45 @@ pub struct Vehicle {
 
 impl Vehicle {
     /// Default physics state for a parked vehicle at given position/rotation
-    pub fn default_physics(x: f32, y: f32, z: f32, rot_y: f32, scale: f32) -> (
+    pub fn default_physics(
+        x: f32,
+        y: f32,
+        z: f32,
+        rot_y: f32,
+        scale: f32,
+    ) -> (
         crate::physics::RigidBody,
         [crate::tire::WheelState; 4],
         [crate::suspension::SuspensionState; 4],
         crate::tire::Drivetrain,
     ) {
-        use crate::physics::{RigidBody, CollisionShape};
-        use crate::tire::{WheelState, Drivetrain};
-        use crate::suspension::{SuspensionState, SuspensionParams};
+        use crate::physics::{CollisionShape, RigidBody};
+        use crate::suspension::{SuspensionParams, SuspensionState};
+        use crate::tire::{Drivetrain, WheelState};
 
         // RS5 dimensions from render.rs: wheelbase 2.82m, track 1.60m, wheel radius 0.355m
         let half_w = 0.93 * scale;
         let half_h = 0.7 * scale;
         let half_d = 2.3 * scale;
         let mass = 1660.0 * scale * scale; // ~1660kg (Audi RS5 class)
-        let shape = CollisionShape::Box { half_extents: [half_w, half_h, half_d] };
+        let shape = CollisionShape::Box {
+            half_extents: [half_w, half_h, half_d],
+        };
         let inertia = shape.inertia_diag(mass);
         let mut body = RigidBody::new_dynamic([x, y, z], mass, inertia);
         body.quat = crate::math::quat_from_rot_y(rot_y);
         body.update_inertia();
 
         let fwz = -1.41 * scale; // front axle Z (forward)
-        let rwz = 1.41 * scale;  // rear axle Z (back)
+        let rwz = 1.41 * scale; // rear axle Z (back)
         let wtrk = 0.80 * scale; // half track width
-        let wr = 0.355 * scale;  // wheel radius
+        let wr = 0.355 * scale; // wheel radius
 
         let wheels = [
             WheelState::new([-wtrk, -half_h + wr, fwz], wr), // FL
-            WheelState::new([ wtrk, -half_h + wr, fwz], wr), // FR
+            WheelState::new([wtrk, -half_h + wr, fwz], wr),  // FR
             WheelState::new([-wtrk, -half_h + wr, rwz], wr), // RL
-            WheelState::new([ wtrk, -half_h + wr, rwz], wr), // RR
+            WheelState::new([wtrk, -half_h + wr, rwz], wr),  // RR
         ];
 
         let susp_params = SuspensionParams::default_car();
@@ -435,19 +505,35 @@ impl NpcJob {
     }
 
     pub fn is_mobile(self) -> bool {
-        matches!(self,
-            NpcJob::Collector | NpcJob::GarbageCollector |
-            NpcJob::DeliveryCourier | NpcJob::MailCarrier |
-            NpcJob::Paramedic | NpcJob::PolicePatrol |
-            NpcJob::TaxiDriver
+        matches!(
+            self,
+            NpcJob::Collector
+                | NpcJob::GarbageCollector
+                | NpcJob::DeliveryCourier
+                | NpcJob::MailCarrier
+                | NpcJob::Paramedic
+                | NpcJob::PolicePatrol
+                | NpcJob::TaxiDriver
         )
     }
 }
 
 pub const JOB_NAMES: [&str; NPC_JOB_COUNT] = [
-    "Collector", "Garbage", "Taxi", "Delivery", "Mail",
-    "Paramedic", "Firefighter", "Police", "Vendor", "Mechanic",
-    "Construction", "Fisherman", "Farmer", "Lumberjack", "Scavenger",
+    "Collector",
+    "Garbage",
+    "Taxi",
+    "Delivery",
+    "Mail",
+    "Paramedic",
+    "Firefighter",
+    "Police",
+    "Vendor",
+    "Mechanic",
+    "Construction",
+    "Fisherman",
+    "Farmer",
+    "Lumberjack",
+    "Scavenger",
 ];
 
 impl NpcState {
@@ -530,7 +616,9 @@ impl PlayerJob {
     pub fn none() -> Self {
         PlayerJob {
             job_type: PlayerJobType::None,
-            time_remaining: 0.0, items_done: 0, items_needed: 0,
+            time_remaining: 0.0,
+            items_done: 0,
+            items_needed: 0,
         }
     }
 }
@@ -549,7 +637,9 @@ pub enum InteractibleKind {
 }
 
 pub struct Interactible {
-    pub x: f32, pub y: f32, pub z: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
     pub kind: InteractibleKind,
     pub cooldown: f32,
     pub state_val: f32,
@@ -569,10 +659,13 @@ pub enum NpcState {
 
 pub struct Npc {
     // Existing
-    pub x: f32, pub y: f32, pub z: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
     pub rot_y: f32,
     pub walk_phase: f32,
-    pub target_x: f32, pub target_z: f32,
+    pub target_x: f32,
+    pub target_z: f32,
     pub shirt_color: u32,
     pub pants_color: u32,
     pub rng: Rng,
@@ -582,10 +675,10 @@ pub struct Npc {
     pub terrain_normal: [f32; 3],
     // Life simulation
     pub state: NpcState,
-    pub home_idx: usize,         // index into buildings
-    pub car_idx: usize,          // index into vehicles
-    pub wake_hour: f32,          // 5.0–9.0
-    pub state_timer: f32,        // seconds spent in current state
+    pub home_idx: usize,  // index into buildings
+    pub car_idx: usize,   // index into vehicles
+    pub wake_hour: f32,   // 5.0–9.0
+    pub state_timer: f32, // seconds spent in current state
     pub money: f32,
     // Work
     pub carrying_item: bool,
@@ -595,18 +688,20 @@ pub struct Npc {
     pub items_deposited_today: u32,
     // Driving
     pub in_vehicle: bool,
-    pub parked_x: f32, pub parked_z: f32,
+    pub parked_x: f32,
+    pub parked_z: f32,
     // Pathfinding (A* navmesh)
-    pub nav_path: Vec<[f32; 2]>,  // current A* path waypoints
-    pub nav_path_idx: usize,      // next waypoint index
-    pub nav_target_x: f32,        // target these paths were computed for
+    pub nav_path: Vec<[f32; 2]>, // current A* path waypoints
+    pub nav_path_idx: usize,     // next waypoint index
+    pub nav_target_x: f32,       // target these paths were computed for
     pub nav_target_z: f32,
     // Legacy stuck detection (kept for stuck_timer metric tracking only)
     pub stuck_timer: f32,
     // Job system
     pub job: NpcJob,
     pub job_timer: f32,
-    pub job_target_x: f32, pub job_target_z: f32,
+    pub job_target_x: f32,
+    pub job_target_z: f32,
     pub interaction_target: Option<usize>, // index into interactibles
     // Social interactions
     pub interacting_with: Option<usize>, // other NPC index
@@ -618,7 +713,8 @@ pub struct Npc {
     pub fitness_interactions: u32,
     pub fitness_distance: f32,
     pub fitness_stuck_time: f32,
-    pub prev_x: f32, pub prev_z: f32,
+    pub prev_x: f32,
+    pub prev_z: f32,
     // Job failure counters (diagnostic — tracked for observer reports)
     pub find_item_failures: u32,
     pub find_bin_failures: u32,
@@ -647,7 +743,7 @@ pub struct Npc {
     pub fitness_proximity: f32,
     // Ragdoll (legacy — synced from skeleton for rendering)
     pub ragdoll_active: bool,
-    pub ragdoll_points: [[f32; 3]; 7],  // hips, chest, head, l_hand, r_hand, l_foot, r_foot
+    pub ragdoll_points: [[f32; 3]; 7], // hips, chest, head, l_hand, r_hand, l_foot, r_foot
     pub ragdoll_timer: f32,
     // Articulated skeleton (new physics-driven)
     pub skeleton: crate::skeleton::Skeleton,
@@ -660,33 +756,41 @@ pub struct Npc {
     // Police
     pub police_target: Option<usize>,
     // Body variation
-    pub height_scale: f32,      // 0.83–1.11 (maps to ~1.5m–2.0m from base 1.8m)
-    pub walk_speed_mult: f32,   // 0.85–1.15 (shorter = slower, taller = faster)
+    pub height_scale: f32,    // 0.83–1.11 (maps to ~1.5m–2.0m from base 1.8m)
+    pub walk_speed_mult: f32, // 0.85–1.15 (shorter = slower, taller = faster)
 }
 
 pub const NPC_SHIRT_COLORS: [u32; 6] = [
     0xFFAA3333, 0xFF33AA33, 0xFF3333AA, 0xFFAAAA33, 0xFF33AAAA, 0xFFAA33AA,
 ];
-pub const NPC_PANTS_COLORS: [u32; 4] = [
-    0xFF333355, 0xFF443322, 0xFF334433, 0xFF444444,
-];
+pub const NPC_PANTS_COLORS: [u32; 4] = [0xFF333355, 0xFF443322, 0xFF334433, 0xFF444444];
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum ItemKind { Health, Money, Stamina, Food, Water }
+pub enum ItemKind {
+    Health,
+    Money,
+    Stamina,
+    Food,
+    Water,
+}
 
 pub struct Item {
-    pub x: f32, pub y: f32, pub z: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
     pub kind: ItemKind,
     pub active: bool,
     pub spin_phase: f32,
     pub falling: bool,
     pub vel_y: f32,
     pub claimed_by: Option<usize>, // NPC index heading for this
-    pub skip_until: f32, // countdown — NPCs skip this item while > 0 (marked unreachable)
+    pub skip_until: f32,           // countdown — NPCs skip this item while > 0 (marked unreachable)
 }
 
 pub struct Player {
-    pub x: f32, pub y: f32, pub z: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
     pub rot_y: f32,
     pub health: f32,
     pub stamina: f32,
@@ -730,10 +834,14 @@ pub struct Player {
 }
 
 pub struct Camera {
-    pub x: f32, pub y: f32, pub z: f32,
-    pub tx: f32, pub ty: f32, pub tz: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub tx: f32,
+    pub ty: f32,
+    pub tz: f32,
     pub yaw: f32,   // orbit yaw around player (radians)
-    pub pitch: f32,  // orbit pitch above player (radians)
+    pub pitch: f32, // orbit pitch above player (radians)
 }
 
 // WorldTri: a single triangle in world space with flat color
@@ -813,21 +921,40 @@ impl GameState {
             width: w,
             height: h,
             player: Player {
-                x: 0.0, y: 0.0, z: 10.0,
+                x: 0.0,
+                y: 0.0,
+                z: 10.0,
                 rot_y: 0.0,
-                health: 100.0, stamina: 100.0, money: 0.0,
-                vel_y: 0.0, on_ground: true,
-                walk_phase: 0.0, sprinting: false, in_vehicle: None,
-                carrying_item: false, carrying_bin: None,
-                active_job: PlayerJob::none(), sitting: false, bank_balance: 0.0,
-                job_menu_open: false, job_menu_cursor: 0,
-                attack_cooldown: 0.0, attack_phase: 0.0, hit_flash: 0.0, damage_shake: 0.0,
-                hunger: 100.0, thirst: 100.0,
-                wanted_vehicle_hit: false, bounty: 0.0,
+                health: 100.0,
+                stamina: 100.0,
+                money: 0.0,
+                vel_y: 0.0,
+                on_ground: true,
+                walk_phase: 0.0,
+                sprinting: false,
+                in_vehicle: None,
+                carrying_item: false,
+                carrying_bin: None,
+                active_job: PlayerJob::none(),
+                sitting: false,
+                bank_balance: 0.0,
+                job_menu_open: false,
+                job_menu_cursor: 0,
+                attack_cooldown: 0.0,
+                attack_phase: 0.0,
+                hit_flash: 0.0,
+                damage_shake: 0.0,
+                hunger: 100.0,
+                thirst: 100.0,
+                wanted_vehicle_hit: false,
+                bounty: 0.0,
                 is_female: false,
                 terrain_normal: [0.0, 1.0, 0.0],
                 body: {
-                    let shape = crate::physics::CollisionShape::Capsule { radius: 0.3, half_height: 0.625 };
+                    let shape = crate::physics::CollisionShape::Capsule {
+                        radius: 0.3,
+                        half_height: 0.625,
+                    };
                     let inertia = shape.inertia_diag(80.0);
                     crate::physics::RigidBody::new_dynamic([0.0, 0.0, 10.0], 80.0, inertia)
                 },
@@ -837,8 +964,12 @@ impl GameState {
                 model_index: 0,
             },
             camera: Camera {
-                x: 0.0, y: 8.0, z: 18.0,
-                tx: 0.0, ty: 1.0, tz: 10.0,
+                x: 0.0,
+                y: 8.0,
+                z: 18.0,
+                tx: 0.0,
+                ty: 1.0,
+                tz: 10.0,
                 yaw: 0.0,
                 pitch: 0.35, // ~20 degrees above horizontal
             },
@@ -901,19 +1032,29 @@ impl GameState {
                 &game.model_library.character_names,
             );
             if anim_data.is_ready() {
-                eprintln!("[init] FBX animation loaded: {} clips", anim_data.clips.len());
+                eprintln!(
+                    "[init] FBX animation loaded: {} clips",
+                    anim_data.clips.len()
+                );
                 game.animation_data = Some(anim_data);
             }
         }
 
         // Load trained NEAT population (try neat_trained.bin first)
         if let Some(loaded) = crate::neat::load_population("neat_trained.bin", NUM_NPCS) {
-            eprintln!("Loaded NEAT population: gen {}, {} genomes", loaded.generation, loaded.genomes.len());
+            eprintln!(
+                "Loaded NEAT population: gen {}, {} genomes",
+                loaded.generation,
+                loaded.genomes.len()
+            );
             game.neat_population = loaded;
         }
 
         // Compile brains from population
-        game.neat_brains = game.neat_population.genomes.iter()
+        game.neat_brains = game
+            .neat_population
+            .genomes
+            .iter()
             .map(|g| crate::neat::NeatBrain::compile(g))
             .collect();
 
@@ -927,12 +1068,17 @@ impl GameState {
 
         // Advance time
         self.time_of_day += dt * 24.0 / DAY_LENGTH;
-        if self.time_of_day >= 24.0 { self.time_of_day -= 24.0; }
+        if self.time_of_day >= 24.0 {
+            self.time_of_day -= 24.0;
+        }
 
         // Midnight reset
         if crate::npc::sys_midnight_reset(
-            &mut self.world, self.time_of_day, prev_time_of_day,
-            &mut self.neat_population, &mut self.neat_brains,
+            &mut self.world,
+            self.time_of_day,
+            prev_time_of_day,
+            &mut self.neat_population,
+            &mut self.neat_brains,
         ) {
             self.day_count += 1;
         }
@@ -943,7 +1089,10 @@ impl GameState {
         // Vehicle rigid body physics
         for vi in 0..self.world.vehicles.len() {
             crate::vehicle_physics::step_vehicle_physics(
-                &mut self.world.vehicles[vi], &self.terrain, &self.road_network, dt,
+                &mut self.world.vehicles[vi],
+                &self.terrain,
+                &self.road_network,
+                dt,
             );
         }
 
@@ -958,13 +1107,23 @@ impl GameState {
 
         // NPC systems
         crate::npc::sys_npc(
-            &mut self.world, &mut self.road_network, &self.terrain,
-            dt, self.time_of_day, &mut self.neat_brains,
-            self.player.x, self.player.z, &self.walk_grid,
+            &mut self.world,
+            &mut self.road_network,
+            &self.terrain,
+            dt,
+            self.time_of_day,
+            &mut self.neat_brains,
+            self.player.x,
+            self.player.z,
+            &self.walk_grid,
         );
         crate::npc::sys_night_spawning(
-            &mut self.world, &self.terrain, self.time_of_day,
-            dt, &mut self.spawn_rng, &self.road_network,
+            &mut self.world,
+            &self.terrain,
+            self.time_of_day,
+            dt,
+            &mut self.spawn_rng,
+            &self.road_network,
         );
         crate::npc::sys_items_update(&mut self.world, dt);
         crate::npc::sys_npc_interactions(&mut self.world, dt);

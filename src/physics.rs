@@ -1,10 +1,10 @@
-// Core rigid body physics: integration, collision shapes, contact solver
-//
-// Semi-implicit Euler integration, sequential impulse contact resolution.
-// All entities (vehicles, NPCs, player) share this system.
+//! Core rigid body physics — integration, collision shapes, contact solver.
+//!
+//! Semi-implicit Euler integration, sequential impulse contact resolution.
+//! All entities (vehicles, NPCs, player) share this system.
 
-use crate::math::*;
 use crate::material::SurfaceMaterial;
+use crate::math::*;
 
 // ── Rigid body ───────────────────────────────────────────────────────────
 
@@ -21,8 +21,8 @@ pub struct RigidBody {
     // Angular
     pub ang_vel: Vec3,
     pub torque_accum: Vec3,
-    pub inv_inertia_local: [f32; 9],  // diagonal in local space
-    pub inv_inertia_world: [f32; 9],  // rotated each frame
+    pub inv_inertia_local: [f32; 9], // diagonal in local space
+    pub inv_inertia_world: [f32; 9], // rotated each frame
     // Flags
     pub is_static: bool,
 }
@@ -32,9 +32,21 @@ impl RigidBody {
         let inv_mass = if mass > 0.0 { 1.0 / mass } else { 0.0 };
         let inv_i = if mass > 0.0 {
             mat3_diagonal(
-                if inertia_diag[0] > 0.0 { 1.0 / inertia_diag[0] } else { 0.0 },
-                if inertia_diag[1] > 0.0 { 1.0 / inertia_diag[1] } else { 0.0 },
-                if inertia_diag[2] > 0.0 { 1.0 / inertia_diag[2] } else { 0.0 },
+                if inertia_diag[0] > 0.0 {
+                    1.0 / inertia_diag[0]
+                } else {
+                    0.0
+                },
+                if inertia_diag[1] > 0.0 {
+                    1.0 / inertia_diag[1]
+                } else {
+                    0.0
+                },
+                if inertia_diag[2] > 0.0 {
+                    1.0 / inertia_diag[2]
+                } else {
+                    0.0
+                },
             )
         } else {
             [0.0; 9]
@@ -92,7 +104,10 @@ impl RigidBody {
         self.vel = v3_add(self.vel, v3_scale(impulse, self.inv_mass));
         let r = v3_sub(world_point, self.pos);
         let ang_impulse = v3_cross(r, impulse);
-        self.ang_vel = v3_add(self.ang_vel, mat3_mul_vec(&self.inv_inertia_world, ang_impulse));
+        self.ang_vel = v3_add(
+            self.ang_vel,
+            mat3_mul_vec(&self.inv_inertia_world, ang_impulse),
+        );
     }
 
     /// Update world-space inertia tensor from current orientation
@@ -111,9 +126,9 @@ impl RigidBody {
 /// Multiply a 3x3 matrix by a vector
 fn mat3_mul_vec(m: &[f32; 9], v: Vec3) -> Vec3 {
     [
-        m[0]*v[0] + m[3]*v[1] + m[6]*v[2],
-        m[1]*v[0] + m[4]*v[1] + m[7]*v[2],
-        m[2]*v[0] + m[5]*v[1] + m[8]*v[2],
+        m[0] * v[0] + m[3] * v[1] + m[6] * v[2],
+        m[1] * v[0] + m[4] * v[1] + m[7] * v[2],
+        m[2] * v[0] + m[5] * v[1] + m[8] * v[2],
     ]
 }
 
@@ -134,15 +149,22 @@ impl CollisionShape {
     pub fn inertia_diag(&self, mass: f32) -> Vec3 {
         match *self {
             CollisionShape::Box { half_extents: h } => {
-                let (w, ht, d) = (h[0]*2.0, h[1]*2.0, h[2]*2.0);
+                let (w, ht, d) = (h[0] * 2.0, h[1] * 2.0, h[2] * 2.0);
                 let f = mass / 12.0;
-                [f*(ht*ht + d*d), f*(w*w + d*d), f*(w*w + ht*ht)]
+                [
+                    f * (ht * ht + d * d),
+                    f * (w * w + d * d),
+                    f * (w * w + ht * ht),
+                ]
             }
             CollisionShape::Sphere { radius: r } => {
                 let i = 0.4 * mass * r * r;
                 [i, i, i]
             }
-            CollisionShape::Capsule { radius: r, half_height: hh } => {
+            CollisionShape::Capsule {
+                radius: r,
+                half_height: hh,
+            } => {
                 // Approximate as cylinder
                 let h = (hh + r) * 2.0;
                 let iy = 0.5 * mass * r * r;
@@ -157,11 +179,11 @@ impl CollisionShape {
 
 /// A contact point between two bodies (or body and world)
 pub struct Contact {
-    pub body_a: usize,       // index into rigid body array (usize::MAX = world/static)
+    pub body_a: usize, // index into rigid body array (usize::MAX = world/static)
     pub body_b: usize,
-    pub point: Vec3,         // world-space contact point
-    pub normal: Vec3,        // from A to B
-    pub penetration: f32,    // positive = overlapping
+    pub point: Vec3,      // world-space contact point
+    pub normal: Vec3,     // from A to B
+    pub penetration: f32, // positive = overlapping
     pub material: SurfaceMaterial,
     // Solver cached values (filled during solve)
     pub normal_impulse: f32,
@@ -169,10 +191,20 @@ pub struct Contact {
 }
 
 impl Contact {
-    pub fn new(a: usize, b: usize, point: Vec3, normal: Vec3, pen: f32, mat: SurfaceMaterial) -> Self {
+    pub fn new(
+        a: usize,
+        b: usize,
+        point: Vec3,
+        normal: Vec3,
+        pen: f32,
+        mat: SurfaceMaterial,
+    ) -> Self {
         Contact {
-            body_a: a, body_b: b,
-            point, normal, penetration: pen,
+            body_a: a,
+            body_b: b,
+            point,
+            normal,
+            penetration: pen,
             material: mat,
             normal_impulse: 0.0,
             tangent_impulse: [0.0; 2],
@@ -188,7 +220,9 @@ const ANGULAR_DAMPING: f32 = 0.02;
 
 /// Semi-implicit Euler: integrate forces → velocity → position
 pub fn integrate(body: &mut RigidBody, dt: f32) {
-    if body.is_static { return; }
+    if body.is_static {
+        return;
+    }
 
     // Apply gravity
     let gravity_force = v3_scale(GRAVITY, body.mass);
@@ -209,7 +243,10 @@ pub fn integrate(body: &mut RigidBody, dt: f32) {
     body.ang_vel = v3_scale(body.ang_vel, (1.0 - ANGULAR_DAMPING).max(0.0));
     // Orientation: q += 0.5 * ω * q * dt
     let w = body.ang_vel;
-    let dq = quat_mul([w[0]*0.5*dt, w[1]*0.5*dt, w[2]*0.5*dt, 0.0], body.quat);
+    let dq = quat_mul(
+        [w[0] * 0.5 * dt, w[1] * 0.5 * dt, w[2] * 0.5 * dt, 0.0],
+        body.quat,
+    );
     body.quat = quat_normalize([
         body.quat[0] + dq[0],
         body.quat[1] + dq[1],
@@ -239,7 +276,9 @@ const SLOP: f32 = 0.005; // penetration tolerance before correction
 /// (simpler, stable). This solver handles inter-body contact resolution
 /// (vehicle-vehicle, character-on-vehicle stacking).
 pub fn solve_contacts(bodies: &mut [RigidBody], contacts: &mut [Contact], dt: f32) {
-    if contacts.is_empty() || dt < 1e-8 { return; }
+    if contacts.is_empty() || dt < 1e-8 {
+        return;
+    }
 
     let inv_dt = 1.0 / dt;
 
@@ -277,15 +316,22 @@ fn solve_one(bodies: &mut [RigidBody], c: &mut Contact, inv_dt: f32) {
     // Effective mass along normal
     let rn_a = v3_cross(r_a, n);
     let rn_b = v3_cross(r_b, n);
-    let k_normal = inv_mass_a + inv_mass_b
+    let k_normal = inv_mass_a
+        + inv_mass_b
         + v3_dot(v3_cross(mat3_mul_vec(&inv_inertia_a, rn_a), r_a), n)
         + v3_dot(v3_cross(mat3_mul_vec(&inv_inertia_b, rn_b), r_b), n);
-    if k_normal < 1e-10 { return; }
+    if k_normal < 1e-10 {
+        return;
+    }
 
     // Baumgarte positional correction
     let bias = BAUMGARTE_FACTOR * inv_dt * (c.penetration - SLOP).max(0.0);
     // Restitution
-    let restitution_bias = if vn < -1.0 { -c.material.restitution * vn } else { 0.0 };
+    let restitution_bias = if vn < -1.0 {
+        -c.material.restitution * vn
+    } else {
+        0.0
+    };
 
     let lambda_n = (-vn + bias + restitution_bias) / k_normal;
     let old_impulse = c.normal_impulse;
@@ -293,29 +339,46 @@ fn solve_one(bodies: &mut [RigidBody], c: &mut Contact, inv_dt: f32) {
     let lambda_n = c.normal_impulse - old_impulse;
 
     let impulse_n = v3_scale(n, lambda_n);
-    if c.body_a != usize::MAX { bodies[c.body_a].apply_impulse_at(v3_scale(impulse_n, -1.0), c.point); }
-    if c.body_b != usize::MAX { bodies[c.body_b].apply_impulse_at(impulse_n, c.point); }
+    if c.body_a != usize::MAX {
+        bodies[c.body_a].apply_impulse_at(v3_scale(impulse_n, -1.0), c.point);
+    }
+    if c.body_b != usize::MAX {
+        bodies[c.body_b].apply_impulse_at(impulse_n, c.point);
+    }
 
     // ── Friction impulse ─────────────────────────────────────────────
     // Re-read velocities after normal impulse
-    let vel_a2 = if c.body_a != usize::MAX { bodies[c.body_a].velocity_at(c.point) } else { [0.0; 3] };
-    let vel_b2 = if c.body_b != usize::MAX { bodies[c.body_b].velocity_at(c.point) } else { [0.0; 3] };
+    let vel_a2 = if c.body_a != usize::MAX {
+        bodies[c.body_a].velocity_at(c.point)
+    } else {
+        [0.0; 3]
+    };
+    let vel_b2 = if c.body_b != usize::MAX {
+        bodies[c.body_b].velocity_at(c.point)
+    } else {
+        [0.0; 3]
+    };
     let rel_vel2 = v3_sub(vel_b2, vel_a2);
 
     // Tangent velocity (remove normal component)
     let vt = v3_sub(rel_vel2, v3_scale(n, v3_dot(rel_vel2, n)));
     let vt_len = v3_len(vt);
-    if vt_len < 1e-6 { return; }
+    if vt_len < 1e-6 {
+        return;
+    }
 
     let tangent = v3_scale(vt, 1.0 / vt_len);
 
     // Effective mass along tangent
     let rt_a = v3_cross(r_a, tangent);
     let rt_b = v3_cross(r_b, tangent);
-    let k_tangent = inv_mass_a + inv_mass_b
+    let k_tangent = inv_mass_a
+        + inv_mass_b
         + v3_dot(v3_cross(mat3_mul_vec(&inv_inertia_a, rt_a), r_a), tangent)
         + v3_dot(v3_cross(mat3_mul_vec(&inv_inertia_b, rt_b), r_b), tangent);
-    if k_tangent < 1e-10 { return; }
+    if k_tangent < 1e-10 {
+        return;
+    }
 
     let lambda_t = -vt_len / k_tangent;
 
@@ -324,8 +387,12 @@ fn solve_one(bodies: &mut [RigidBody], c: &mut Contact, inv_dt: f32) {
     let lambda_t = lambda_t.clamp(-max_friction, max_friction);
 
     let impulse_t = v3_scale(tangent, lambda_t);
-    if c.body_a != usize::MAX { bodies[c.body_a].apply_impulse_at(v3_scale(impulse_t, -1.0), c.point); }
-    if c.body_b != usize::MAX { bodies[c.body_b].apply_impulse_at(impulse_t, c.point); }
+    if c.body_a != usize::MAX {
+        bodies[c.body_a].apply_impulse_at(v3_scale(impulse_t, -1.0), c.point);
+    }
+    if c.body_b != usize::MAX {
+        bodies[c.body_b].apply_impulse_at(impulse_t, c.point);
+    }
 }
 
 // ── Ground plane contact generation ──────────────────────────────────────
@@ -344,16 +411,25 @@ pub fn ground_contact(
     // Get the lowest point of the shape
     let lowest_y = match *shape {
         CollisionShape::Sphere { radius } => body.pos[1] - radius,
-        CollisionShape::Capsule { radius, half_height } => body.pos[1] - half_height - radius,
+        CollisionShape::Capsule {
+            radius,
+            half_height,
+        } => body.pos[1] - half_height - radius,
         CollisionShape::Box { half_extents } => {
             // Check all 8 corners, find lowest in world space
             let mut min_y = f32::MAX;
             for sx in [-1.0f32, 1.0] {
                 for sy in [-1.0f32, 1.0] {
                     for sz in [-1.0f32, 1.0] {
-                        let local = [half_extents[0]*sx, half_extents[1]*sy, half_extents[2]*sz];
+                        let local = [
+                            half_extents[0] * sx,
+                            half_extents[1] * sy,
+                            half_extents[2] * sz,
+                        ];
                         let world = v3_add(body.pos, quat_rotate(body.quat, local));
-                        if world[1] < min_y { min_y = world[1]; }
+                        if world[1] < min_y {
+                            min_y = world[1];
+                        }
                     }
                 }
             }
@@ -368,8 +444,12 @@ pub fn ground_contact(
         let normal = terrain.normal_at(body.pos[0], body.pos[2]);
         let contact_point = [body.pos[0], ground_y, body.pos[2]];
         Some(Contact::new(
-            body_idx, usize::MAX,
-            contact_point, normal, penetration, mat,
+            body_idx,
+            usize::MAX,
+            contact_point,
+            normal,
+            penetration,
+            mat,
         ))
     } else {
         None
@@ -382,8 +462,12 @@ pub fn ground_contact(
 /// 3D contact narrow phase for vehicle-vehicle collisions.
 /// Uses 6 face axes (sufficient for box-vs-box when mostly axis-aligned).
 pub fn box_vs_box(
-    idx_a: usize, body_a: &RigidBody, half_a: Vec3,
-    idx_b: usize, body_b: &RigidBody, half_b: Vec3,
+    idx_a: usize,
+    body_a: &RigidBody,
+    half_a: Vec3,
+    idx_b: usize,
+    body_b: &RigidBody,
+    half_b: Vec3,
     mat: SurfaceMaterial,
 ) -> Option<Contact> {
     let rot_a = quat_to_mat3(body_a.quat);
@@ -413,14 +497,24 @@ pub fn box_vs_box(
     for i in 0..3 {
         let axis = axes_a[i];
         let pen = test_sat_axis(axis, d, &axes_a, &halfs_a, &axes_b, &halfs_b);
-        if pen < 0.0 { return None; } // separating axis found
-        if pen < min_pen { min_pen = pen; best_axis = axis; }
+        if pen < 0.0 {
+            return None;
+        } // separating axis found
+        if pen < min_pen {
+            min_pen = pen;
+            best_axis = axis;
+        }
     }
     for i in 0..3 {
         let axis = axes_b[i];
         let pen = test_sat_axis(axis, d, &axes_a, &halfs_a, &axes_b, &halfs_b);
-        if pen < 0.0 { return None; }
-        if pen < min_pen { min_pen = pen; best_axis = axis; }
+        if pen < 0.0 {
+            return None;
+        }
+        if pen < min_pen {
+            min_pen = pen;
+            best_axis = axis;
+        }
     }
 
     // Ensure normal points from A to B
@@ -430,16 +524,28 @@ pub fn box_vs_box(
 
     let contact_point = v3_scale(v3_add(body_a.pos, body_b.pos), 0.5);
 
-    Some(Contact::new(idx_a, idx_b, contact_point, best_axis, min_pen, mat))
+    Some(Contact::new(
+        idx_a,
+        idx_b,
+        contact_point,
+        best_axis,
+        min_pen,
+        mat,
+    ))
 }
 
 fn test_sat_axis(
-    axis: Vec3, d: Vec3,
-    axes_a: &[Vec3; 3], halfs_a: &[f32; 3],
-    axes_b: &[Vec3; 3], halfs_b: &[f32; 3],
+    axis: Vec3,
+    d: Vec3,
+    axes_a: &[Vec3; 3],
+    halfs_a: &[f32; 3],
+    axes_b: &[Vec3; 3],
+    halfs_b: &[f32; 3],
 ) -> f32 {
     let len = v3_len(axis);
-    if len < 1e-6 { return f32::MAX; } // degenerate axis, skip
+    if len < 1e-6 {
+        return f32::MAX;
+    } // degenerate axis, skip
 
     let proj_d = v3_dot(d, axis).abs();
     let mut proj_a = 0.0f32;
@@ -458,16 +564,24 @@ fn test_sat_axis(
 
 #[allow(dead_code)]
 pub fn sphere_vs_sphere(
-    idx_a: usize, body_a: &RigidBody, radius_a: f32,
-    idx_b: usize, body_b: &RigidBody, radius_b: f32,
+    idx_a: usize,
+    body_a: &RigidBody,
+    radius_a: f32,
+    idx_b: usize,
+    body_b: &RigidBody,
+    radius_b: f32,
     mat: SurfaceMaterial,
 ) -> Option<Contact> {
     let d = v3_sub(body_b.pos, body_a.pos);
     let dist_sq = v3_dot(d, d);
     let sum_r = radius_a + radius_b;
-    if dist_sq >= sum_r * sum_r { return None; }
+    if dist_sq >= sum_r * sum_r {
+        return None;
+    }
     let dist = dist_sq.sqrt();
-    if dist < 1e-6 { return None; }
+    if dist < 1e-6 {
+        return None;
+    }
     let normal = v3_scale(d, 1.0 / dist);
     let pen = sum_r - dist;
     let point = v3_add(body_a.pos, v3_scale(normal, radius_a - pen * 0.5));
@@ -482,11 +596,15 @@ pub fn sphere_vs_sphere(
 /// `force`: peak impulse magnitude at the explosion center
 /// Returns the actual impulse magnitude applied (0 if out of range).
 pub fn apply_explosion(body: &mut RigidBody, origin: Vec3, radius: f32, force: f32) -> f32 {
-    if body.is_static || radius < 1e-4 { return 0.0; }
+    if body.is_static || radius < 1e-4 {
+        return 0.0;
+    }
 
     let d = v3_sub(body.pos, origin);
     let dist = v3_len(d);
-    if dist >= radius || dist < 1e-4 { return 0.0; }
+    if dist >= radius || dist < 1e-4 {
+        return 0.0;
+    }
 
     // Linear falloff: full impulse at center, zero at edge
     let falloff = 1.0 - dist / radius;
@@ -658,7 +776,9 @@ pub struct ContactBuffer {
 
 impl ContactBuffer {
     pub fn new() -> Self {
-        ContactBuffer { contacts: Vec::new() }
+        ContactBuffer {
+            contacts: Vec::new(),
+        }
     }
 
     pub fn clear(&mut self) {

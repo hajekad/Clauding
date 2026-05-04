@@ -1,11 +1,11 @@
-// Data-driven asset placement engine
-// Distributes assets across the world based on zone weights, spacing rules,
-// and terrain constraints. Adding a new asset type = adding a PlacementRule const.
+//! Data-driven asset placement engine.
+//! Distributes assets across the world based on zone weights, spacing rules,
+//! and terrain constraints. Adding a new asset type = adding a `PlacementRule` const.
 
-use crate::state::*;
-use crate::zone::{ZoneMap, NUM_ZONE_KINDS};
 use crate::rng::Rng;
+use crate::state::*;
 use crate::world;
+use crate::zone::{NUM_ZONE_KINDS, ZoneMap};
 
 #[derive(Clone, Copy)]
 pub enum RoadRelation {
@@ -18,8 +18,8 @@ pub enum RoadRelation {
 #[derive(Clone, Copy)]
 pub struct PlacementRule {
     pub zone_weights: [f32; NUM_ZONE_KINDS],
-    pub density: f32,         // instances per zone cell at density=1.0 and weight=1.0
-    pub min_spacing: f32,     // minimum distance between instances of this type
+    pub density: f32,     // instances per zone cell at density=1.0 and weight=1.0
+    pub min_spacing: f32, // minimum distance between instances of this type
     pub road_relation: RoadRelation,
     pub road_offset_min: f32, // min distance from road center
     pub road_offset_max: f32, // max distance from road center
@@ -29,8 +29,8 @@ pub struct PlacementRule {
     pub cluster_radius: f32,  // scatter radius within a cluster
     pub avoid_water: bool,
     pub avoid_buildings: bool,
-    pub size_min: f32,        // min scale factor
-    pub size_max: f32,        // max scale factor
+    pub size_min: f32, // min scale factor
+    pub size_max: f32, // max scale factor
 }
 
 pub struct PlacedAsset {
@@ -61,24 +61,25 @@ impl SpacingGrid {
     fn insert(&mut self, x: f32, z: f32) {
         let gx = ((x + WORLD_HALF) / self.cell_size) as usize;
         let gz = ((z + WORLD_HALF) / self.cell_size) as usize;
-        if gx >= self.grid_size || gz >= self.grid_size { return; }
+        if gx >= self.grid_size || gz >= self.grid_size {
+            return;
+        }
         self.cells[gz * self.grid_size + gx].push([x, z]);
     }
 
     fn too_close(&self, x: f32, z: f32, min_dist: f32) -> bool {
         let gx = ((x + WORLD_HALF) / self.cell_size) as usize;
         let gz = ((z + WORLD_HALF) / self.cell_size) as usize;
-        if gx >= self.grid_size || gz >= self.grid_size { return true; }
+        if gx >= self.grid_size || gz >= self.grid_size {
+            return true;
+        }
         let min_sq = min_dist * min_dist;
         let search = (min_dist / self.cell_size).ceil() as i32 + 1;
         for dz in -search..=search {
             for dx in -search..=search {
                 let nx = gx as i32 + dx;
                 let nz = gz as i32 + dz;
-                if nx < 0 || nz < 0
-                    || nx >= self.grid_size as i32
-                    || nz >= self.grid_size as i32
-                {
+                if nx < 0 || nz < 0 || nx >= self.grid_size as i32 || nz >= self.grid_size as i32 {
                     continue;
                 }
                 for p in &self.cells[nz as usize * self.grid_size + nx as usize] {
@@ -113,16 +114,19 @@ pub fn place_assets(
         for gx in 0..zone_map.grid_size {
             let cell = &zone_map.cells[gz * zone_map.grid_size + gx];
             let weight = rule.zone_weights[cell.kind as usize];
-            if weight < 0.001 { continue; }
+            if weight < 0.001 {
+                continue;
+            }
 
             // Expected count for this cell — density is per-cell (tuned for 10m ref cells)
             // Don't scale with cell area: density means "trees per cell"
             let expected = rule.density * weight * cell.density;
             // Probabilistic rounding
             let frac = expected - expected.floor();
-            let count = expected as u32
-                + if rng.range(0.0, 1.0) < frac { 1 } else { 0 };
-            if count == 0 { continue; }
+            let count = expected as u32 + if rng.range(0.0, 1.0) < frac { 1 } else { 0 };
+            if count == 0 {
+                continue;
+            }
 
             let cx = (gx as f32 + 0.5) * zone_map.cell_size - WORLD_HALF;
             let cz = (gz as f32 + 0.5) * zone_map.cell_size - WORLD_HALF;
@@ -132,8 +136,7 @@ pub fn place_assets(
                 let cluster_n = if rule.cluster_min == rule.cluster_max {
                     rule.cluster_min
                 } else {
-                    rule.cluster_min
-                        + rng.next() as u32 % (rule.cluster_max - rule.cluster_min + 1)
+                    rule.cluster_min + rng.next() as u32 % (rule.cluster_max - rule.cluster_min + 1)
                 };
 
                 for _ in 0..cluster_n {
@@ -150,7 +153,9 @@ pub fn place_assets(
 
                         // Slope check
                         let normal = terrain.normal_at(x, z);
-                        if normal[1] < rule.slope_max { continue; }
+                        if normal[1] < rule.slope_max {
+                            continue;
+                        }
 
                         // Water avoidance — check with margin for building footprint
                         if rule.avoid_water {
@@ -173,30 +178,39 @@ pub fn place_assets(
                         match rule.road_relation {
                             RoadRelation::Roadside | RoadRelation::NearRoad => {
                                 let (dist, _) = world::road_dist_network(x, z, roads);
-                                if dist < rule.road_offset_min
-                                    || dist > rule.road_offset_max
-                                {
+                                if dist < rule.road_offset_min || dist > rule.road_offset_max {
                                     continue;
                                 }
                             }
                             RoadRelation::OffRoad => {
-                                if world::on_any_road(x, z, roads) { continue; }
+                                if world::on_any_road(x, z, roads) {
+                                    continue;
+                                }
                             }
                             RoadRelation::Any => {}
                         }
 
                         // Spacing check
-                        if grid.too_close(x, z, rule.min_spacing) { continue; }
+                        if grid.too_close(x, z, rule.min_spacing) {
+                            continue;
+                        }
 
                         let scale = rng.range(rule.size_min, rule.size_max);
                         let variant = rng.next() as u32;
 
                         grid.insert(x, z);
-                        result.push(PlacedAsset { x, z, scale, variant });
+                        result.push(PlacedAsset {
+                            x,
+                            z,
+                            scale,
+                            variant,
+                        });
                         placed = true;
                         break;
                     }
-                    if !placed { break; } // stop cluster if can't find valid spot
+                    if !placed {
+                        break;
+                    } // stop cluster if can't find valid spot
                 }
             }
         }

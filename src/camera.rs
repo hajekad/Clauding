@@ -1,5 +1,5 @@
-// sys_camera: mouse-driven orbit camera (Elden Ring style)
-// Yaw/pitch orbit around the player, smooth follow
+//! Mouse-driven orbit camera (Elden Ring style).
+//! Yaw/pitch orbit around the player with smooth follow.
 
 use crate::state::*;
 
@@ -8,15 +8,21 @@ const CAM_DIST_DRIVE: f32 = 14.0;
 const CAM_HEIGHT_OFFSET: f32 = 1.2; // extra height above orbit center
 const CAM_LERP_WALK: f32 = 0.1;
 const CAM_LERP_DRIVE: f32 = 0.12;
-const PITCH_MIN: f32 = 0.05;  // ~3 degrees (nearly level)
-const PITCH_MAX: f32 = 1.2;   // ~69 degrees (steep overhead)
+const PITCH_MIN: f32 = 0.05; // ~3 degrees (nearly level)
+const PITCH_MAX: f32 = 1.2; // ~69 degrees (steep overhead)
 const MOUSE_SPEED: f32 = 0.003;
 
 pub fn sys_camera(
-    cam: &mut Camera, player: &Player, terrain: &Terrain,
-    mouse_dx: f32, mouse_dy: f32,
-    sensitivity: f32, invert_x: bool, invert_y: bool,
-    _dt: f32, frame_counter: u64,
+    cam: &mut Camera,
+    player: &Player,
+    terrain: &Terrain,
+    mouse_dx: f32,
+    mouse_dy: f32,
+    sensitivity: f32,
+    invert_x: bool,
+    invert_y: bool,
+    _dt: f32,
+    frame_counter: u64,
 ) {
     // Apply mouse input to yaw/pitch
     // Default: mouse right = look right (yaw decreases = camera orbits left = world moves right)
@@ -27,8 +33,12 @@ pub fn sys_camera(
     cam.pitch = (cam.pitch + dy * MOUSE_SPEED * sensitivity).clamp(PITCH_MIN, PITCH_MAX);
 
     // Keep yaw in [-PI, PI]
-    while cam.yaw > std::f32::consts::PI { cam.yaw -= 2.0 * std::f32::consts::PI; }
-    while cam.yaw < -std::f32::consts::PI { cam.yaw += 2.0 * std::f32::consts::PI; }
+    while cam.yaw > std::f32::consts::PI {
+        cam.yaw -= 2.0 * std::f32::consts::PI;
+    }
+    while cam.yaw < -std::f32::consts::PI {
+        cam.yaw += 2.0 * std::f32::consts::PI;
+    }
 
     let (dist, lerp) = if player.in_vehicle.is_some() {
         (CAM_DIST_DRIVE, CAM_LERP_DRIVE)

@@ -1,5 +1,5 @@
-// Pure Rust procedural noise for terrain and world generation
-// Hash-based value noise with fBm, ridged multifractal, and domain warping
+//! Pure Rust procedural noise for terrain and world generation.
+//! Hash-based value noise with fBm, ridged multifractal, and domain warping.
 
 /// Deterministic hash of 2D integer coordinates + seed → float in [-1, 1]
 pub fn hash_2d(ix: i32, iy: i32, seed: u64) -> f32 {
@@ -40,7 +40,15 @@ pub fn value_noise_2d(x: f32, y: f32, seed: u64) -> f32 {
 
 /// Fractal Brownian motion — layered noise at increasing frequency.
 /// Returns value approximately in [-1, 1].
-pub fn fbm(x: f32, y: f32, octaves: u32, frequency: f32, lacunarity: f32, gain: f32, seed: u64) -> f32 {
+pub fn fbm(
+    x: f32,
+    y: f32,
+    octaves: u32,
+    frequency: f32,
+    lacunarity: f32,
+    gain: f32,
+    seed: u64,
+) -> f32 {
     let mut sum = 0.0;
     let mut amp = 1.0;
     let mut freq = frequency;
@@ -56,7 +64,15 @@ pub fn fbm(x: f32, y: f32, octaves: u32, frequency: f32, lacunarity: f32, gain: 
 
 /// Ridged multifractal — produces sharp ridges and valleys.
 /// Returns value approximately in [0, 1].
-pub fn ridged(x: f32, y: f32, octaves: u32, frequency: f32, lacunarity: f32, gain: f32, seed: u64) -> f32 {
+pub fn ridged(
+    x: f32,
+    y: f32,
+    octaves: u32,
+    frequency: f32,
+    lacunarity: f32,
+    gain: f32,
+    seed: u64,
+) -> f32 {
     let mut sum = 0.0;
     let mut amp = 1.0;
     let mut freq = frequency;

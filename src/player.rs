@@ -1,10 +1,10 @@
-// sys_player: Elden Ring style movement — camera-relative, mouse-driven direction
-// W = forward (camera direction), A/D = strafe, S = disabled
-// Character always faces camera forward direction, smooth rotation
+//! Player movement — Elden Ring style, camera-relative, mouse-driven.
+//! W = forward (camera direction), A/D = strafe, S = disabled.
+//! Character always faces the camera forward direction with smooth rotation.
 
+use crate::input::Action;
 use crate::state::*;
 use crate::world::{check_walk_collision, on_river_not_bridge, surface_at};
-use crate::input::Action;
 
 const TURN_RATE: f32 = 10.0; // radians/sec for character rotation toward movement dir
 const IDLE_TURN_RATE: f32 = 5.0; // slower rotation when idle (following camera)
@@ -13,11 +13,17 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     // Job menu input
     if state.player.job_menu_open {
         let up = state.keybinds.is_pressed(Action::MoveForward, &state.keys)
-            && !state.keybinds.is_pressed(Action::MoveForward, &state.prev_keys);
+            && !state
+                .keybinds
+                .is_pressed(Action::MoveForward, &state.prev_keys);
         let down = state.keybinds.is_pressed(Action::MoveBack, &state.keys)
-            && !state.keybinds.is_pressed(Action::MoveBack, &state.prev_keys);
+            && !state
+                .keybinds
+                .is_pressed(Action::MoveBack, &state.prev_keys);
         let enter = state.keybinds.is_pressed(Action::Interact, &state.keys)
-            && !state.keybinds.is_pressed(Action::Interact, &state.prev_keys);
+            && !state
+                .keybinds
+                .is_pressed(Action::Interact, &state.prev_keys);
         let esc = state.keys[9]; // ESC scancode
 
         if up && state.player.job_menu_cursor > 0 {
@@ -51,7 +57,9 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     }
 
     // Skip walking controls when driving
-    if state.player.in_vehicle.is_some() { return; }
+    if state.player.in_vehicle.is_some() {
+        return;
+    }
 
     // Player ragdoll: skeleton ragdoll runs, player has no movement control
     if state.player.skeleton.ragdoll_active {
@@ -98,7 +106,8 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
 
     let p = &mut state.player;
 
-    p.sprinting = state.keybinds.is_pressed(Action::Sprint, &state.keys) && p.stamina > 0.0 && moving;
+    p.sprinting =
+        state.keybinds.is_pressed(Action::Sprint, &state.keys) && p.stamina > 0.0 && moving;
     // Gait selected from input intent — speed emerges from gait parameters, not a lookup table
     let desired_gait = if !moving {
         crate::skeleton::Gait::Idle
@@ -164,7 +173,8 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     if p.on_ground && p.skeleton.should_ragdoll_from_fall() {
         // Player ragdoll from high fall (landing speed < -10 m/s)
         let impulse = [p.body.vel[0] * 0.5, 0.0, p.body.vel[2] * 0.5];
-        p.skeleton.activate_ragdoll([p.x, p.y, p.z], p.rot_y, impulse);
+        p.skeleton
+            .activate_ragdoll([p.x, p.y, p.z], p.rot_y, impulse);
         p.skeleton.ragdoll_timer = RAGDOLL_DURATION;
     }
 
@@ -179,7 +189,12 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
         // Locomotion: legs push against ground — speed emerges from gait stride parameters
         let desired_dir = [dx, 0.0, dz];
         let walk_force = p.skeleton.compute_locomotion_force(
-            desired_dir, desired_gait, p.body.vel, p.body.mass, surface_friction, f32::MAX,
+            desired_dir,
+            desired_gait,
+            p.body.vel,
+            p.body.mass,
+            surface_friction,
+            f32::MAX,
         );
         p.body.apply_force(walk_force);
     } else {
@@ -189,7 +204,12 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
 
         // Deceleration: legs actively brake by pushing against ground
         let decel_force = p.skeleton.compute_locomotion_force(
-            [0.0, 0.0, 0.0], crate::skeleton::Gait::Idle, p.body.vel, p.body.mass, surface_friction, f32::MAX,
+            [0.0, 0.0, 0.0],
+            crate::skeleton::Gait::Idle,
+            p.body.vel,
+            p.body.mass,
+            surface_friction,
+            f32::MAX,
         );
         p.body.apply_force(decel_force);
     }
@@ -202,7 +222,8 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
             let mass = p.body.mass;
             // Slide force inversely proportional to friction: ice slides hard, asphalt barely
             let slide_mag = slope * slope * 40.0 * mass * (1.0 - surface_friction).max(0.0);
-            p.body.apply_force([-raw_n[0] * slide_mag, 0.0, -raw_n[2] * slide_mag]);
+            p.body
+                .apply_force([-raw_n[0] * slide_mag, 0.0, -raw_n[2] * slide_mag]);
         }
     }
 
@@ -216,7 +237,9 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     let ground_y = state.terrain.height_at(p.body.pos[0], p.body.pos[2]);
     if p.body.pos[1] <= ground_y {
         p.body.pos[1] = ground_y;
-        if p.body.vel[1] < 0.0 { p.body.vel[1] = 0.0; }
+        if p.body.vel[1] < 0.0 {
+            p.body.vel[1] = 0.0;
+        }
         p.on_ground = true;
     } else {
         p.on_ground = false;
@@ -236,7 +259,9 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
                 // Vehicle surface is higher than terrain → stand on vehicle
                 if surface_y > ground_y {
                     p.body.pos[1] = surface_y;
-                    if p.body.vel[1] < 0.0 { p.body.vel[1] = 0.0; }
+                    if p.body.vel[1] < 0.0 {
+                        p.body.vel[1] = 0.0;
+                    }
                     p.on_ground = true;
                     // Transfer vehicle velocity via friction (metal surface, μ ≈ 0.4)
                     let friction = 0.4;
@@ -262,11 +287,23 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     }
 
     // Building collision (axis-separated sliding)
-    if check_walk_collision(&state.world, p.body.pos[0], prev_pos[2], PLAYER_RADIUS, None) {
+    if check_walk_collision(
+        &state.world,
+        p.body.pos[0],
+        prev_pos[2],
+        PLAYER_RADIUS,
+        None,
+    ) {
         p.body.pos[0] = prev_pos[0];
         p.body.vel[0] = 0.0;
     }
-    if check_walk_collision(&state.world, p.body.pos[0], p.body.pos[2], PLAYER_RADIUS, None) {
+    if check_walk_collision(
+        &state.world,
+        p.body.pos[0],
+        p.body.pos[2],
+        PLAYER_RADIUS,
+        None,
+    ) {
         p.body.pos[2] = prev_pos[2];
         p.body.vel[2] = 0.0;
     }
@@ -294,7 +331,8 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     let target_n = crate::math::clamp_normal_tilt(raw_n, 25.0);
     let lerp_rate = 8.0 * dt;
     let old_n = p.terrain_normal;
-    p.terrain_normal = crate::math::v3_normalize(crate::math::v3_lerp(old_n, target_n, lerp_rate.min(1.0)));
+    p.terrain_normal =
+        crate::math::v3_normalize(crate::math::v3_lerp(old_n, target_n, lerp_rate.min(1.0)));
 
     if p.sprinting {
         p.stamina = (p.stamina - 20.0 * dt).max(0.0);
@@ -308,7 +346,8 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
     let rot_y = p.rot_y;
     let on_ground = p.on_ground;
     let mass = p.body.mass;
-    p.skeleton.step_animation(vel, pos, rot_y, &state.terrain, on_ground, mass, dt);
+    p.skeleton
+        .step_animation(vel, pos, rot_y, &state.terrain, on_ground, mass, dt);
 
     // Sync skeleton walk_phase to legacy walk_phase for renderer
     p.walk_phase = p.skeleton.walk_phase;
@@ -316,7 +355,11 @@ pub fn sys_player(state: &mut GameState, dt: f32) {
 
 fn smooth_rotate(rot: &mut f32, target: f32, rate: f32, dt: f32) {
     let mut diff = target - *rot;
-    while diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
-    while diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
+    while diff > std::f32::consts::PI {
+        diff -= 2.0 * std::f32::consts::PI;
+    }
+    while diff < -std::f32::consts::PI {
+        diff += 2.0 * std::f32::consts::PI;
+    }
     *rot += diff * (rate * dt).min(1.0);
 }

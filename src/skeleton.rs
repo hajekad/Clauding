@@ -1,9 +1,7 @@
-// Articulated skeleton: 15-bone hierarchy with joint constraints
-//
-// Replaces the old Verlet 7-point ragdoll with proper bones that have:
-// - Position + orientation (quaternion)
-// - Joint angle constraints (cone + twist limits)
-// - Ability to blend between ragdoll and animation poses
+//! Articulated skeleton — 15-bone hierarchy with joint constraints.
+//!
+//! Each bone carries position + quaternion orientation, cone/twist angle limits,
+//! and supports blending between ragdoll and animation poses.
 
 use crate::math::*;
 
@@ -35,9 +33,9 @@ pub const BONE_COUNT: usize = 15;
 
 #[derive(Clone, Copy)]
 pub struct JointConstraint {
-    pub cone_angle: f32,    // max angle from parent's axis (radians)
-    pub twist_min: f32,     // min twist around bone axis (radians)
-    pub twist_max: f32,     // max twist around bone axis (radians)
+    pub cone_angle: f32, // max angle from parent's axis (radians)
+    pub twist_min: f32,  // min twist around bone axis (radians)
+    pub twist_max: f32,  // max twist around bone axis (radians)
 }
 
 impl JointConstraint {
@@ -50,7 +48,11 @@ impl JointConstraint {
     }
 
     pub const fn free() -> Self {
-        JointConstraint { cone_angle: std::f32::consts::PI, twist_min: -std::f32::consts::PI, twist_max: std::f32::consts::PI }
+        JointConstraint {
+            cone_angle: std::f32::consts::PI,
+            twist_min: -std::f32::consts::PI,
+            twist_max: std::f32::consts::PI,
+        }
     }
 }
 
@@ -58,21 +60,27 @@ impl JointConstraint {
 
 #[derive(Clone, Copy)]
 pub struct Bone {
-    pub local_pos: Vec3,        // offset from parent in parent's local space
-    pub local_rot: Quat,        // orientation relative to parent
-    pub length: f32,            // bone length (distance to child attachment)
-    pub parent: Option<u8>,     // parent bone index (None for root)
+    pub local_pos: Vec3,    // offset from parent in parent's local space
+    pub local_rot: Quat,    // orientation relative to parent
+    pub length: f32,        // bone length (distance to child attachment)
+    pub parent: Option<u8>, // parent bone index (None for root)
     pub constraint: JointConstraint,
     // Physics state for ragdoll mode
-    pub world_pos: Vec3,        // cached world position (computed from hierarchy)
-    pub world_rot: Quat,        // cached world rotation
-    pub vel: Vec3,              // linear velocity (ragdoll mode)
-    pub ang_vel: Vec3,          // angular velocity (ragdoll mode)
-    pub mass: f32,              // bone mass for physics
+    pub world_pos: Vec3, // cached world position (computed from hierarchy)
+    pub world_rot: Quat, // cached world rotation
+    pub vel: Vec3,       // linear velocity (ragdoll mode)
+    pub ang_vel: Vec3,   // angular velocity (ragdoll mode)
+    pub mass: f32,       // bone mass for physics
 }
 
 impl Bone {
-    pub fn new(parent: Option<u8>, local_pos: Vec3, length: f32, mass: f32, constraint: JointConstraint) -> Self {
+    pub fn new(
+        parent: Option<u8>,
+        local_pos: Vec3,
+        length: f32,
+        mass: f32,
+        constraint: JointConstraint,
+    ) -> Self {
         Bone {
             local_pos,
             local_rot: QUAT_IDENTITY,
@@ -92,13 +100,13 @@ impl Bone {
 
 #[derive(Clone, Copy)]
 pub struct FootContact {
-    pub grounded: bool,         // foot is planted on surface
-    pub ground_y: f32,          // terrain height under this foot
-    pub surface_normal: Vec3,   // terrain normal under this foot (for slope adaptation)
-    pub target_pos: Vec3,       // IK target in world space
-    pub plant_pos: Vec3,        // position where foot was planted (stays fixed while grounded)
-    pub lift_height: f32,       // current lift above ground during swing phase
-    pub push_force: Vec3,       // ground reaction force this foot exerts (for locomotion)
+    pub grounded: bool,       // foot is planted on surface
+    pub ground_y: f32,        // terrain height under this foot
+    pub surface_normal: Vec3, // terrain normal under this foot (for slope adaptation)
+    pub target_pos: Vec3,     // IK target in world space
+    pub plant_pos: Vec3,      // position where foot was planted (stays fixed while grounded)
+    pub lift_height: f32,     // current lift above ground during swing phase
+    pub push_force: Vec3,     // ground reaction force this foot exerts (for locomotion)
 }
 
 impl FootContact {
@@ -130,9 +138,9 @@ impl Gait {
     pub fn stride_freq(self) -> f32 {
         match self {
             Gait::Idle => 0.0,
-            Gait::Walk => 2.5,    // 8 km/h brisk walk (NPC default)
-            Gait::Run => 3.0,     // 11 km/h jog (player default)
-            Gait::Sprint => 4.5,  // 28 km/h sprint
+            Gait::Walk => 2.5,   // 8 km/h brisk walk (NPC default)
+            Gait::Run => 3.0,    // 11 km/h jog (player default)
+            Gait::Sprint => 4.5, // 28 km/h sprint
         }
     }
 
@@ -156,7 +164,7 @@ impl Gait {
     pub fn foot_lift(self) -> f32 {
         match self {
             Gait::Idle => 0.0,
-            Gait::Walk => 0.08,   // brisk walk
+            Gait::Walk => 0.08, // brisk walk
             Gait::Run => 0.12,
             Gait::Sprint => 0.22, // high knee lift at full sprint
         }
@@ -186,7 +194,7 @@ impl Gait {
     /// Faster gaits have wider stance → higher tolerance before losing balance.
     pub fn balance_threshold(self) -> f32 {
         match self {
-            Gait::Idle => 0.20,   // standing still — tips easily
+            Gait::Idle => 0.20, // standing still — tips easily
             Gait::Walk => 0.30,
             Gait::Run => 0.40,    // wider dynamic stance
             Gait::Sprint => 0.60, // momentum carries through mild lean
@@ -198,9 +206,9 @@ impl Gait {
     pub fn speed_range(self) -> (f32, f32) {
         match self {
             Gait::Idle => (0.0, 0.0),
-            Gait::Walk => (0.5, 0.3),    // start walk animation at 0.5 m/s
-            Gait::Run => (2.5, 1.8),     // transition to run above ~2.5 m/s
-            Gait::Sprint => (5.5, 4.5),  // transition to sprint above ~5.5 m/s
+            Gait::Walk => (0.5, 0.3),   // start walk animation at 0.5 m/s
+            Gait::Run => (2.5, 1.8),    // transition to run above ~2.5 m/s
+            Gait::Sprint => (5.5, 4.5), // transition to sprint above ~5.5 m/s
         }
     }
 
@@ -251,7 +259,9 @@ fn select_gait(speed: f32, current: Gait) -> Gait {
             Gait::Sprint => Gait::Sprint,
         };
         let (enter, _) = next.speed_range();
-        if speed >= enter { return next; }
+        if speed >= enter {
+            return next;
+        }
         return current;
     }
     // Downgrade
@@ -270,47 +280,47 @@ pub struct Skeleton {
     pub bones: [Bone; BONE_COUNT],
     pub ragdoll_active: bool,
     pub ragdoll_timer: f32,
-    pub ragdoll_blend: f32,     // 0 = full ragdoll, 1 = full animation (for blending back)
+    pub ragdoll_blend: f32, // 0 = full ragdoll, 1 = full animation (for blending back)
     // Procedural animation state
-    pub walk_phase: f32,        // 0..TAU, drives left/right foot alternation
-    pub feet: [FootContact; 2], // [left, right]
-    pub com_offset: Vec3,       // center of mass offset from hips (body sway)
-    pub com_world: Vec3,        // actual center of mass position (mass-weighted bone average)
-    pub com_lean: Vec3,         // lean direction relative to support base (for balance)
-    pub landing_speed: f32,     // vertical speed at last ground contact (for stumble)
-    pub stumble_timer: f32,     // >0 = stumbling, decrements to 0
-    pub stumble_dir: Vec3,      // stumble lean direction (world space)
-    pub stumble_brake: f32,     // 0..1 locomotion force multiplier during stumble (0 = full brake)
+    pub walk_phase: f32,          // 0..TAU, drives left/right foot alternation
+    pub feet: [FootContact; 2],   // [left, right]
+    pub com_offset: Vec3,         // center of mass offset from hips (body sway)
+    pub com_world: Vec3,          // actual center of mass position (mass-weighted bone average)
+    pub com_lean: Vec3,           // lean direction relative to support base (for balance)
+    pub landing_speed: f32,       // vertical speed at last ground contact (for stumble)
+    pub stumble_timer: f32,       // >0 = stumbling, decrements to 0
+    pub stumble_dir: Vec3,        // stumble lean direction (world space)
+    pub stumble_brake: f32, // 0..1 locomotion force multiplier during stumble (0 = full brake)
     pub total_push_force: Vec3, // accumulated ground reaction force from both feet
-    pub gait: Gait,             // current locomotion state (idle/walk/run/sprint)
-    pub gait_blend: f32,        // 0..1 blend progress during gait transition
+    pub gait: Gait,         // current locomotion state (idle/walk/run/sprint)
+    pub gait_blend: f32,    // 0..1 blend progress during gait transition
     prev_gait_params: GaitParams, // snapshot of previous gait's parameters for blending
     // Jump compression phase
-    pub jump_phase: f32,        // 0 = none, 0→1 = compressing, 1→2 = extending (launch)
-    pub jump_crouch: f32,       // current crouch depth (meters, for visual + force timing)
+    pub jump_phase: f32,  // 0 = none, 0→1 = compressing, 1→2 = extending (launch)
+    pub jump_crouch: f32, // current crouch depth (meters, for visual + force timing)
     // Euphoria-style active ragdoll
-    pub bone_active: [bool; BONE_COUNT],      // per-bone: true = spring motor active, false = passive ragdoll
-    pub bone_target_pos: [Vec3; BONE_COUNT],  // target world-space positions for active motors
+    pub bone_active: [bool; BONE_COUNT], // per-bone: true = spring motor active, false = passive ragdoll
+    pub bone_target_pos: [Vec3; BONE_COUNT], // target world-space positions for active motors
     pub vehicle_contact: Option<VehicleContact>, // continuous body-on-vehicle contact
-    pub anticipation_timer: f32,             // >0 = NPC is bracing/dodging before impact
-    pub anticipation_dir: Vec3,              // direction of incoming threat
+    pub anticipation_timer: f32,         // >0 = NPC is bracing/dodging before impact
+    pub anticipation_dir: Vec3,          // direction of incoming threat
 }
 
 /// Continuous contact state: body resting on/sliding along a vehicle surface.
 /// Contact position is stored in vehicle local space so it tracks the vehicle's movement.
 #[derive(Clone, Copy)]
 pub struct VehicleContact {
-    pub vehicle_idx: usize,         // index of vehicle in world.vehicles
+    pub vehicle_idx: usize,                // index of vehicle in world.vehicles
     pub bone_contacts: [bool; BONE_COUNT], // per-bone: true if in contact with vehicle
-    pub surface_normal: Vec3,       // vehicle surface normal at contact (world space, updated each frame)
-    pub local_offset: Vec3,         // contact offset in vehicle local space (tracks with vehicle)
-    pub friction: f32,              // contact friction (0.3 for painted metal)
-    pub time: f32,                  // how long contact has been active
+    pub surface_normal: Vec3, // vehicle surface normal at contact (world space, updated each frame)
+    pub local_offset: Vec3,   // contact offset in vehicle local space (tracks with vehicle)
+    pub friction: f32,        // contact friction (0.3 for painted metal)
+    pub time: f32,            // how long contact has been active
 }
 
 // Position-based spring motor gains for active ragdoll
-const RAGDOLL_KP: f32 = 200.0;     // spring stiffness (N/m)
-const RAGDOLL_KD: f32 = 20.0;      // velocity damping (N·s/m)
+const RAGDOLL_KP: f32 = 200.0; // spring stiffness (N/m)
+const RAGDOLL_KD: f32 = 20.0; // velocity damping (N·s/m)
 
 impl Skeleton {
     /// Create default humanoid skeleton with anatomical proportions.
@@ -320,35 +330,119 @@ impl Skeleton {
 
         let bones = [
             // Hips (root) — at ~0.95m
-            Bone::new(None,                         [0.0, 0.95, 0.0],  0.15, 8.0,  JointConstraint::free()),
+            Bone::new(None, [0.0, 0.95, 0.0], 0.15, 8.0, JointConstraint::free()),
             // Spine — above hips
-            Bone::new(Some(Hips as u8),             [0.0, 0.15, 0.0],  0.20, 6.0,  JointConstraint::new(30.0, -20.0, 20.0)),
+            Bone::new(
+                Some(Hips as u8),
+                [0.0, 0.15, 0.0],
+                0.20,
+                6.0,
+                JointConstraint::new(30.0, -20.0, 20.0),
+            ),
             // Chest — above spine
-            Bone::new(Some(Spine as u8),            [0.0, 0.20, 0.0],  0.25, 8.0,  JointConstraint::new(25.0, -15.0, 15.0)),
+            Bone::new(
+                Some(Spine as u8),
+                [0.0, 0.20, 0.0],
+                0.25,
+                8.0,
+                JointConstraint::new(25.0, -15.0, 15.0),
+            ),
             // Neck — above chest
-            Bone::new(Some(Chest as u8),            [0.0, 0.25, 0.0],  0.10, 2.0,  JointConstraint::new(40.0, -30.0, 30.0)),
+            Bone::new(
+                Some(Chest as u8),
+                [0.0, 0.25, 0.0],
+                0.10,
+                2.0,
+                JointConstraint::new(40.0, -30.0, 30.0),
+            ),
             // Head — above neck
-            Bone::new(Some(Neck as u8),             [0.0, 0.10, 0.0],  0.18, 4.5,  JointConstraint::new(35.0, -20.0, 20.0)),
+            Bone::new(
+                Some(Neck as u8),
+                [0.0, 0.10, 0.0],
+                0.18,
+                4.5,
+                JointConstraint::new(35.0, -20.0, 20.0),
+            ),
             // Left upper arm
-            Bone::new(Some(Chest as u8),            [-0.22, 0.20, 0.0], 0.28, 2.5, JointConstraint::new(90.0, -90.0, 90.0)),
+            Bone::new(
+                Some(Chest as u8),
+                [-0.22, 0.20, 0.0],
+                0.28,
+                2.5,
+                JointConstraint::new(90.0, -90.0, 90.0),
+            ),
             // Left forearm
-            Bone::new(Some(LeftUpperArm as u8),     [0.0, -0.28, 0.0], 0.25, 1.5,  JointConstraint::new(5.0, -140.0, 0.0)),
+            Bone::new(
+                Some(LeftUpperArm as u8),
+                [0.0, -0.28, 0.0],
+                0.25,
+                1.5,
+                JointConstraint::new(5.0, -140.0, 0.0),
+            ),
             // Right upper arm
-            Bone::new(Some(Chest as u8),            [0.22, 0.20, 0.0], 0.28, 2.5,  JointConstraint::new(90.0, -90.0, 90.0)),
+            Bone::new(
+                Some(Chest as u8),
+                [0.22, 0.20, 0.0],
+                0.28,
+                2.5,
+                JointConstraint::new(90.0, -90.0, 90.0),
+            ),
             // Right forearm
-            Bone::new(Some(RightUpperArm as u8),    [0.0, -0.28, 0.0], 0.25, 1.5,  JointConstraint::new(5.0, 0.0, 140.0)),
+            Bone::new(
+                Some(RightUpperArm as u8),
+                [0.0, -0.28, 0.0],
+                0.25,
+                1.5,
+                JointConstraint::new(5.0, 0.0, 140.0),
+            ),
             // Left upper leg
-            Bone::new(Some(Hips as u8),             [-0.10, -0.0, 0.0], 0.42, 5.0, JointConstraint::new(80.0, -30.0, 30.0)),
+            Bone::new(
+                Some(Hips as u8),
+                [-0.10, -0.0, 0.0],
+                0.42,
+                5.0,
+                JointConstraint::new(80.0, -30.0, 30.0),
+            ),
             // Left lower leg
-            Bone::new(Some(LeftUpperLeg as u8),     [0.0, -0.42, 0.0], 0.40, 3.0,  JointConstraint::new(5.0, 0.0, 140.0)),
+            Bone::new(
+                Some(LeftUpperLeg as u8),
+                [0.0, -0.42, 0.0],
+                0.40,
+                3.0,
+                JointConstraint::new(5.0, 0.0, 140.0),
+            ),
             // Left foot
-            Bone::new(Some(LeftLowerLeg as u8),     [0.0, -0.40, 0.0], 0.12, 1.0,  JointConstraint::new(30.0, -20.0, 20.0)),
+            Bone::new(
+                Some(LeftLowerLeg as u8),
+                [0.0, -0.40, 0.0],
+                0.12,
+                1.0,
+                JointConstraint::new(30.0, -20.0, 20.0),
+            ),
             // Right upper leg
-            Bone::new(Some(Hips as u8),             [0.10, -0.0, 0.0], 0.42, 5.0,  JointConstraint::new(80.0, -30.0, 30.0)),
+            Bone::new(
+                Some(Hips as u8),
+                [0.10, -0.0, 0.0],
+                0.42,
+                5.0,
+                JointConstraint::new(80.0, -30.0, 30.0),
+            ),
             // Right lower leg
-            Bone::new(Some(RightUpperLeg as u8),    [0.0, -0.42, 0.0], 0.40, 3.0,  JointConstraint::new(5.0, 0.0, 140.0)),
+            Bone::new(
+                Some(RightUpperLeg as u8),
+                [0.0, -0.42, 0.0],
+                0.40,
+                3.0,
+                JointConstraint::new(5.0, 0.0, 140.0),
+            ),
             // Right foot
-            Bone::new(Some(RightLowerLeg as u8),    [0.0, -0.40, 0.0], 0.12, 1.0,  JointConstraint::new(30.0, -20.0, 20.0)),
+            Bone::new(
+                Some(RightLowerLeg as u8),
+                [0.0, -0.40, 0.0],
+                0.12,
+                1.0,
+                JointConstraint::new(30.0, -20.0, 20.0),
+            ),
         ];
 
         Skeleton {
@@ -427,8 +521,19 @@ impl Skeleton {
     /// `vel` = character velocity from rigid body, `pos` = character world position,
     /// `rot_y` = facing direction, `terrain` = for foot ground/normal queries,
     /// `mass` = character mass for ground reaction force computation.
-    pub fn step_animation(&mut self, vel: Vec3, pos: Vec3, rot_y: f32, terrain: &crate::state::Terrain, on_ground: bool, _mass: f32, dt: f32) {
-        if self.ragdoll_active { return; }
+    pub fn step_animation(
+        &mut self,
+        vel: Vec3,
+        pos: Vec3,
+        rot_y: f32,
+        terrain: &crate::state::Terrain,
+        on_ground: bool,
+        _mass: f32,
+        dt: f32,
+    ) {
+        if self.ragdoll_active {
+            return;
+        }
 
         let horiz_speed = (vel[0] * vel[0] + vel[2] * vel[2]).sqrt();
         let pi = std::f32::consts::PI;
@@ -452,7 +557,8 @@ impl Skeleton {
         self.gait_blend = (self.gait_blend + blend_rate * dt).min(1.0);
 
         // Interpolate between previous gait params and current gait params
-        let blended = GaitParams::lerp(&self.prev_gait_params, &self.gait.params(), self.gait_blend);
+        let blended =
+            GaitParams::lerp(&self.prev_gait_params, &self.gait.params(), self.gait_blend);
         let stride_freq = blended.stride_freq;
         let stride_len = blended.stride_len;
         let foot_lift_h = blended.foot_lift;
@@ -460,7 +566,11 @@ impl Skeleton {
         let spine_lean_amt = blended.spine_lean;
 
         // ── Walk phase: leg cadence from gait stride frequency ──
-        let freq = if self.gait == Gait::Idle { 0.0 } else { stride_freq };
+        let freq = if self.gait == Gait::Idle {
+            0.0
+        } else {
+            stride_freq
+        };
         self.walk_phase = (self.walk_phase + freq * dt) % tau;
 
         let fwd = [-rot_y.sin(), 0.0, -rot_y.cos()];
@@ -499,7 +609,8 @@ impl Skeleton {
                 self.feet[side].ground_y = ground_y;
                 self.feet[side].surface_normal = foot_normal;
                 self.feet[side].lift_height = if is_contact { 0.0 } else { foot_lift };
-                self.feet[side].target_pos = [foot_x, ground_y + self.feet[side].lift_height, foot_z];
+                self.feet[side].target_pos =
+                    [foot_x, ground_y + self.feet[side].lift_height, foot_z];
 
                 if is_contact {
                     self.feet[side].plant_pos = self.feet[side].target_pos;
@@ -524,7 +635,8 @@ impl Skeleton {
                     let push_phase = cos_phase.max(0.0); // 0..1 during contact
                     let push_mag = push_phase * grip;
                     self.feet[side].push_force = v3_scale(tangent_fwd, push_mag);
-                    self.total_push_force = v3_add(self.total_push_force, self.feet[side].push_force);
+                    self.total_push_force =
+                        v3_add(self.total_push_force, self.feet[side].push_force);
                 } else {
                     self.feet[side].push_force = [0.0; 3];
                 }
@@ -555,8 +667,16 @@ impl Skeleton {
                 pole_dir,
             );
 
-            let upper_bone = if side == 0 { BoneId::LeftUpperLeg } else { BoneId::RightUpperLeg };
-            let lower_bone = if side == 0 { BoneId::LeftLowerLeg } else { BoneId::RightLowerLeg };
+            let upper_bone = if side == 0 {
+                BoneId::LeftUpperLeg
+            } else {
+                BoneId::RightUpperLeg
+            };
+            let lower_bone = if side == 0 {
+                BoneId::LeftLowerLeg
+            } else {
+                BoneId::RightLowerLeg
+            };
             self.bones[upper_bone as usize].local_rot = upper_rot;
             self.bones[lower_bone as usize].local_rot = lower_rot;
 
@@ -566,7 +686,11 @@ impl Skeleton {
                 // Foot tilts to match surface: rotation from default (pointing down) to surface plane
                 let tilt_x = n[2].atan2(n[1]); // pitch from normal
                 let tilt_z = -n[0].atan2(n[1]); // roll from normal
-                let foot_bone = if side == 0 { BoneId::LeftFoot } else { BoneId::RightFoot };
+                let foot_bone = if side == 0 {
+                    BoneId::LeftFoot
+                } else {
+                    BoneId::RightFoot
+                };
                 self.bones[foot_bone as usize].local_rot = quat_mul(
                     quat_from_axis_angle([1.0, 0.0, 0.0], tilt_x * 0.5),
                     quat_from_axis_angle([0.0, 0.0, 1.0], tilt_z * 0.5),
@@ -603,7 +727,8 @@ impl Skeleton {
             0.0,
             self.com_world[2] - support_base[2],
         ];
-        let lean_mag = (self.com_lean[0] * self.com_lean[0] + self.com_lean[2] * self.com_lean[2]).sqrt();
+        let lean_mag =
+            (self.com_lean[0] * self.com_lean[0] + self.com_lean[2] * self.com_lean[2]).sqrt();
 
         // Lateral sway: shift hips toward planted foot during walk
         let sway_amount = if self.gait != Gait::Idle {
@@ -617,8 +742,8 @@ impl Skeleton {
         // Arms swing forward/backward during locomotion using IK targets.
         // At idle, arms hang at rest alongside the body.
         // Derive bone lengths from skeleton definition (not hardcoded)
-        let upper_arm_len = self.bones[BoneId::LeftUpperArm as usize].length;  // 0.28
-        let forearm_len = self.bones[BoneId::LeftForearm as usize].length;     // 0.25
+        let upper_arm_len = self.bones[BoneId::LeftUpperArm as usize].length; // 0.28
+        let forearm_len = self.bones[BoneId::LeftForearm as usize].length; // 0.25
         let elbow_pole = v3_scale(fwd, -1.0); // elbows bend backward
 
         // Shoulder height: sum up the chain hips→spine→chest + chest attachment Y
@@ -630,23 +755,36 @@ impl Skeleton {
             + self.bones[BoneId::LeftUpperArm as usize].local_pos[1]; // arm attachment on chest
 
         for arm_side in 0..2 {
-            let upper_bone = if arm_side == 0 { BoneId::LeftUpperArm } else { BoneId::RightUpperArm };
-            let lower_bone = if arm_side == 0 { BoneId::LeftForearm } else { BoneId::RightForearm };
+            let upper_bone = if arm_side == 0 {
+                BoneId::LeftUpperArm
+            } else {
+                BoneId::RightUpperArm
+            };
+            let lower_bone = if arm_side == 0 {
+                BoneId::LeftForearm
+            } else {
+                BoneId::RightForearm
+            };
 
             // Shoulder lateral offset from skeleton definition
             let arm_local_x = self.bones[upper_bone as usize].local_pos[0]; // ±0.22
-            let shoulder_pos = v3_add(
-                [pos[0], shoulder_y, pos[2]],
-                v3_scale(right, arm_local_x),
-            );
+            let shoulder_pos = v3_add([pos[0], shoulder_y, pos[2]], v3_scale(right, arm_local_x));
 
             // Arm swing: left arm swings opposite to left leg (counter-rotation)
-            let phase_offset = if arm_side == 0 { std::f32::consts::PI } else { 0.0 };
+            let phase_offset = if arm_side == 0 {
+                std::f32::consts::PI
+            } else {
+                0.0
+            };
             let swing_angle = (self.walk_phase + phase_offset).sin() * arm_swing_amp;
 
             // IK target: hand position at end of swing arc
             let arm_reach = (upper_arm_len + forearm_len) * 0.6;
-            let hand_fwd_offset = [fwd[0] * swing_angle * arm_reach, 0.0, fwd[2] * swing_angle * arm_reach];
+            let hand_fwd_offset = [
+                fwd[0] * swing_angle * arm_reach,
+                0.0,
+                fwd[2] * swing_angle * arm_reach,
+            ];
             // At rest (idle), hands hang below shoulder
             let rest_drop = upper_arm_len + forearm_len - 0.02;
             let hand_target = [
@@ -684,8 +822,12 @@ impl Skeleton {
             let head_yaw = self.anticipation_dir[0].atan2(self.anticipation_dir[2]);
             let mut rel_yaw = head_yaw - rot_y;
             // Wrap to [-π, π]
-            while rel_yaw > std::f32::consts::PI { rel_yaw -= std::f32::consts::TAU; }
-            while rel_yaw < -std::f32::consts::PI { rel_yaw += std::f32::consts::TAU; }
+            while rel_yaw > std::f32::consts::PI {
+                rel_yaw -= std::f32::consts::TAU;
+            }
+            while rel_yaw < -std::f32::consts::PI {
+                rel_yaw += std::f32::consts::TAU;
+            }
             self.bones[BoneId::Head as usize].local_rot = quat_mul(
                 self.bones[BoneId::Head as usize].local_rot,
                 quat_from_axis_angle([0.0, 1.0, 0.0], rel_yaw.clamp(-0.5, 0.5) * brace_t),
@@ -750,7 +892,8 @@ impl Skeleton {
             } else {
                 // Ramp brake back toward 1.0 as timer decreases
                 let recovery = 1.0 - (self.stumble_timer / 1.5).min(1.0);
-                self.stumble_brake = self.stumble_brake + (1.0 - self.stumble_brake) * recovery * 0.5;
+                self.stumble_brake =
+                    self.stumble_brake + (1.0 - self.stumble_brake) * recovery * 0.5;
             }
             let t = self.stumble_timer.max(0.0);
             let lean_fwd = t * 0.5;
@@ -783,11 +926,19 @@ impl Skeleton {
     /// `speed`: vehicle forward speed (m/s)
     /// `steer`: steering input (-1..1, negative=left, positive=right)
     /// Optionally call with vehicle world pos/rot for steering wheel IK (Phase 4).
-    pub fn step_driving_animation(&mut self, suspension_comp: &[f32; 4], speed: f32, steer: f32, _dt: f32) {
+    pub fn step_driving_animation(
+        &mut self,
+        suspension_comp: &[f32; 4],
+        speed: f32,
+        steer: f32,
+        _dt: f32,
+    ) {
         use BoneId::*;
 
         // Average suspension compression → vertical bounce via Hips offset
-        let avg = (suspension_comp[0] + suspension_comp[1] + suspension_comp[2] + suspension_comp[3]) * 0.25;
+        let avg =
+            (suspension_comp[0] + suspension_comp[1] + suspension_comp[2] + suspension_comp[3])
+                * 0.25;
         let rest = 0.35; // SuspensionParams default rest_length
         let vert_offset = (avg - rest * 0.5) * 0.15;
         self.bones[Hips as usize].local_pos[1] = 0.95 + vert_offset;
@@ -830,20 +981,28 @@ impl Skeleton {
         // Arms: relax into a neutral driving position (slightly forward, hands at ~10-2 o'clock)
         // Upper arms angle forward-down slightly
         let arm_pitch = -0.5; // ~30° forward
-        self.bones[LeftUpperArm as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], arm_pitch);
-        self.bones[RightUpperArm as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], arm_pitch);
+        self.bones[LeftUpperArm as usize].local_rot =
+            quat_from_axis_angle([1.0, 0.0, 0.0], arm_pitch);
+        self.bones[RightUpperArm as usize].local_rot =
+            quat_from_axis_angle([1.0, 0.0, 0.0], arm_pitch);
         // Forearms bend at elbow ~90°
         let elbow_bend = -1.2; // ~70° bend
-        self.bones[LeftForearm as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], elbow_bend);
-        self.bones[RightForearm as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], elbow_bend);
+        self.bones[LeftForearm as usize].local_rot =
+            quat_from_axis_angle([1.0, 0.0, 0.0], elbow_bend);
+        self.bones[RightForearm as usize].local_rot =
+            quat_from_axis_angle([1.0, 0.0, 0.0], elbow_bend);
 
         // Legs: seated position (thighs forward, knees bent)
         let thigh_angle = 1.4; // ~80° forward
-        let knee_bend = -1.8;  // ~100° bend
-        self.bones[LeftUpperLeg as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], thigh_angle);
-        self.bones[LeftLowerLeg as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], knee_bend);
-        self.bones[RightUpperLeg as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], thigh_angle);
-        self.bones[RightLowerLeg as usize].local_rot = quat_from_axis_angle([1.0, 0.0, 0.0], knee_bend);
+        let knee_bend = -1.8; // ~100° bend
+        self.bones[LeftUpperLeg as usize].local_rot =
+            quat_from_axis_angle([1.0, 0.0, 0.0], thigh_angle);
+        self.bones[LeftLowerLeg as usize].local_rot =
+            quat_from_axis_angle([1.0, 0.0, 0.0], knee_bend);
+        self.bones[RightUpperLeg as usize].local_rot =
+            quat_from_axis_angle([1.0, 0.0, 0.0], thigh_angle);
+        self.bones[RightLowerLeg as usize].local_rot =
+            quat_from_axis_angle([1.0, 0.0, 0.0], knee_bend);
         self.bones[LeftFoot as usize].local_rot = QUAT_IDENTITY;
         self.bones[RightFoot as usize].local_rot = QUAT_IDENTITY;
     }
@@ -871,13 +1030,15 @@ impl Skeleton {
 
         // Left arm IK
         let left_shoulder = self.bones[LeftUpperArm as usize].world_pos;
-        let (l_upper, l_lower) = solve_two_bone_ik(left_shoulder, left_target, upper_len, lower_len, pole);
+        let (l_upper, l_lower) =
+            solve_two_bone_ik(left_shoulder, left_target, upper_len, lower_len, pole);
         self.bones[LeftUpperArm as usize].world_rot = l_upper;
         self.bones[LeftForearm as usize].world_rot = l_lower;
 
         // Right arm IK
         let right_shoulder = self.bones[RightUpperArm as usize].world_pos;
-        let (r_upper, r_lower) = solve_two_bone_ik(right_shoulder, right_target, upper_len, lower_len, pole);
+        let (r_upper, r_lower) =
+            solve_two_bone_ik(right_shoulder, right_target, upper_len, lower_len, pole);
         self.bones[RightUpperArm as usize].world_rot = r_upper;
         self.bones[RightForearm as usize].world_rot = r_lower;
     }
@@ -890,7 +1051,15 @@ impl Skeleton {
     /// `current_vel`: current body velocity
     /// `mass`: character mass
     /// `surface_friction`: dynamic friction coefficient of the surface (0..1, from material system)
-    pub fn compute_locomotion_force(&self, desired_dir: Vec3, desired_gait: Gait, current_vel: Vec3, mass: f32, surface_friction: f32, max_speed: f32) -> Vec3 {
+    pub fn compute_locomotion_force(
+        &self,
+        desired_dir: Vec3,
+        desired_gait: Gait,
+        current_vel: Vec3,
+        mass: f32,
+        surface_friction: f32,
+        max_speed: f32,
+    ) -> Vec3 {
         // No force if no foot is grounded
         if !self.feet[0].grounded && !self.feet[1].grounded {
             return [0.0; 3];
@@ -910,7 +1079,9 @@ impl Skeleton {
                 foot_count += 1.0;
             }
         }
-        if foot_count > 0.0 { slope_grip /= foot_count; }
+        if foot_count > 0.0 {
+            slope_grip /= foot_count;
+        }
 
         // Total grip = slope factor × surface friction coefficient
         // Flat asphalt: 1.0 * 0.7 = 0.7 (good grip)
@@ -921,7 +1092,8 @@ impl Skeleton {
         // Push direction: project desired direction onto average surface tangent
         let avg_normal = if self.feet[0].grounded && self.feet[1].grounded {
             v3_normalize(v3_scale(
-                v3_add(self.feet[0].surface_normal, self.feet[1].surface_normal), 0.5
+                v3_add(self.feet[0].surface_normal, self.feet[1].surface_normal),
+                0.5,
             ))
         } else if self.feet[0].grounded {
             self.feet[0].surface_normal
@@ -1001,10 +1173,14 @@ impl Skeleton {
     /// Blend from ragdoll back to animation over time.
     /// Call each frame while ragdoll_blend < 1.0 after ragdoll timer expires.
     pub fn blend_from_ragdoll(&mut self, pos: Vec3, rot_y: f32, dt: f32) {
-        if !self.ragdoll_active { return; }
+        if !self.ragdoll_active {
+            return;
+        }
 
         // Start blending when timer expires
-        if self.ragdoll_timer > 0.0 { return; }
+        if self.ragdoll_timer > 0.0 {
+            return;
+        }
 
         // Increase blend toward animation
         self.ragdoll_blend += dt * 1.5; // ~0.67s full recovery
@@ -1032,7 +1208,8 @@ impl Skeleton {
         let t = self.ragdoll_blend;
         for i in 0..BONE_COUNT {
             self.bones[i].world_pos = v3_lerp(self.bones[i].world_pos, anim_bones[i].world_pos, t);
-            self.bones[i].world_rot = quat_slerp(self.bones[i].world_rot, anim_bones[i].world_rot, t);
+            self.bones[i].world_rot =
+                quat_slerp(self.bones[i].world_rot, anim_bones[i].world_rot, t);
             // Dampen velocities as blend increases
             self.bones[i].vel = v3_scale(self.bones[i].vel, 1.0 - t);
         }
@@ -1046,21 +1223,32 @@ impl Skeleton {
             let lower_len = self.bones[BoneId::LeftForearm as usize].length;
 
             for side in 0..2 {
-                let upper_id = if side == 0 { BoneId::LeftUpperArm } else { BoneId::RightUpperArm };
-                let lower_id = if side == 0 { BoneId::LeftForearm } else { BoneId::RightForearm };
+                let upper_id = if side == 0 {
+                    BoneId::LeftUpperArm
+                } else {
+                    BoneId::RightUpperArm
+                };
+                let lower_id = if side == 0 {
+                    BoneId::LeftForearm
+                } else {
+                    BoneId::RightForearm
+                };
                 let shoulder_pos = self.bones[upper_id as usize].world_pos;
                 // Target: ground below shoulder, slightly forward
                 let target = [shoulder_pos[0], ground_y, shoulder_pos[2] - 0.1];
                 let pole = [0.0, 1.0, 0.0]; // elbows up
-                let (upper_rot, lower_rot) = solve_two_bone_ik(
-                    shoulder_pos, target, upper_len, lower_len, pole,
-                );
+                let (upper_rot, lower_rot) =
+                    solve_two_bone_ik(shoulder_pos, target, upper_len, lower_len, pole);
                 // Blend IK rotations with current ragdoll rotations
                 self.bones[upper_id as usize].world_rot = quat_slerp(
-                    self.bones[upper_id as usize].world_rot, upper_rot, brace_strength * 0.6,
+                    self.bones[upper_id as usize].world_rot,
+                    upper_rot,
+                    brace_strength * 0.6,
                 );
                 self.bones[lower_id as usize].world_rot = quat_slerp(
-                    self.bones[lower_id as usize].world_rot, lower_rot, brace_strength * 0.6,
+                    self.bones[lower_id as usize].world_rot,
+                    lower_rot,
+                    brace_strength * 0.6,
                 );
             }
         }
@@ -1082,9 +1270,12 @@ impl Skeleton {
         }
         // Extra impulse to extremities
         let extra = v3_scale(impulse, 0.3);
-        self.bones[BoneId::Head as usize].vel = v3_add(self.bones[BoneId::Head as usize].vel, extra);
-        self.bones[BoneId::LeftForearm as usize].vel = v3_add(self.bones[BoneId::LeftForearm as usize].vel, extra);
-        self.bones[BoneId::RightForearm as usize].vel = v3_add(self.bones[BoneId::RightForearm as usize].vel, extra);
+        self.bones[BoneId::Head as usize].vel =
+            v3_add(self.bones[BoneId::Head as usize].vel, extra);
+        self.bones[BoneId::LeftForearm as usize].vel =
+            v3_add(self.bones[BoneId::LeftForearm as usize].vel, extra);
+        self.bones[BoneId::RightForearm as usize].vel =
+            v3_add(self.bones[BoneId::RightForearm as usize].vel, extra);
 
         self.ragdoll_active = true;
         self.ragdoll_blend = 0.0;
@@ -1096,7 +1287,9 @@ impl Skeleton {
     /// Euphoria-style: bones with `bone_active[i] == true` have spring motors driving them
     /// toward `bone_target_pos[i]`, giving "keep head up" / "brace arms" behaviors.
     pub fn step_ragdoll(&mut self, terrain: &crate::state::Terrain, dt: f32) {
-        if !self.ragdoll_active { return; }
+        if !self.ragdoll_active {
+            return;
+        }
 
         let gravity = [0.0f32, -9.81, 0.0];
 
@@ -1143,8 +1336,10 @@ impl Skeleton {
             }
 
             // World bounds
-            b.world_pos[0] = b.world_pos[0].clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
-            b.world_pos[2] = b.world_pos[2].clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
+            b.world_pos[0] =
+                b.world_pos[0].clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
+            b.world_pos[2] =
+                b.world_pos[2].clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
         }
 
         // ── Continuous vehicle contact ──
@@ -1156,7 +1351,9 @@ impl Skeleton {
             let mut any_contact = false;
 
             for bi in 0..BONE_COUNT {
-                if !vc.bone_contacts[bi] { continue; }
+                if !vc.bone_contacts[bi] {
+                    continue;
+                }
 
                 // Apply surface constraint: prevent penetration, apply friction
                 let vn = v3_dot(self.bones[bi].vel, normal);
@@ -1164,7 +1361,10 @@ impl Skeleton {
                     // Remove penetrating velocity
                     self.bones[bi].vel = v3_sub(self.bones[bi].vel, v3_scale(normal, vn));
                     // Apply friction to tangential velocity
-                    let v_tangent = v3_sub(self.bones[bi].vel, v3_scale(normal, v3_dot(self.bones[bi].vel, normal)));
+                    let v_tangent = v3_sub(
+                        self.bones[bi].vel,
+                        v3_scale(normal, v3_dot(self.bones[bi].vel, normal)),
+                    );
                     self.bones[bi].vel = v3_add(
                         v3_scale(normal, v3_dot(self.bones[bi].vel, normal)),
                         v3_scale(v_tangent, 1.0 - friction),
@@ -1184,11 +1384,15 @@ impl Skeleton {
             for i in 1..BONE_COUNT {
                 let parent_idx = self.bones[i].parent.unwrap_or(0) as usize;
                 let target_dist = v3_len(self.bones[i].local_pos);
-                if target_dist < 0.001 { continue; }
+                if target_dist < 0.001 {
+                    continue;
+                }
 
                 let delta = v3_sub(self.bones[i].world_pos, self.bones[parent_idx].world_pos);
                 let dist = v3_len(delta);
-                if dist < 0.001 { continue; }
+                if dist < 0.001 {
+                    continue;
+                }
 
                 let diff = (dist - target_dist) / dist;
                 let correction = v3_scale(delta, diff * 0.5);
@@ -1200,20 +1404,29 @@ impl Skeleton {
                 let wp = mi / total;
 
                 self.bones[i].world_pos = v3_sub(self.bones[i].world_pos, v3_scale(correction, wi));
-                self.bones[parent_idx].world_pos = v3_add(self.bones[parent_idx].world_pos, v3_scale(correction, wp));
+                self.bones[parent_idx].world_pos =
+                    v3_add(self.bones[parent_idx].world_pos, v3_scale(correction, wp));
 
                 // Cone constraint: child direction must stay within cone_angle of parent's axis.
                 // Parent axis derived from grandparent→parent direction (not stale world_rot).
                 let cone_limit = self.bones[i].constraint.cone_angle;
                 if cone_limit < std::f32::consts::PI - 0.01 {
                     let parent_axis = if let Some(gp) = self.bones[parent_idx].parent {
-                        let d = v3_sub(self.bones[parent_idx].world_pos, self.bones[gp as usize].world_pos);
+                        let d = v3_sub(
+                            self.bones[parent_idx].world_pos,
+                            self.bones[gp as usize].world_pos,
+                        );
                         let dl = v3_len(d);
-                        if dl > 0.001 { v3_scale(d, 1.0 / dl) } else { [0.0, -1.0, 0.0] }
+                        if dl > 0.001 {
+                            v3_scale(d, 1.0 / dl)
+                        } else {
+                            [0.0, -1.0, 0.0]
+                        }
                     } else {
                         [0.0, -1.0, 0.0] // root: default downward
                     };
-                    let child_dir = v3_sub(self.bones[i].world_pos, self.bones[parent_idx].world_pos);
+                    let child_dir =
+                        v3_sub(self.bones[i].world_pos, self.bones[parent_idx].world_pos);
                     let child_dist = v3_len(child_dir);
                     if child_dist > 0.001 {
                         let child_dir_n = v3_scale(child_dir, 1.0 / child_dist);
@@ -1232,10 +1445,12 @@ impl Skeleton {
                                     v3_scale(clamped_dir, child_dist),
                                 );
                                 let move_vec = v3_sub(new_pos, self.bones[i].world_pos);
-                                self.bones[i].world_pos = v3_add(self.bones[i].world_pos, v3_scale(move_vec, wi));
+                                self.bones[i].world_pos =
+                                    v3_add(self.bones[i].world_pos, v3_scale(move_vec, wi));
                                 let vel_along = v3_dot(self.bones[i].vel, v3_normalize(move_vec));
                                 if vel_along < 0.0 {
-                                    let dampened = v3_scale(v3_normalize(move_vec), vel_along * 0.5);
+                                    let dampened =
+                                        v3_scale(v3_normalize(move_vec), vel_along * 0.5);
                                     self.bones[i].vel = v3_sub(self.bones[i].vel, dampened);
                                 }
                             }
@@ -1298,8 +1513,16 @@ impl Skeleton {
 
     /// Activate partial ragdoll: only specified body region goes limp,
     /// rest stays motor-controlled. Used for localized hits (e.g., knee hit → legs limp).
-    pub fn activate_partial_ragdoll(&mut self, pos: Vec3, rot_y: f32, impulse: Vec3, impact_bone: BoneId) {
-        if self.ragdoll_active { return; }
+    pub fn activate_partial_ragdoll(
+        &mut self,
+        pos: Vec3,
+        rot_y: f32,
+        impulse: Vec3,
+        impact_bone: BoneId,
+    ) {
+        if self.ragdoll_active {
+            return;
+        }
 
         let root_rot = quat_from_rot_y(rot_y);
         self.compute_world_transforms(pos, root_rot);
@@ -1343,7 +1566,7 @@ impl Skeleton {
         veh_rot_y: f32,
         veh_half_w: f32,
         veh_half_d: f32,
-        veh_height: f32,    // vehicle hood height
+        veh_height: f32, // vehicle hood height
         veh_vel: Vec3,
         bone_radius: f32,
     ) -> Option<(BoneId, Vec3, f32)> {
@@ -1408,24 +1631,35 @@ impl Skeleton {
         if let Some(bi) = best_bone {
             // Determine bone ID
             let bone_id = match bi {
-                0 => BoneId::Hips, 1 => BoneId::Spine, 2 => BoneId::Chest,
-                3 => BoneId::Neck, 4 => BoneId::Head,
-                5 => BoneId::LeftUpperArm, 6 => BoneId::LeftForearm,
-                7 => BoneId::RightUpperArm, 8 => BoneId::RightForearm,
-                9 => BoneId::LeftUpperLeg, 10 => BoneId::LeftLowerLeg,
-                11 => BoneId::LeftFoot, 12 => BoneId::RightUpperLeg,
-                13 => BoneId::RightLowerLeg, _ => BoneId::RightFoot,
+                0 => BoneId::Hips,
+                1 => BoneId::Spine,
+                2 => BoneId::Chest,
+                3 => BoneId::Neck,
+                4 => BoneId::Head,
+                5 => BoneId::LeftUpperArm,
+                6 => BoneId::LeftForearm,
+                7 => BoneId::RightUpperArm,
+                8 => BoneId::RightForearm,
+                9 => BoneId::LeftUpperLeg,
+                10 => BoneId::LeftLowerLeg,
+                11 => BoneId::LeftFoot,
+                12 => BoneId::RightUpperLeg,
+                13 => BoneId::RightLowerLeg,
+                _ => BoneId::RightFoot,
             };
 
             // Apply collision response to the hit bone (scoped borrow)
-            self.bones[bi].world_pos = v3_add(self.bones[bi].world_pos, v3_scale(best_normal, best_pen));
+            self.bones[bi].world_pos =
+                v3_add(self.bones[bi].world_pos, v3_scale(best_normal, best_pen));
             let rel_vel = v3_sub(self.bones[bi].vel, veh_vel);
             let rel_vn = v3_dot(rel_vel, best_normal);
             if rel_vn < 0.0 {
-                self.bones[bi].vel = v3_sub(self.bones[bi].vel, v3_scale(best_normal, rel_vn * 1.3));
+                self.bones[bi].vel =
+                    v3_sub(self.bones[bi].vel, v3_scale(best_normal, rel_vn * 1.3));
                 let veh_vn = v3_dot(veh_vel, best_normal);
                 if veh_vn.abs() > 0.5 {
-                    self.bones[bi].vel = v3_add(self.bones[bi].vel, v3_scale(best_normal, veh_vn * 0.3));
+                    self.bones[bi].vel =
+                        v3_add(self.bones[bi].vel, v3_scale(best_normal, veh_vn * 0.3));
                 }
             }
 
@@ -1440,7 +1674,8 @@ impl Skeleton {
                 let cly = cp[1] - veh_pos[1];
                 if clx.abs() < veh_half_w + bone_radius
                     && clz.abs() < veh_half_d + bone_radius
-                    && cly > -bone_radius && cly < veh_height + bone_radius * 2.0
+                    && cly > -bone_radius
+                    && cly < veh_height + bone_radius * 2.0
                 {
                     contacts[ci] = true;
                 }

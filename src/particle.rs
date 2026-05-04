@@ -1,13 +1,13 @@
-// Particle system: SoA arrays, GPU-accelerated update, CPU fallback
-// Emitters: vehicle exhaust, sprint dust, item pickup sparkles
+//! Particle system — SoA arrays, GPU-accelerated update with CPU fallback.
+//! Emitters: vehicle exhaust, sprint dust, item pickup sparkles.
 
-use crate::state::*;
-use crate::gpu::*;
-use crate::raster::*;
-use crate::math::*;
-use crate::rng::Rng;
 use crate::color::darken;
+use crate::gpu::*;
+use crate::math::*;
+use crate::raster::*;
 use crate::render::clip_to_screen;
+use crate::rng::Rng;
+use crate::state::*;
 
 const MAX_PARTICLES: usize = 4096;
 const GRAVITY: f32 = -9.8;
@@ -29,24 +29,26 @@ pub struct ParticleSystem {
 }
 
 struct GpuParticleBufs {
-    buf_px: GpuBuf, buf_py: GpuBuf, buf_pz: GpuBuf,
-    buf_vx: GpuBuf, buf_vy: GpuBuf, buf_vz: GpuBuf,
+    buf_px: GpuBuf,
+    buf_py: GpuBuf,
+    buf_pz: GpuBuf,
+    buf_vx: GpuBuf,
+    buf_vy: GpuBuf,
+    buf_vz: GpuBuf,
     buf_lt: GpuBuf,
 }
 
 impl ParticleSystem {
     pub fn new(gpu: &mut Option<GpuContext>, seed: u64) -> Self {
         let buf_size = MAX_PARTICLES * 4;
-        let gpu_bufs = gpu.as_mut().map(|ctx| {
-            GpuParticleBufs {
-                buf_px: ctx.create_buffer(buf_size),
-                buf_py: ctx.create_buffer(buf_size),
-                buf_pz: ctx.create_buffer(buf_size),
-                buf_vx: ctx.create_buffer(buf_size),
-                buf_vy: ctx.create_buffer(buf_size),
-                buf_vz: ctx.create_buffer(buf_size),
-                buf_lt: ctx.create_buffer(buf_size),
-            }
+        let gpu_bufs = gpu.as_mut().map(|ctx| GpuParticleBufs {
+            buf_px: ctx.create_buffer(buf_size),
+            buf_py: ctx.create_buffer(buf_size),
+            buf_pz: ctx.create_buffer(buf_size),
+            buf_vx: ctx.create_buffer(buf_size),
+            buf_vy: ctx.create_buffer(buf_size),
+            buf_vz: ctx.create_buffer(buf_size),
+            buf_lt: ctx.create_buffer(buf_size),
         });
 
         ParticleSystem {
@@ -89,7 +91,9 @@ impl ParticleSystem {
     }
 
     pub fn update(&mut self, gpu: &mut Option<GpuContext>, dt: f32) {
-        if self.count == 0 { return; }
+        if self.count == 0 {
+            return;
+        }
 
         let n = self.count;
 
@@ -112,9 +116,15 @@ impl ParticleSystem {
 
             ctx.dispatch(
                 "particle_update",
-                &[&bufs.buf_px, &bufs.buf_py, &bufs.buf_pz,
-                  &bufs.buf_vx, &bufs.buf_vy, &bufs.buf_vz,
-                  &bufs.buf_lt],
+                &[
+                    &bufs.buf_px,
+                    &bufs.buf_py,
+                    &bufs.buf_pz,
+                    &bufs.buf_vx,
+                    &bufs.buf_vy,
+                    &bufs.buf_vz,
+                    &bufs.buf_lt,
+                ],
                 &push,
                 count,
             );
@@ -128,7 +138,9 @@ impl ParticleSystem {
         } else {
             // CPU fallback
             for i in 0..n {
-                if self.lifetime[i] <= 0.0 { continue; }
+                if self.lifetime[i] <= 0.0 {
+                    continue;
+                }
                 self.vel_y[i] += GRAVITY * dt;
                 self.pos_x[i] += self.vel_x[i] * dt;
                 self.pos_y[i] += self.vel_y[i] * dt;
@@ -145,7 +157,9 @@ pub fn sys_emit_particles(ps: &mut ParticleSystem, game: &GameState, _dt: f32) {
 
     // Vehicle exhaust
     for v in &game.world.vehicles {
-        if v.speed.abs() < 1.0 { continue; }
+        if v.speed.abs() < 1.0 {
+            continue;
+        }
         let (sin_r, cos_r) = v.rot_y.sin_cos();
         let ex = v.x + sin_r * 1.8; // behind vehicle
         let ez = v.z + cos_r * 1.8;
@@ -154,14 +168,27 @@ pub fn sys_emit_particles(ps: &mut ParticleSystem, game: &GameState, _dt: f32) {
             let spread = 0.3;
             let vx = sin_r * 1.0 + ps.emission_rng.range(-0.3, 0.3);
             let vz = cos_r * 1.0 + ps.emission_rng.range(-0.2, 0.2);
-            ps.emit(ex, v.y + 0.3, ez, vx * spread, 0.5, vz * spread, 0.8, 0xFF666666);
+            ps.emit(
+                ex,
+                v.y + 0.3,
+                ez,
+                vx * spread,
+                0.5,
+                vz * spread,
+                0.8,
+                0xFF666666,
+            );
         }
     }
 
     // Fire hydrant water bursts
     for inter in &game.world.interactibles {
-        if inter.kind != InteractibleKind::FireHydrant { continue; }
-        if inter.state_val <= 0.0 { continue; }
+        if inter.kind != InteractibleKind::FireHydrant {
+            continue;
+        }
+        if inter.state_val <= 0.0 {
+            continue;
+        }
         if frame % 2 == 0 {
             let vx = ps.emission_rng.range(-1.5, 1.5);
             let vz = ps.emission_rng.range(-1.5, 1.5);
@@ -216,14 +243,26 @@ pub fn sys_render_particles(fb: &mut Framebuffer, ps: &ParticleSystem, cam: &Cam
     let h = fb.h as f32;
 
     for i in 0..ps.count {
-        if ps.lifetime[i] <= 0.0 { continue; }
+        if ps.lifetime[i] <= 0.0 {
+            continue;
+        }
 
         let pos = [ps.pos_x[i], ps.pos_y[i], ps.pos_z[i]];
         let clip = m4_transform_no_div(&vp, pos);
-        if clip[3] <= 0.01 { continue; }
+        if clip[3] <= 0.01 {
+            continue;
+        }
 
         let scr = clip_to_screen(clip, w, h);
-        if scr[0] < 0.0 || scr[0] >= w || scr[1] < 0.0 || scr[1] >= h || scr[2] < 0.0 || scr[2] > 1.0 { continue; }
+        if scr[0] < 0.0
+            || scr[0] >= w
+            || scr[1] < 0.0
+            || scr[1] >= h
+            || scr[2] < 0.0
+            || scr[2] > 1.0
+        {
+            continue;
+        }
 
         // Particle size based on distance (2-4 pixels)
         let size = ((3.0 / clip[3]).clamp(1.0, 4.0)) as usize;
@@ -245,4 +284,3 @@ pub fn sys_render_particles(fb: &mut Framebuffer, ps: &ParticleSystem, cam: &Cam
         }
     }
 }
-

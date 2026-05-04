@@ -22,9 +22,9 @@ pub struct FbxSkeleton {
 /// Per-bone animation channel: keyframe times + rotations (and optionally translations)
 pub struct BoneChannel {
     pub bone_index: usize,
-    pub times: Vec<f32>,                  // seconds
+    pub times: Vec<f32>,                     // seconds
     pub translations: Option<Vec<[f32; 3]>>, // only Hips typically
-    pub rotations: Vec<[f32; 3]>,         // Euler degrees per keyframe
+    pub rotations: Vec<[f32; 3]>,            // Euler degrees per keyframe
 }
 
 /// A complete animation clip parsed from one FBX file
@@ -99,15 +99,24 @@ impl FbxNode {
     }
 
     fn prop_arr_i32(&self, idx: usize) -> &[i32] {
-        match &self.props[idx] { FbxProp::ArrI32(v) => v, _ => &[] }
+        match &self.props[idx] {
+            FbxProp::ArrI32(v) => v,
+            _ => &[],
+        }
     }
 
     fn prop_arr_f64(&self, idx: usize) -> &[f64] {
-        match &self.props[idx] { FbxProp::ArrF64(v) => v, _ => &[] }
+        match &self.props[idx] {
+            FbxProp::ArrF64(v) => v,
+            _ => &[],
+        }
     }
 
     fn prop_arr_f32(&self, idx: usize) -> &[f32] {
-        match &self.props[idx] { FbxProp::ArrF32(v) => v, _ => &[] }
+        match &self.props[idx] {
+            FbxProp::ArrF32(v) => v,
+            _ => &[],
+        }
     }
 }
 
@@ -115,14 +124,19 @@ impl FbxNode {
 
 struct BitReader<'a> {
     data: &'a [u8],
-    pos: usize,   // byte position
-    bit: u32,     // bits remaining in buffer
-    buf: u32,     // bit buffer
+    pos: usize, // byte position
+    bit: u32,   // bits remaining in buffer
+    buf: u32,   // bit buffer
 }
 
 impl<'a> BitReader<'a> {
     fn new(data: &'a [u8]) -> Self {
-        BitReader { data, pos: 0, bit: 0, buf: 0 }
+        BitReader {
+            data,
+            pos: 0,
+            bit: 0,
+            buf: 0,
+        }
     }
 
     fn read_bits(&mut self, n: u32) -> u32 {
@@ -147,8 +161,8 @@ impl<'a> BitReader<'a> {
 struct HuffTree {
     // Table: for each bit length, sorted symbols
     max_bits: u32,
-    counts: [u16; 16],     // number of codes of each length
-    symbols: Vec<u16>,     // symbols sorted by code length then value
+    counts: [u16; 16], // number of codes of each length
+    symbols: Vec<u16>, // symbols sorted by code length then value
 }
 
 impl HuffTree {
@@ -158,7 +172,9 @@ impl HuffTree {
         for &l in lengths {
             if l > 0 {
                 counts[l as usize] += 1;
-                if l as u32 > max_bits { max_bits = l as u32; }
+                if l as u32 > max_bits {
+                    max_bits = l as u32;
+                }
             }
         }
 
@@ -176,7 +192,11 @@ impl HuffTree {
             }
         }
 
-        HuffTree { max_bits, counts, symbols }
+        HuffTree {
+            max_bits,
+            counts,
+            symbols,
+        }
     }
 
     fn decode(&self, br: &mut BitReader) -> u16 {
@@ -199,26 +219,36 @@ impl HuffTree {
 
 // Length/distance extra bits tables
 const LEN_BASE: [u16; 29] = [
-    3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258,
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
 ];
 const LEN_EXTRA: [u8; 29] = [
-    0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0,
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
 ];
 const DIST_BASE: [u16; 30] = [
-    1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,
-    1025,1537,2049,3073,4097,6145,8193,12289,16385,24577,
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
 const DIST_EXTRA: [u8; 30] = [
-    0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13,
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
 ];
 
 /// Fixed Huffman trees (BTYPE=1)
 fn fixed_lit_tree() -> HuffTree {
     let mut lengths = [0u8; 288];
-    for i in 0..=143   { lengths[i] = 8; }
-    for i in 144..=255 { lengths[i] = 9; }
-    for i in 256..=279 { lengths[i] = 7; }
-    for i in 280..=287 { lengths[i] = 8; }
+    for i in 0..=143 {
+        lengths[i] = 8;
+    }
+    for i in 144..=255 {
+        lengths[i] = 9;
+    }
+    for i in 256..=279 {
+        lengths[i] = 7;
+    }
+    for i in 280..=287 {
+        lengths[i] = 8;
+    }
     HuffTree::from_lengths(&lengths)
 }
 
@@ -228,7 +258,9 @@ fn fixed_dist_tree() -> HuffTree {
 }
 
 /// Code length order for dynamic Huffman tables (RFC 1951)
-const CL_ORDER: [usize; 19] = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+const CL_ORDER: [usize; 19] = [
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+];
 
 fn inflate(compressed: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(compressed.len() * 4);
@@ -244,7 +276,9 @@ fn inflate(compressed: &[u8]) -> Vec<u8> {
                 // Skip remaining bits in current byte
                 br.bit = 0;
                 br.buf = 0;
-                if br.pos + 4 > br.data.len() { break; }
+                if br.pos + 4 > br.data.len() {
+                    break;
+                }
                 let len = br.data[br.pos] as usize | ((br.data[br.pos + 1] as usize) << 8);
                 br.pos += 4; // skip len + nlen
                 output.extend_from_slice(&br.data[br.pos..br.pos + len]);
@@ -279,14 +313,23 @@ fn inflate(compressed: &[u8]) -> Vec<u8> {
                     } else if sym == 16 {
                         let rep = br.read_bits(2) as usize + 3;
                         let prev = if i > 0 { all_lengths[i - 1] } else { 0 };
-                        for _ in 0..rep { all_lengths[i] = prev; i += 1; }
+                        for _ in 0..rep {
+                            all_lengths[i] = prev;
+                            i += 1;
+                        }
                     } else if sym == 17 {
                         let rep = br.read_bits(3) as usize + 3;
-                        for _ in 0..rep { all_lengths[i] = 0; i += 1; }
+                        for _ in 0..rep {
+                            all_lengths[i] = 0;
+                            i += 1;
+                        }
                     } else {
                         // sym == 18
                         let rep = br.read_bits(7) as usize + 11;
-                        for _ in 0..rep { all_lengths[i] = 0; i += 1; }
+                        for _ in 0..rep {
+                            all_lengths[i] = 0;
+                            i += 1;
+                        }
                     }
                 }
 
@@ -297,13 +340,20 @@ fn inflate(compressed: &[u8]) -> Vec<u8> {
             _ => break, // invalid
         }
 
-        if bfinal == 1 { break; }
+        if bfinal == 1 {
+            break;
+        }
     }
 
     output
 }
 
-fn inflate_block(br: &mut BitReader, lit_tree: &HuffTree, dist_tree: &HuffTree, output: &mut Vec<u8>) {
+fn inflate_block(
+    br: &mut BitReader,
+    lit_tree: &HuffTree,
+    dist_tree: &HuffTree,
+    output: &mut Vec<u8>,
+) {
     loop {
         let sym = lit_tree.decode(br) as usize;
         if sym < 256 {
@@ -328,39 +378,61 @@ fn inflate_block(br: &mut BitReader, lit_tree: &HuffTree, dist_tree: &HuffTree, 
 
 /// Decompress zlib data (2-byte header + deflate + 4-byte adler32 checksum)
 fn zlib_decompress(data: &[u8]) -> Vec<u8> {
-    if data.len() < 6 { return Vec::new(); }
+    if data.len() < 6 {
+        return Vec::new();
+    }
     // Skip 2-byte zlib header, decompress the deflate stream
     inflate(&data[2..])
 }
 
 // ── FBX Binary Parser ──────────────────────────────────────────────────
 
-fn read_u8(data: &[u8], off: usize) -> u8 { data[off] }
+fn read_u8(data: &[u8], off: usize) -> u8 {
+    data[off]
+}
 fn read_u32(data: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]])
+    u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
 }
 fn read_u64(data: &[u8], off: usize) -> u64 {
     u64::from_le_bytes([
-        data[off], data[off+1], data[off+2], data[off+3],
-        data[off+4], data[off+5], data[off+6], data[off+7],
+        data[off],
+        data[off + 1],
+        data[off + 2],
+        data[off + 3],
+        data[off + 4],
+        data[off + 5],
+        data[off + 6],
+        data[off + 7],
     ])
 }
 fn read_i32(data: &[u8], off: usize) -> i32 {
-    i32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]])
+    i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
 }
 fn read_i64(data: &[u8], off: usize) -> i64 {
     i64::from_le_bytes([
-        data[off], data[off+1], data[off+2], data[off+3],
-        data[off+4], data[off+5], data[off+6], data[off+7],
+        data[off],
+        data[off + 1],
+        data[off + 2],
+        data[off + 3],
+        data[off + 4],
+        data[off + 5],
+        data[off + 6],
+        data[off + 7],
     ])
 }
 fn read_f32(data: &[u8], off: usize) -> f32 {
-    f32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]])
+    f32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
 }
 fn read_f64(data: &[u8], off: usize) -> f64 {
     f64::from_le_bytes([
-        data[off], data[off+1], data[off+2], data[off+3],
-        data[off+4], data[off+5], data[off+6], data[off+7],
+        data[off],
+        data[off + 1],
+        data[off + 2],
+        data[off + 3],
+        data[off + 4],
+        data[off + 5],
+        data[off + 6],
+        data[off + 7],
     ])
 }
 
@@ -372,19 +444,34 @@ fn parse_props(data: &[u8], offset: usize, num_props: u64) -> (Vec<FbxProp>, usi
         let ptype = data[off] as char;
         off += 1;
         match ptype {
-            'C' => { props.push(FbxProp::Bool(data[off] != 0)); off += 1; }
-            'I' => { props.push(FbxProp::I32(read_i32(data, off))); off += 4; }
-            'L' => { props.push(FbxProp::I64(read_i64(data, off))); off += 8; }
-            'F' => { props.push(FbxProp::F32(read_f32(data, off))); off += 4; }
-            'D' => { props.push(FbxProp::F64(read_f64(data, off))); off += 8; }
+            'C' => {
+                props.push(FbxProp::Bool(data[off] != 0));
+                off += 1;
+            }
+            'I' => {
+                props.push(FbxProp::I32(read_i32(data, off)));
+                off += 4;
+            }
+            'L' => {
+                props.push(FbxProp::I64(read_i64(data, off)));
+                off += 8;
+            }
+            'F' => {
+                props.push(FbxProp::F32(read_f32(data, off)));
+                off += 4;
+            }
+            'D' => {
+                props.push(FbxProp::F64(read_f64(data, off)));
+                off += 8;
+            }
             'S' | 'R' => {
                 let len = read_u32(data, off) as usize;
                 off += 4;
                 if ptype == 'S' {
-                    let s = String::from_utf8_lossy(&data[off..off+len]).into_owned();
+                    let s = String::from_utf8_lossy(&data[off..off + len]).into_owned();
                     props.push(FbxProp::Str(s));
                 } else {
-                    props.push(FbxProp::Raw(data[off..off+len].to_vec()));
+                    props.push(FbxProp::Raw(data[off..off + len].to_vec()));
                 }
                 off += len;
             }
@@ -394,9 +481,9 @@ fn parse_props(data: &[u8], offset: usize, num_props: u64) -> (Vec<FbxProp>, usi
                 let comp_len = read_u32(data, off + 8) as usize;
                 off += 12;
                 let raw = if encoding == 1 {
-                    zlib_decompress(&data[off..off+comp_len])
+                    zlib_decompress(&data[off..off + comp_len])
                 } else {
-                    data[off..off+comp_len].to_vec()
+                    data[off..off + comp_len].to_vec()
                 };
                 off += comp_len;
                 match ptype {
@@ -448,7 +535,9 @@ fn parse_nodes(data: &[u8], mut offset: usize, end_limit: usize) -> Vec<FbxNode>
         let num_props = read_u64(data, offset + 8);
         let prop_list_len = read_u64(data, offset + 16) as usize;
         let name_len = read_u8(data, offset + 24) as usize;
-        if end_offset == 0 { break; }
+        if end_offset == 0 {
+            break;
+        }
 
         let name = String::from_utf8_lossy(&data[offset + 25..offset + 25 + name_len]).into_owned();
         let prop_start = offset + 25 + name_len;
@@ -460,7 +549,11 @@ fn parse_nodes(data: &[u8], mut offset: usize, end_limit: usize) -> Vec<FbxNode>
             Vec::new()
         };
 
-        nodes.push(FbxNode { name, props, children });
+        nodes.push(FbxNode {
+            name,
+            props,
+            children,
+        });
         offset = end_offset;
     }
     nodes
@@ -481,15 +574,25 @@ fn parse_fbx(data: &[u8]) -> Vec<FbxNode> {
 // ── Skeleton + Animation extraction ─────────────────────────────────────
 
 /// Extract skeleton and animation clip from parsed FBX nodes
-fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) -> (FbxSkeleton, AnimationClip) {
+fn extract_skeleton_and_clip(
+    nodes: &[FbxNode],
+    clip_name: &str,
+    looping: bool,
+) -> (FbxSkeleton, AnimationClip) {
     let objects = nodes.iter().find(|n| n.name == "Objects");
     let connections = nodes.iter().find(|n| n.name == "Connections");
 
     if objects.is_none() || connections.is_none() {
-        return (FbxSkeleton { bones: Vec::new() }, AnimationClip {
-            name: clip_name.to_string(), duration: 0.0, fps: 60.0,
-            bone_channels: Vec::new(), looping,
-        });
+        return (
+            FbxSkeleton { bones: Vec::new() },
+            AnimationClip {
+                name: clip_name.to_string(),
+                duration: 0.0,
+                fps: 60.0,
+                bone_channels: Vec::new(),
+                looping,
+            },
+        );
     }
     let objects = objects.unwrap();
     let connections = connections.unwrap();
@@ -500,22 +603,30 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
         name: String,
         bind_translation: [f32; 3],
         bind_rotation: [f32; 3],
-        pre_rotation: [f32; 3],  // FBX PreRotation (applied before Lcl Rotation)
+        pre_rotation: [f32; 3], // FBX PreRotation (applied before Lcl Rotation)
     }
 
     let mut models: Vec<ModelInfo> = Vec::new();
     let mut model_id_to_idx: HashMap<i64, usize> = HashMap::new();
 
     for node in objects.children_named("Model") {
-        if node.props.len() < 3 { continue; }
+        if node.props.len() < 3 {
+            continue;
+        }
         let id = node.prop_i64(0);
         let raw_name = node.prop_str(1);
         // Name format: "mixamorig:Hips\x00\x01Model" — take part before \x00
-        let name = raw_name.split('\x00').next().unwrap_or(raw_name).to_string();
+        let name = raw_name
+            .split('\x00')
+            .next()
+            .unwrap_or(raw_name)
+            .to_string();
 
         // Only process skeleton bones (LimbNode type)
         let node_type = node.prop_str(2);
-        if node_type != "LimbNode" { continue; }
+        if node_type != "LimbNode" {
+            continue;
+        }
 
         let mut trans = [0.0f32; 3];
         let mut rot = [0.0f32; 3];
@@ -544,7 +655,13 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
 
         let idx = models.len();
         model_id_to_idx.insert(id, idx);
-        models.push(ModelInfo { id, name, bind_translation: trans, bind_rotation: rot, pre_rotation: pre_rot });
+        models.push(ModelInfo {
+            id,
+            name,
+            bind_translation: trans,
+            bind_rotation: rot,
+            pre_rotation: pre_rot,
+        });
     }
 
     // Step 2: Parse connections to build parent-child hierarchy
@@ -563,7 +680,12 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
     for node in objects.children_named("AnimationCurveNode") {
         if node.props.len() >= 2 {
             let id = node.prop_i64(0);
-            let raw_name = node.prop_str(1).split('\x00').next().unwrap_or("").to_string();
+            let raw_name = node
+                .prop_str(1)
+                .split('\x00')
+                .next()
+                .unwrap_or("")
+                .to_string();
             acn_ids.insert(id, raw_name);
         }
     }
@@ -574,16 +696,24 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
     }
 
     for conn in connections.children_named("C") {
-        if conn.props.len() < 3 { continue; }
+        if conn.props.len() < 3 {
+            continue;
+        }
         let ctype = conn.prop_str(0);
         let src = conn.prop_i64(1);
         let dst = conn.prop_i64(2);
-        let prop = if conn.props.len() > 3 { conn.prop_str(3).to_string() } else { String::new() };
+        let prop = if conn.props.len() > 3 {
+            conn.prop_str(3).to_string()
+        } else {
+            String::new()
+        };
 
         match ctype {
             "OO" => {
                 // Model -> Model parent
-                if model_id_to_idx.contains_key(&src) && (model_id_to_idx.contains_key(&dst) || dst == 0) {
+                if model_id_to_idx.contains_key(&src)
+                    && (model_id_to_idx.contains_key(&dst) || dst == 0)
+                {
                     parent_map.insert(src, dst);
                 }
                 // AnimationCurve -> AnimationCurveNode (no property specified)
@@ -609,7 +739,11 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
     let mut bones: Vec<FbxBone> = Vec::new();
     for model in &models {
         let parent_idx = if let Some(&parent_id) = parent_map.get(&model.id) {
-            if parent_id == 0 { None } else { model_id_to_idx.get(&parent_id).copied() }
+            if parent_id == 0 {
+                None
+            } else {
+                model_id_to_idx.get(&parent_id).copied()
+            }
         } else {
             None
         };
@@ -631,7 +765,9 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
 
     let mut curves: HashMap<i64, CurveData> = HashMap::new();
     for node in objects.children_named("AnimationCurve") {
-        if node.props.is_empty() { continue; }
+        if node.props.is_empty() {
+            continue;
+        }
         let id = node.prop_i64(0);
         let mut times = Vec::new();
         let mut values = Vec::new();
@@ -660,8 +796,12 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
     // For each bone, we need up to 6 curves: tx,ty,tz, rx,ry,rz
     struct BoneChannelBuilder {
         bone_idx: usize,
-        tx: Option<i64>, ty: Option<i64>, tz: Option<i64>,
-        rx: Option<i64>, ry: Option<i64>, rz: Option<i64>,
+        tx: Option<i64>,
+        ty: Option<i64>,
+        tz: Option<i64>,
+        rx: Option<i64>,
+        ry: Option<i64>,
+        rz: Option<i64>,
     }
 
     let mut channel_builders: HashMap<usize, BoneChannelBuilder> = HashMap::new();
@@ -669,19 +809,43 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
     for (&curve_id, &(acn_id, ref channel)) in &ac_to_acn {
         if let Some(&(model_id, ref prop)) = acn_to_model.get(&acn_id) {
             if let Some(&bone_idx) = model_id_to_idx.get(&model_id) {
-                let builder = channel_builders.entry(bone_idx).or_insert(BoneChannelBuilder {
-                    bone_idx,
-                    tx: None, ty: None, tz: None,
-                    rx: None, ry: None, rz: None,
-                });
+                let builder = channel_builders
+                    .entry(bone_idx)
+                    .or_insert(BoneChannelBuilder {
+                        bone_idx,
+                        tx: None,
+                        ty: None,
+                        tz: None,
+                        rx: None,
+                        ry: None,
+                        rz: None,
+                    });
 
                 let is_translation = prop == "Lcl Translation";
                 let is_rotation = prop == "Lcl Rotation";
 
                 match channel.as_str() {
-                    "d|X" => { if is_translation { builder.tx = Some(curve_id); } else if is_rotation { builder.rx = Some(curve_id); } }
-                    "d|Y" => { if is_translation { builder.ty = Some(curve_id); } else if is_rotation { builder.ry = Some(curve_id); } }
-                    "d|Z" => { if is_translation { builder.tz = Some(curve_id); } else if is_rotation { builder.rz = Some(curve_id); } }
+                    "d|X" => {
+                        if is_translation {
+                            builder.tx = Some(curve_id);
+                        } else if is_rotation {
+                            builder.rx = Some(curve_id);
+                        }
+                    }
+                    "d|Y" => {
+                        if is_translation {
+                            builder.ty = Some(curve_id);
+                        } else if is_rotation {
+                            builder.ry = Some(curve_id);
+                        }
+                    }
+                    "d|Z" => {
+                        if is_translation {
+                            builder.tz = Some(curve_id);
+                        } else if is_rotation {
+                            builder.rz = Some(curve_id);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -699,27 +863,43 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
         let rz_curve = builder.rz.and_then(|id| curves.get(&id));
 
         // Determine number of keyframes from any available rotation curve
-        let n_keys = rx_curve.map(|c| c.times.len())
+        let n_keys = rx_curve
+            .map(|c| c.times.len())
             .or(ry_curve.map(|c| c.times.len()))
             .or(rz_curve.map(|c| c.times.len()))
             .unwrap_or(0);
 
-        if n_keys == 0 { continue; }
+        if n_keys == 0 {
+            continue;
+        }
 
         // Get time array from any curve
         let time_source = rx_curve.or(ry_curve).or(rz_curve).unwrap();
-        let times: Vec<f32> = time_source.times.iter()
+        let times: Vec<f32> = time_source
+            .times
+            .iter()
             .map(|&t| t as f64 / FBX_TICKS_PER_SECOND)
-            .map(|t| { if t > max_time { max_time = t; } t as f32 })
+            .map(|t| {
+                if t > max_time {
+                    max_time = t;
+                }
+                t as f32
+            })
             .collect();
 
         // Build rotation keyframes
         let mut rotations = Vec::with_capacity(n_keys);
         for i in 0..n_keys {
             rotations.push([
-                rx_curve.map(|c| c.values.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0),
-                ry_curve.map(|c| c.values.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0),
-                rz_curve.map(|c| c.values.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0),
+                rx_curve
+                    .map(|c| c.values.get(i).copied().unwrap_or(0.0))
+                    .unwrap_or(0.0),
+                ry_curve
+                    .map(|c| c.values.get(i).copied().unwrap_or(0.0))
+                    .unwrap_or(0.0),
+                rz_curve
+                    .map(|c| c.values.get(i).copied().unwrap_or(0.0))
+                    .unwrap_or(0.0),
             ]);
         }
 
@@ -731,9 +911,15 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
             let mut trans = Vec::with_capacity(n_keys);
             for i in 0..n_keys {
                 trans.push([
-                    tx_curve.map(|c| c.values.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0),
-                    ty_curve.map(|c| c.values.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0),
-                    tz_curve.map(|c| c.values.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0),
+                    tx_curve
+                        .map(|c| c.values.get(i).copied().unwrap_or(0.0))
+                        .unwrap_or(0.0),
+                    ty_curve
+                        .map(|c| c.values.get(i).copied().unwrap_or(0.0))
+                        .unwrap_or(0.0),
+                    tz_curve
+                        .map(|c| c.values.get(i).copied().unwrap_or(0.0))
+                        .unwrap_or(0.0),
                 ]);
             }
             Some(trans)
@@ -751,7 +937,11 @@ fn extract_skeleton_and_clip(nodes: &[FbxNode], clip_name: &str, looping: bool) 
 
     let duration = max_time as f32;
     let fps = if duration > 0.0 && !bone_channels.is_empty() {
-        let max_keys = bone_channels.iter().map(|c| c.times.len()).max().unwrap_or(1);
+        let max_keys = bone_channels
+            .iter()
+            .map(|c| c.times.len())
+            .max()
+            .unwrap_or(1);
         if max_keys > 1 {
             (max_keys - 1) as f32 / duration
         } else {
@@ -782,10 +972,16 @@ pub fn load_fbx(path: &str, clip_name: &str, looping: bool) -> (FbxSkeleton, Ani
         Ok(d) => d,
         Err(e) => {
             eprintln!("[fbx_anim] Failed to read {}: {}", path, e);
-            return (FbxSkeleton { bones: Vec::new() }, AnimationClip {
-                name: clip_name.to_string(), duration: 0.0, fps: 60.0,
-                bone_channels: Vec::new(), looping,
-            });
+            return (
+                FbxSkeleton { bones: Vec::new() },
+                AnimationClip {
+                    name: clip_name.to_string(),
+                    duration: 0.0,
+                    fps: 60.0,
+                    bone_channels: Vec::new(),
+                    looping,
+                },
+            );
         }
     };
 
@@ -797,14 +993,14 @@ pub fn load_fbx(path: &str, clip_name: &str, looping: bool) -> (FbxSkeleton, Ani
 /// The skeleton is taken from the first file (all share the same Mixamo skeleton).
 pub fn load_all_animations(dir: &str) -> (FbxSkeleton, Vec<AnimationClip>) {
     let files = [
-        ("walking.fbx",         "walking",        true),
-        ("run_forward.fbx",     "run_forward",    true),
-        ("elbow_punch.fbx",     "elbow_punch",    false),
-        ("hook_punch.fbx",      "hook_punch",     false),
+        ("walking.fbx", "walking", true),
+        ("run_forward.fbx", "run_forward", true),
+        ("elbow_punch.fbx", "elbow_punch", false),
+        ("hook_punch.fbx", "hook_punch", false),
         ("roundhouse_kick.fbx", "roundhouse_kick", false),
-        ("drop_kick.fbx",       "drop_kick",      false),
-        ("picking_up.fbx",      "picking_up",     false),
-        ("sitting_pose.fbx",    "sitting_pose",    false),
+        ("drop_kick.fbx", "drop_kick", false),
+        ("picking_up.fbx", "picking_up", false),
+        ("sitting_pose.fbx", "sitting_pose", false),
     ];
 
     let mut skeleton = FbxSkeleton { bones: Vec::new() };
@@ -817,12 +1013,16 @@ pub fn load_all_animations(dir: &str) -> (FbxSkeleton, Vec<AnimationClip>) {
         if i == 0 {
             skeleton = skel;
         }
-        eprintln!("[fbx_anim] Loaded {}: {} bones, {} channels, {:.2}s, {} keys/chan",
+        eprintln!(
+            "[fbx_anim] Loaded {}: {} bones, {} channels, {:.2}s, {} keys/chan",
             name,
             bone_count,
             clip.bone_channels.len(),
             clip.duration,
-            clip.bone_channels.first().map(|c| c.times.len()).unwrap_or(0),
+            clip.bone_channels
+                .first()
+                .map(|c| c.times.len())
+                .unwrap_or(0),
         );
         clips.push(clip);
     }
@@ -837,14 +1037,14 @@ pub struct SkinCluster {
     pub bone_name: String,
     pub vertex_indices: Vec<i32>,
     pub weights: Vec<f64>,
-    pub transform: [f64; 16],       // inverse bind matrix (row-major)
-    pub transform_link: [f64; 16],  // bind pose matrix (row-major)
+    pub transform: [f64; 16],      // inverse bind matrix (row-major)
+    pub transform_link: [f64; 16], // bind pose matrix (row-major)
 }
 
 /// Complete skin data from an FBX file
 pub struct FbxSkinData {
     pub clusters: Vec<SkinCluster>,
-    pub vertex_count: usize,  // total vertices in the FBX mesh
+    pub vertex_count: usize, // total vertices in the FBX mesh
 }
 
 /// Inspect FBX file structure — returns human-readable summary for studio
@@ -871,35 +1071,50 @@ pub fn inspect_fbx(path: &str) -> String {
 
     // List Deformers
     for node in objects.children.iter().filter(|n| n.name == "Deformer") {
-        let id = if !node.props.is_empty() { node.prop_i64(0) } else { 0 };
-        let name = if node.props.len() > 1 { node.prop_str(1) } else { "" };
-        let dtype = if node.props.len() > 2 { node.prop_str(2) } else { "" };
-        out.push_str(&format!("  Deformer ID={} name='{}' type='{}'\n", id, name, dtype));
+        let id = if !node.props.is_empty() {
+            node.prop_i64(0)
+        } else {
+            0
+        };
+        let name = if node.props.len() > 1 {
+            node.prop_str(1)
+        } else {
+            ""
+        };
+        let dtype = if node.props.len() > 2 {
+            node.prop_str(2)
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "  Deformer ID={} name='{}' type='{}'\n",
+            id, name, dtype
+        ));
 
         // Show children of Cluster deformers
         if dtype == "Cluster" {
             for child in &node.children {
                 let desc = match child.name.as_str() {
-                    "Indexes" if !child.props.is_empty() => {
-                        match &child.props[0] {
-                            FbxProp::ArrI32(v) => format!("int[{}]", v.len()),
-                            _ => format!("{} props", child.props.len()),
-                        }
-                    }
-                    "Weights" if !child.props.is_empty() => {
-                        match &child.props[0] {
-                            FbxProp::ArrF64(v) => format!("f64[{}]", v.len()),
-                            FbxProp::ArrF32(v) => format!("f32[{}]", v.len()),
-                            _ => format!("{} props", child.props.len()),
-                        }
-                    }
+                    "Indexes" if !child.props.is_empty() => match &child.props[0] {
+                        FbxProp::ArrI32(v) => format!("int[{}]", v.len()),
+                        _ => format!("{} props", child.props.len()),
+                    },
+                    "Weights" if !child.props.is_empty() => match &child.props[0] {
+                        FbxProp::ArrF64(v) => format!("f64[{}]", v.len()),
+                        FbxProp::ArrF32(v) => format!("f32[{}]", v.len()),
+                        _ => format!("{} props", child.props.len()),
+                    },
                     "Transform" | "TransformLink" if !child.props.is_empty() => {
                         match &child.props[0] {
                             FbxProp::ArrF64(v) => format!("mat4x4 ({} doubles)", v.len()),
                             _ => format!("{} props", child.props.len()),
                         }
                     }
-                    _ => format!("{} children, {} props", child.children.len(), child.props.len()),
+                    _ => format!(
+                        "{} children, {} props",
+                        child.children.len(),
+                        child.props.len()
+                    ),
                 };
                 out.push_str(&format!("    {}: {}\n", child.name, desc));
             }
@@ -908,21 +1123,39 @@ pub fn inspect_fbx(path: &str) -> String {
 
     // List Geometry nodes
     for node in objects.children.iter().filter(|n| n.name == "Geometry") {
-        let id = if !node.props.is_empty() { node.prop_i64(0) } else { 0 };
-        let name = if node.props.len() > 1 { node.prop_str(1) } else { "" };
-        let gtype = if node.props.len() > 2 { node.prop_str(2) } else { "" };
+        let id = if !node.props.is_empty() {
+            node.prop_i64(0)
+        } else {
+            0
+        };
+        let name = if node.props.len() > 1 {
+            node.prop_str(1)
+        } else {
+            ""
+        };
+        let gtype = if node.props.len() > 2 {
+            node.prop_str(2)
+        } else {
+            ""
+        };
         let mut vert_count = 0;
         let mut idx_count = 0;
         for child in &node.children {
             if child.name == "Vertices" && !child.props.is_empty() {
-                if let FbxProp::ArrF64(v) = &child.props[0] { vert_count = v.len() / 3; }
+                if let FbxProp::ArrF64(v) = &child.props[0] {
+                    vert_count = v.len() / 3;
+                }
             }
             if child.name == "PolygonVertexIndex" && !child.props.is_empty() {
-                if let FbxProp::ArrI32(v) = &child.props[0] { idx_count = v.len(); }
+                if let FbxProp::ArrI32(v) = &child.props[0] {
+                    idx_count = v.len();
+                }
             }
         }
-        out.push_str(&format!("  Geometry ID={} '{}' type='{}' verts={} indices={}\n",
-            id, name, gtype, vert_count, idx_count));
+        out.push_str(&format!(
+            "  Geometry ID={} '{}' type='{}' verts={} indices={}\n",
+            id, name, gtype, vert_count, idx_count
+        ));
     }
 
     // Connections summary
@@ -949,8 +1182,14 @@ pub fn extract_skin_data(path: &str) -> Option<FbxSkinData> {
         if c.props.len() >= 3 {
             let child_id = c.prop_i64(1);
             let parent_id = c.prop_i64(2);
-            conn_child_to_parent.entry(child_id).or_default().push(parent_id);
-            conn_parent_to_child.entry(parent_id).or_default().push(child_id);
+            conn_child_to_parent
+                .entry(child_id)
+                .or_default()
+                .push(parent_id);
+            conn_parent_to_child
+                .entry(parent_id)
+                .or_default()
+                .push(child_id);
         }
     }
 
@@ -960,7 +1199,11 @@ pub fn extract_skin_data(path: &str) -> Option<FbxSkinData> {
         if node.props.len() >= 2 {
             let id = node.prop_i64(0);
             let raw_name = node.prop_str(1);
-            let name = raw_name.split('\x00').next().unwrap_or(raw_name).to_string();
+            let name = raw_name
+                .split('\x00')
+                .next()
+                .unwrap_or(raw_name)
+                .to_string();
             model_id_to_name.insert(id, name);
         }
     }
@@ -970,7 +1213,9 @@ pub fn extract_skin_data(path: &str) -> Option<FbxSkinData> {
     for node in objects.children.iter().filter(|n| n.name == "Geometry") {
         for child in &node.children {
             if child.name == "Vertices" && !child.props.is_empty() {
-                if let FbxProp::ArrF64(v) = &child.props[0] { vertex_count = v.len() / 3; }
+                if let FbxProp::ArrF64(v) = &child.props[0] {
+                    vertex_count = v.len() / 3;
+                }
             }
         }
     }
@@ -979,9 +1224,13 @@ pub fn extract_skin_data(path: &str) -> Option<FbxSkinData> {
     let mut clusters: Vec<SkinCluster> = Vec::new();
 
     for node in objects.children.iter().filter(|n| n.name == "Deformer") {
-        if node.props.len() < 3 { continue; }
+        if node.props.len() < 3 {
+            continue;
+        }
         let dtype = node.prop_str(2);
-        if dtype != "Cluster" { continue; }
+        if dtype != "Cluster" {
+            continue;
+        }
 
         let cluster_id = node.prop_i64(0);
 
@@ -998,13 +1247,11 @@ pub fn extract_skin_data(path: &str) -> Option<FbxSkinData> {
                         indices = v.clone();
                     }
                 }
-                "Weights" if !child.props.is_empty() => {
-                    match &child.props[0] {
-                        FbxProp::ArrF64(v) => weights = v.clone(),
-                        FbxProp::ArrF32(v) => weights = v.iter().map(|&f| f as f64).collect(),
-                        _ => {}
-                    }
-                }
+                "Weights" if !child.props.is_empty() => match &child.props[0] {
+                    FbxProp::ArrF64(v) => weights = v.clone(),
+                    FbxProp::ArrF32(v) => weights = v.iter().map(|&f| f as f64).collect(),
+                    _ => {}
+                },
                 "Transform" if !child.props.is_empty() => {
                     if let FbxProp::ArrF64(v) = &child.props[0] {
                         if v.len() >= 16 {
@@ -1061,8 +1308,14 @@ pub fn extract_skin_data(path: &str) -> Option<FbxSkinData> {
         return None;
     }
 
-    eprintln!("[fbx_anim] Extracted skin data: {} clusters, {} mesh verts",
-        clusters.len(), vertex_count);
+    eprintln!(
+        "[fbx_anim] Extracted skin data: {} clusters, {} mesh verts",
+        clusters.len(),
+        vertex_count
+    );
 
-    Some(FbxSkinData { clusters, vertex_count })
+    Some(FbxSkinData {
+        clusters,
+        vertex_count,
+    })
 }

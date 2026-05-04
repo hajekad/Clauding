@@ -1,5 +1,5 @@
-// Minimal PNG writer — no crate dependencies
-// Uncompressed deflate (store blocks), Adler-32 checksum, CRC-32
+//! Minimal PNG writer — no crate dependencies.
+//! Uncompressed deflate (store blocks), Adler-32 checksum, CRC-32.
 
 pub fn save_png(pixels: &[u32], w: usize, h: usize, path: &str) {
     use std::io::Write;
@@ -46,7 +46,11 @@ pub fn save_png(pixels: &[u32], w: usize, h: usize, path: &str) {
         for &b in data {
             crc ^= b as u32;
             for _ in 0..8 {
-                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB88320 } else { crc >> 1 };
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB88320
+                } else {
+                    crc >> 1
+                };
             }
         }
         !crc
@@ -68,12 +72,22 @@ pub fn save_png(pixels: &[u32], w: usize, h: usize, path: &str) {
     let mut ihdr = Vec::with_capacity(13);
     ihdr.extend_from_slice(&(w as u32).to_be_bytes());
     ihdr.extend_from_slice(&(h as u32).to_be_bytes());
-    ihdr.push(8); ihdr.push(2); ihdr.push(0); ihdr.push(0); ihdr.push(0);
+    ihdr.push(8);
+    ihdr.push(2);
+    ihdr.push(0);
+    ihdr.push(0);
+    ihdr.push(0);
     write_chunk(&mut png, b"IHDR", &ihdr);
     write_chunk(&mut png, b"IDAT", &deflate);
     write_chunk(&mut png, b"IEND", &[]);
 
     let mut f = std::fs::File::create(path).unwrap();
     f.write_all(&png).unwrap();
-    eprintln!("Saved: {} ({}x{}, {:.1}MB)", path, w, h, png.len() as f64 / 1_000_000.0);
+    eprintln!(
+        "Saved: {} ({}x{}, {:.1}MB)",
+        path,
+        w,
+        h,
+        png.len() as f64 / 1_000_000.0
+    );
 }

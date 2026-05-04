@@ -1,4 +1,5 @@
-// Shared color utility functions (ARGB u32 format)
+//! Shared color utility functions in ARGB u32 format.
+//! Linear interpolation and darkening for vertex pre-lighting.
 
 /// Linearly interpolate between two ARGB colors
 pub fn lerp_color(a: u32, b: u32, t: f32) -> u32 {

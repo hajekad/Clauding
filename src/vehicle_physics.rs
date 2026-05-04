@@ -1,18 +1,23 @@
-// Vehicle physics step: suspension → tire forces → rigid body integration
-//
-// Bridges the gap between the AI/player driving inputs and the rigid body solver.
-// Each frame: compute suspension forces → tire forces → integrate body → sync back to Vehicle fields.
+//! Vehicle physics step — suspension → tire forces → rigid body integration.
+//!
+//! Bridges the gap between AI/player driving inputs and the rigid body solver.
+//! Per frame: suspension forces → tire forces → integrate body → sync back to `Vehicle`.
 
-use crate::math::*;
-use crate::state::{Vehicle, Terrain, RoadNetwork};
-use crate::physics;
-use crate::tire;
-use crate::suspension;
 use crate::material;
+use crate::math::*;
+use crate::physics;
+use crate::state::{RoadNetwork, Terrain, Vehicle};
+use crate::suspension;
+use crate::tire;
 
 /// Step physics for a single vehicle. Called once per fixed timestep.
 /// This replaces the old direct position/speed manipulation with force-based movement.
-pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &RoadNetwork, dt: f32) {
+pub fn step_vehicle_physics(
+    v: &mut Vehicle,
+    terrain: &Terrain,
+    road_network: &RoadNetwork,
+    dt: f32,
+) {
     // Skip physics for parked vehicles with no driver
     if v.parked && !v.occupied && !v.ai_active {
         // Just sync body position from legacy fields
@@ -30,7 +35,10 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
 
     // Cold-start: if suspension was fully unloaded (parked → active), initialize body Y
     // to suspension equilibrium height so springs don't launch the vehicle
-    if v.suspension.iter().all(|s| s.compression == 0.0 && s.prev_compression == 0.0) {
+    if v.suspension
+        .iter()
+        .all(|s| s.compression == 0.0 && s.prev_compression == 0.0)
+    {
         let ground_y = terrain.height_at(v.body.pos[0], v.body.pos[2]);
         let wr = v.wheels[0].radius;
         let local_y = v.wheels[0].local_pos[1];
@@ -57,8 +65,8 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
     let steer = v.drivetrain.steer_input * v.drivetrain.max_steer * dmg_steer;
     v.wheels[0].steer_angle = steer; // FL
     v.wheels[1].steer_angle = steer; // FR
-    v.wheels[2].steer_angle = 0.0;   // RL
-    v.wheels[3].steer_angle = 0.0;   // RR
+    v.wheels[2].steer_angle = 0.0; // RL
+    v.wheels[3].steer_angle = 0.0; // RR
 
     // Electronic speed governor: forward + reverse
     let max_reverse_speed = 8.33; // 30 km/h reverse
@@ -92,14 +100,21 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
     // Engine torque to driven wheels (reduced by engine bay damage)
     // Power-limited: at high wheel speed, cap torque so power doesn't exceed max_power
     let is_reverse = governed_throttle < 0.0;
-    let effective_gear = if is_reverse { v.drivetrain.gear_ratio * 0.6 } else { v.drivetrain.gear_ratio };
+    let effective_gear = if is_reverse {
+        v.drivetrain.gear_ratio * 0.6
+    } else {
+        v.drivetrain.gear_ratio
+    };
     let base_torque = v.drivetrain.engine_torque * governed_throttle * effective_gear * dmg_engine;
     let avg_wheel_speed = {
         let sum: f32 = v.wheels.iter().map(|w| w.ang_vel.abs() * w.radius).sum();
         (sum * 0.25).max(0.1) // average ground speed from wheels, floor at 0.1 m/s
     };
     let power_at_wheels = (base_torque * avg_wheel_speed / v.wheels[0].radius).abs();
-    let power_scale = if !is_reverse && power_at_wheels > v.drivetrain.max_power && v.drivetrain.max_power > 0.0 {
+    let power_scale = if !is_reverse
+        && power_at_wheels > v.drivetrain.max_power
+        && v.drivetrain.max_power > 0.0
+    {
         v.drivetrain.max_power / power_at_wheels
     } else {
         1.0
@@ -114,11 +129,11 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
     // 60/40 front/rear split — front brakes do more work, matches weight transfer
     let brake_input = v.drivetrain.brake;
     let front_brake = 4200.0 * brake_input; // per front wheel (6-piston calipers)
-    let rear_brake = 2800.0 * brake_input;  // per rear wheel (1-piston floating)
+    let rear_brake = 2800.0 * brake_input; // per rear wheel (1-piston floating)
     v.wheels[0].brake_torque = front_brake; // FL
     v.wheels[1].brake_torque = front_brake; // FR
-    v.wheels[2].brake_torque = rear_brake;  // RL
-    v.wheels[3].brake_torque = rear_brake;  // RR
+    v.wheels[2].brake_torque = rear_brake; // RL
+    v.wheels[3].brake_torque = rear_brake; // RR
 
     // ABS enabled on all wheels by default
     for w in &mut v.wheels {
@@ -149,7 +164,8 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
     let body_right = quat_right(v.body.quat);
 
     // Base surface at vehicle center (used as fallback / reference)
-    let center_surface = v.surface_override
+    let center_surface = v
+        .surface_override
         .unwrap_or_else(|| crate::world::surface_at(v.body.pos[0], v.body.pos[2], road_network));
 
     let mut total_force = [0.0f32; 3];
@@ -182,8 +198,9 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
         if v.wheels[i].on_ground && susp_force > 1.0 {
             // Per-wheel surface: sample at tire contact XZ, blend with center surface
             // At road edges, one side of the car may be on asphalt while the other is on grass
-            let wheel_surface = v.surface_override
-                .unwrap_or_else(|| crate::world::surface_at(attach_world[0], attach_world[2], road_network));
+            let wheel_surface = v.surface_override.unwrap_or_else(|| {
+                crate::world::surface_at(attach_world[0], attach_world[2], road_network)
+            });
             let wheel_mat = if wheel_surface == center_surface {
                 *material::material_for_surface(wheel_surface)
             } else {
@@ -257,8 +274,10 @@ pub fn step_vehicle_physics(v: &mut Vehicle, terrain: &Terrain, road_network: &R
     v.terrain_normal = v3_normalize(v3_lerp(v.terrain_normal, target_n, lerp_rate));
 
     // World bounds
-    v.x = v.x.clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
-    v.z = v.z.clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
+    v.x =
+        v.x.clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
+    v.z =
+        v.z.clamp(-crate::state::WORLD_HALF, crate::state::WORLD_HALF);
     v.body.pos[0] = v.x;
     v.body.pos[2] = v.z;
 }

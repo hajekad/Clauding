@@ -1,5 +1,8 @@
-// Vulkan GPU: compute pipelines + graphics rendering pipeline
-// dlopen libvulkan.so.1, create compute/graphics pipelines, offscreen render + readback
+//! Vulkan GPU backend — compute pipelines + offscreen graphics rendering.
+//!
+//! `libvulkan.so.1` is loaded at runtime via `dlopen`; every Vulkan entry point
+//! is resolved through `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr`. Renders to
+//! an offscreen image and reads back to a `HOST_CACHED` buffer for Wayland present.
 
 #![allow(unsafe_op_in_unsafe_fn, non_camel_case_types)]
 
@@ -819,71 +822,175 @@ struct VkImageSubresourceLayers {
 
 // --- Function pointer types ---
 type FnGetInstanceProcAddr = unsafe extern "C" fn(VkInstance, *const c_char) -> *mut c_void;
-type FnCreateInstance = unsafe extern "C" fn(*const VkInstanceCreateInfo, *const c_void, *mut VkInstance) -> i32;
+type FnCreateInstance =
+    unsafe extern "C" fn(*const VkInstanceCreateInfo, *const c_void, *mut VkInstance) -> i32;
 type FnDestroyInstance = unsafe extern "C" fn(VkInstance, *const c_void);
 type FnEnumPhysDevices = unsafe extern "C" fn(VkInstance, *mut u32, *mut VkPhysicalDevice) -> i32;
 type FnGetPhysDevProps = unsafe extern "C" fn(VkPhysicalDevice, *mut [u8; 1024]);
-type FnGetPhysDevMemProps = unsafe extern "C" fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryProperties);
-type FnGetPhysDevQueueFamProps = unsafe extern "C" fn(VkPhysicalDevice, *mut u32, *mut VkQueueFamilyProperties);
-type FnCreateDevice = unsafe extern "C" fn(VkPhysicalDevice, *const VkDeviceCreateInfo, *const c_void, *mut VkDevice) -> i32;
+type FnGetPhysDevMemProps =
+    unsafe extern "C" fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryProperties);
+type FnGetPhysDevQueueFamProps =
+    unsafe extern "C" fn(VkPhysicalDevice, *mut u32, *mut VkQueueFamilyProperties);
+type FnCreateDevice = unsafe extern "C" fn(
+    VkPhysicalDevice,
+    *const VkDeviceCreateInfo,
+    *const c_void,
+    *mut VkDevice,
+) -> i32;
 type FnDestroyDevice = unsafe extern "C" fn(VkDevice, *const c_void);
 type FnGetDeviceQueue = unsafe extern "C" fn(VkDevice, u32, u32, *mut VkQueue);
-type FnCreateBuffer = unsafe extern "C" fn(VkDevice, *const VkBufferCreateInfo, *const c_void, *mut VkBuffer) -> i32;
+type FnCreateBuffer =
+    unsafe extern "C" fn(VkDevice, *const VkBufferCreateInfo, *const c_void, *mut VkBuffer) -> i32;
 type FnDestroyBuffer = unsafe extern "C" fn(VkDevice, VkBuffer, *const c_void);
 type FnGetBufMemReqs = unsafe extern "C" fn(VkDevice, VkBuffer, *mut VkMemoryRequirements);
-type FnAllocMem = unsafe extern "C" fn(VkDevice, *const VkMemoryAllocateInfo, *const c_void, *mut VkDeviceMemory) -> i32;
+type FnAllocMem = unsafe extern "C" fn(
+    VkDevice,
+    *const VkMemoryAllocateInfo,
+    *const c_void,
+    *mut VkDeviceMemory,
+) -> i32;
 type FnFreeMem = unsafe extern "C" fn(VkDevice, VkDeviceMemory, *const c_void);
 type FnBindBufMem = unsafe extern "C" fn(VkDevice, VkBuffer, VkDeviceMemory, VkDeviceSize) -> i32;
-type FnMapMem = unsafe extern "C" fn(VkDevice, VkDeviceMemory, VkDeviceSize, VkDeviceSize, u32, *mut *mut c_void) -> i32;
+type FnMapMem = unsafe extern "C" fn(
+    VkDevice,
+    VkDeviceMemory,
+    VkDeviceSize,
+    VkDeviceSize,
+    u32,
+    *mut *mut c_void,
+) -> i32;
 type FnUnmapMem = unsafe extern "C" fn(VkDevice, VkDeviceMemory);
-type FnCreateShaderModule = unsafe extern "C" fn(VkDevice, *const VkShaderModuleCreateInfo, *const c_void, *mut VkShaderModule) -> i32;
+type FnCreateShaderModule = unsafe extern "C" fn(
+    VkDevice,
+    *const VkShaderModuleCreateInfo,
+    *const c_void,
+    *mut VkShaderModule,
+) -> i32;
 type FnDestroyShaderModule = unsafe extern "C" fn(VkDevice, VkShaderModule, *const c_void);
-type FnCreateDescSetLayout = unsafe extern "C" fn(VkDevice, *const VkDescriptorSetLayoutCreateInfo, *const c_void, *mut VkDescriptorSetLayout) -> i32;
+type FnCreateDescSetLayout = unsafe extern "C" fn(
+    VkDevice,
+    *const VkDescriptorSetLayoutCreateInfo,
+    *const c_void,
+    *mut VkDescriptorSetLayout,
+) -> i32;
 type FnDestroyDescSetLayout = unsafe extern "C" fn(VkDevice, VkDescriptorSetLayout, *const c_void);
-type FnCreatePipelineLayout = unsafe extern "C" fn(VkDevice, *const VkPipelineLayoutCreateInfo, *const c_void, *mut VkPipelineLayout) -> i32;
+type FnCreatePipelineLayout = unsafe extern "C" fn(
+    VkDevice,
+    *const VkPipelineLayoutCreateInfo,
+    *const c_void,
+    *mut VkPipelineLayout,
+) -> i32;
 type FnDestroyPipelineLayout = unsafe extern "C" fn(VkDevice, VkPipelineLayout, *const c_void);
-type FnCreateComputePipelines = unsafe extern "C" fn(VkDevice, u64, u32, *const VkComputePipelineCreateInfo, *const c_void, *mut VkPipeline) -> i32;
+type FnCreateComputePipelines = unsafe extern "C" fn(
+    VkDevice,
+    u64,
+    u32,
+    *const VkComputePipelineCreateInfo,
+    *const c_void,
+    *mut VkPipeline,
+) -> i32;
 type FnDestroyPipeline = unsafe extern "C" fn(VkDevice, VkPipeline, *const c_void);
-type FnCreateDescPool = unsafe extern "C" fn(VkDevice, *const VkDescriptorPoolCreateInfo, *const c_void, *mut VkDescriptorPool) -> i32;
+type FnCreateDescPool = unsafe extern "C" fn(
+    VkDevice,
+    *const VkDescriptorPoolCreateInfo,
+    *const c_void,
+    *mut VkDescriptorPool,
+) -> i32;
 type FnDestroyDescPool = unsafe extern "C" fn(VkDevice, VkDescriptorPool, *const c_void);
 type FnResetDescPool = unsafe extern "C" fn(VkDevice, VkDescriptorPool, u32) -> i32;
-type FnAllocDescSets = unsafe extern "C" fn(VkDevice, *const VkDescriptorSetAllocateInfo, *mut VkDescriptorSet) -> i32;
-type FnUpdateDescSets = unsafe extern "C" fn(VkDevice, u32, *const VkWriteDescriptorSet, u32, *const c_void);
-type FnCreateCmdPool = unsafe extern "C" fn(VkDevice, *const VkCommandPoolCreateInfo, *const c_void, *mut VkCommandPool) -> i32;
+type FnAllocDescSets =
+    unsafe extern "C" fn(VkDevice, *const VkDescriptorSetAllocateInfo, *mut VkDescriptorSet) -> i32;
+type FnUpdateDescSets =
+    unsafe extern "C" fn(VkDevice, u32, *const VkWriteDescriptorSet, u32, *const c_void);
+type FnCreateCmdPool = unsafe extern "C" fn(
+    VkDevice,
+    *const VkCommandPoolCreateInfo,
+    *const c_void,
+    *mut VkCommandPool,
+) -> i32;
 type FnDestroyCmdPool = unsafe extern "C" fn(VkDevice, VkCommandPool, *const c_void);
-type FnAllocCmdBufs = unsafe extern "C" fn(VkDevice, *const VkCommandBufferAllocateInfo, *mut VkCommandBuffer) -> i32;
+type FnAllocCmdBufs =
+    unsafe extern "C" fn(VkDevice, *const VkCommandBufferAllocateInfo, *mut VkCommandBuffer) -> i32;
 type FnBeginCmdBuf = unsafe extern "C" fn(VkCommandBuffer, *const VkCommandBufferBeginInfo) -> i32;
 type FnEndCmdBuf = unsafe extern "C" fn(VkCommandBuffer) -> i32;
 type FnCmdBindPipeline = unsafe extern "C" fn(VkCommandBuffer, u32, VkPipeline);
-type FnCmdBindDescSets = unsafe extern "C" fn(VkCommandBuffer, u32, VkPipelineLayout, u32, u32, *const VkDescriptorSet, u32, *const u32);
+type FnCmdBindDescSets = unsafe extern "C" fn(
+    VkCommandBuffer,
+    u32,
+    VkPipelineLayout,
+    u32,
+    u32,
+    *const VkDescriptorSet,
+    u32,
+    *const u32,
+);
 type FnCmdDispatch = unsafe extern "C" fn(VkCommandBuffer, u32, u32, u32);
-type FnCmdPipelineBarrier = unsafe extern "C" fn(VkCommandBuffer, u32, u32, u32, u32, *const c_void, u32, *const VkBufferMemoryBarrier, u32, *const c_void);
-type FnCmdPushConstants = unsafe extern "C" fn(VkCommandBuffer, VkPipelineLayout, u32, u32, u32, *const c_void);
-type FnCreateFence = unsafe extern "C" fn(VkDevice, *const VkFenceCreateInfo, *const c_void, *mut VkFence) -> i32;
+type FnCmdPipelineBarrier = unsafe extern "C" fn(
+    VkCommandBuffer,
+    u32,
+    u32,
+    u32,
+    u32,
+    *const c_void,
+    u32,
+    *const VkBufferMemoryBarrier,
+    u32,
+    *const c_void,
+);
+type FnCmdPushConstants =
+    unsafe extern "C" fn(VkCommandBuffer, VkPipelineLayout, u32, u32, u32, *const c_void);
+type FnCreateFence =
+    unsafe extern "C" fn(VkDevice, *const VkFenceCreateInfo, *const c_void, *mut VkFence) -> i32;
 type FnDestroyFence = unsafe extern "C" fn(VkDevice, VkFence, *const c_void);
 type FnResetFences = unsafe extern "C" fn(VkDevice, u32, *const VkFence) -> i32;
 type FnWaitForFences = unsafe extern "C" fn(VkDevice, u32, *const VkFence, u32, u64) -> i32;
 type FnQueueSubmit = unsafe extern "C" fn(VkQueue, u32, *const VkSubmitInfo, VkFence) -> i32;
 
 // Graphics function pointer types
-type FnCreateImage = unsafe extern "C" fn(VkDevice, *const VkImageCreateInfo, *const c_void, *mut VkImage) -> i32;
+type FnCreateImage =
+    unsafe extern "C" fn(VkDevice, *const VkImageCreateInfo, *const c_void, *mut VkImage) -> i32;
 type FnDestroyImage = unsafe extern "C" fn(VkDevice, VkImage, *const c_void);
 type FnGetImageMemReqs = unsafe extern "C" fn(VkDevice, VkImage, *mut VkMemoryRequirements);
 type FnBindImageMem = unsafe extern "C" fn(VkDevice, VkImage, VkDeviceMemory, VkDeviceSize) -> i32;
-type FnCreateImageView = unsafe extern "C" fn(VkDevice, *const VkImageViewCreateInfo, *const c_void, *mut VkImageView) -> i32;
+type FnCreateImageView = unsafe extern "C" fn(
+    VkDevice,
+    *const VkImageViewCreateInfo,
+    *const c_void,
+    *mut VkImageView,
+) -> i32;
 type FnDestroyImageView = unsafe extern "C" fn(VkDevice, VkImageView, *const c_void);
-type FnCreateRenderPass = unsafe extern "C" fn(VkDevice, *const VkRenderPassCreateInfo, *const c_void, *mut VkRenderPass) -> i32;
+type FnCreateRenderPass = unsafe extern "C" fn(
+    VkDevice,
+    *const VkRenderPassCreateInfo,
+    *const c_void,
+    *mut VkRenderPass,
+) -> i32;
 type FnDestroyRenderPass = unsafe extern "C" fn(VkDevice, VkRenderPass, *const c_void);
-type FnCreateFramebuffer = unsafe extern "C" fn(VkDevice, *const VkFramebufferCreateInfo, *const c_void, *mut VkFramebufferVk) -> i32;
+type FnCreateFramebuffer = unsafe extern "C" fn(
+    VkDevice,
+    *const VkFramebufferCreateInfo,
+    *const c_void,
+    *mut VkFramebufferVk,
+) -> i32;
 type FnDestroyFramebuffer = unsafe extern "C" fn(VkDevice, VkFramebufferVk, *const c_void);
-type FnCreateGraphicsPipelines = unsafe extern "C" fn(VkDevice, u64, u32, *const VkGraphicsPipelineCreateInfo, *const c_void, *mut VkPipeline) -> i32;
-type FnCmdBeginRenderPass = unsafe extern "C" fn(VkCommandBuffer, *const VkRenderPassBeginInfo, u32);
+type FnCreateGraphicsPipelines = unsafe extern "C" fn(
+    VkDevice,
+    u64,
+    u32,
+    *const VkGraphicsPipelineCreateInfo,
+    *const c_void,
+    *mut VkPipeline,
+) -> i32;
+type FnCmdBeginRenderPass =
+    unsafe extern "C" fn(VkCommandBuffer, *const VkRenderPassBeginInfo, u32);
 type FnCmdEndRenderPass = unsafe extern "C" fn(VkCommandBuffer);
-type FnCmdBindVertexBuffers = unsafe extern "C" fn(VkCommandBuffer, u32, u32, *const VkBuffer, *const VkDeviceSize);
+type FnCmdBindVertexBuffers =
+    unsafe extern "C" fn(VkCommandBuffer, u32, u32, *const VkBuffer, *const VkDeviceSize);
 type FnCmdDraw = unsafe extern "C" fn(VkCommandBuffer, u32, u32, u32, u32);
 type FnCmdSetViewport = unsafe extern "C" fn(VkCommandBuffer, u32, u32, *const VkViewport);
 type FnCmdSetScissor = unsafe extern "C" fn(VkCommandBuffer, u32, u32, *const VkRect2D);
-type FnCmdCopyImageToBuffer = unsafe extern "C" fn(VkCommandBuffer, VkImage, u32, VkBuffer, u32, *const VkBufferImageCopy);
+type FnCmdCopyImageToBuffer =
+    unsafe extern "C" fn(VkCommandBuffer, VkImage, u32, VkBuffer, u32, *const VkBufferImageCopy);
 type FnDeviceWaitIdle = unsafe extern "C" fn(VkDevice) -> i32;
 
 struct VkFns {
@@ -971,11 +1078,11 @@ pub struct GpuVertex {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct GpuPushConstants {
-    pub vp: [f32; 16],                    // mat4 VP matrix (64 bytes)
-    pub light_dir_ambient: [f32; 4],      // xyz=light_dir, w=ambient
-    pub sun_fog_params: [f32; 4],         // x=sun_strength, y=fog_dist_sq_inv, z=fwd_x, w=fwd_z
-    pub fog_color: [f32; 4],              // xyz=fog_color (0-1 normalized)
-    pub eye_pos: [f32; 4],                // xyz=camera position
+    pub vp: [f32; 16],               // mat4 VP matrix (64 bytes)
+    pub light_dir_ambient: [f32; 4], // xyz=light_dir, w=ambient
+    pub sun_fog_params: [f32; 4],    // x=sun_strength, y=fog_dist_sq_inv, z=fwd_x, w=fwd_z
+    pub fog_color: [f32; 4],         // xyz=fog_color (0-1 normalized)
+    pub eye_pos: [f32; 4],           // xyz=camera position
 }
 
 // --- Render target (offscreen color+depth+readback) ---
@@ -1035,15 +1142,27 @@ pub struct GpuContext {
     dynamic_vbuf: Option<GpuBuf>,
 }
 
-unsafe fn load_fn<T>(get_proc: FnGetInstanceProcAddr, instance: VkInstance, name: &std::ffi::CStr) -> T {
+unsafe fn load_fn<T>(
+    get_proc: FnGetInstanceProcAddr,
+    instance: VkInstance,
+    name: &std::ffi::CStr,
+) -> T {
     let p = get_proc(instance, name.as_ptr());
-    if p.is_null() { panic!("Vulkan: failed to load {}", name.to_str().unwrap_or("?")); }
+    if p.is_null() {
+        panic!("Vulkan: failed to load {}", name.to_str().unwrap_or("?"));
+    }
     std::mem::transmute_copy(&p)
 }
 
-fn find_memory_type(mem_props: &VkPhysicalDeviceMemoryProperties, type_bits: u32, flags: u32) -> Option<u32> {
+fn find_memory_type(
+    mem_props: &VkPhysicalDeviceMemoryProperties,
+    type_bits: u32,
+    flags: u32,
+) -> Option<u32> {
     for i in 0..mem_props.memory_type_count {
-        if type_bits & (1 << i) != 0 && mem_props.memory_types[i as usize].property_flags & flags == flags {
+        if type_bits & (1 << i) != 0
+            && mem_props.memory_types[i as usize].property_flags & flags == flags
+        {
             return Some(i);
         }
     }
@@ -1078,16 +1197,21 @@ impl GpuContext {
 
     unsafe fn init() -> Result<Self, &'static str> {
         let lib = dlopen(c"libvulkan.so.1".as_ptr(), RTLD_LAZY);
-        if lib.is_null() { return Err("no libvulkan.so.1"); }
+        if lib.is_null() {
+            return Err("no libvulkan.so.1");
+        }
 
         let get_proc: FnGetInstanceProcAddr = {
             let p = dlsym(lib, c"vkGetInstanceProcAddr".as_ptr());
-            if p.is_null() { return Err("no vkGetInstanceProcAddr"); }
+            if p.is_null() {
+                return Err("no vkGetInstanceProcAddr");
+            }
             std::mem::transmute(p)
         };
 
         // Create instance
-        let create_instance: FnCreateInstance = load_fn(get_proc, ptr::null_mut(), c"vkCreateInstance");
+        let create_instance: FnCreateInstance =
+            load_fn(get_proc, ptr::null_mut(), c"vkCreateInstance");
 
         let app_info = VkApplicationInfo {
             s_type: VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -1112,19 +1236,30 @@ impl GpuContext {
 
         let mut instance: VkInstance = ptr::null_mut();
         let res = create_instance(&create_info, ptr::null(), &mut instance);
-        if res != VK_SUCCESS { return Err("vkCreateInstance failed"); }
+        if res != VK_SUCCESS {
+            return Err("vkCreateInstance failed");
+        }
 
         // Load instance-level functions
-        let enum_phys_devs: FnEnumPhysDevices = load_fn(get_proc, instance, c"vkEnumeratePhysicalDevices");
-        let get_phys_props: FnGetPhysDevProps = load_fn(get_proc, instance, c"vkGetPhysicalDeviceProperties");
-        let get_phys_mem: FnGetPhysDevMemProps = load_fn(get_proc, instance, c"vkGetPhysicalDeviceMemoryProperties");
-        let get_phys_queue: FnGetPhysDevQueueFamProps = load_fn(get_proc, instance, c"vkGetPhysicalDeviceQueueFamilyProperties");
+        let enum_phys_devs: FnEnumPhysDevices =
+            load_fn(get_proc, instance, c"vkEnumeratePhysicalDevices");
+        let get_phys_props: FnGetPhysDevProps =
+            load_fn(get_proc, instance, c"vkGetPhysicalDeviceProperties");
+        let get_phys_mem: FnGetPhysDevMemProps =
+            load_fn(get_proc, instance, c"vkGetPhysicalDeviceMemoryProperties");
+        let get_phys_queue: FnGetPhysDevQueueFamProps = load_fn(
+            get_proc,
+            instance,
+            c"vkGetPhysicalDeviceQueueFamilyProperties",
+        );
         let create_device: FnCreateDevice = load_fn(get_proc, instance, c"vkCreateDevice");
 
         // Pick physical device (prefer discrete GPU)
         let mut count = 0u32;
         enum_phys_devs(instance, &mut count, ptr::null_mut());
-        if count == 0 { return Err("no Vulkan physical devices"); }
+        if count == 0 {
+            return Err("no Vulkan physical devices");
+        }
         let mut devs = vec![ptr::null_mut(); count as usize];
         enum_phys_devs(instance, &mut count, devs.as_mut_ptr());
 
@@ -1137,15 +1272,22 @@ impl GpuContext {
             get_phys_props(dev, &mut props);
             let dev_type = u32::from_ne_bytes(props[16..20].try_into().unwrap());
             let name_end = props[20..276].iter().position(|&b| b == 0).unwrap_or(255);
-            let name = std::str::from_utf8(&props[20..20+name_end]).unwrap_or("?").to_string();
+            let name = std::str::from_utf8(&props[20..20 + name_end])
+                .unwrap_or("?")
+                .to_string();
 
             // Find compute queue family
             let mut qf_count = 0u32;
             get_phys_queue(dev, &mut qf_count, ptr::null_mut());
-            let mut qf_props = vec![VkQueueFamilyProperties {
-                queue_flags: 0, queue_count: 0, timestamp_valid_bits: 0,
-                min_image_transfer_granularity: [0; 3],
-            }; qf_count as usize];
+            let mut qf_props = vec![
+                VkQueueFamilyProperties {
+                    queue_flags: 0,
+                    queue_count: 0,
+                    timestamp_valid_bits: 0,
+                    min_image_transfer_granularity: [0; 3],
+                };
+                qf_count as usize
+            ];
             get_phys_queue(dev, &mut qf_count, qf_props.as_mut_ptr());
 
             for (i, qf) in qf_props.iter().enumerate() {
@@ -1160,7 +1302,9 @@ impl GpuContext {
             }
         }
 
-        if chosen.is_null() { return Err("no compute-capable GPU"); }
+        if chosen.is_null() {
+            return Err("no compute-capable GPU");
+        }
 
         // Get memory properties
         let mut mem_props = std::mem::zeroed::<VkPhysicalDeviceMemoryProperties>();
@@ -1192,7 +1336,9 @@ impl GpuContext {
 
         let mut device: VkDevice = ptr::null_mut();
         let res = create_device(chosen, &dev_info, ptr::null(), &mut device);
-        if res != VK_SUCCESS { return Err("vkCreateDevice failed"); }
+        if res != VK_SUCCESS {
+            return Err("vkCreateDevice failed");
+        }
 
         // Load device-level functions
         let fns = VkFns {
@@ -1270,7 +1416,9 @@ impl GpuContext {
         };
         let mut cmd_pool: VkCommandPool = 0;
         let res = (fns.create_cmd_pool)(device, &pool_info, ptr::null(), &mut cmd_pool);
-        if res != VK_SUCCESS { return Err("vkCreateCommandPool failed"); }
+        if res != VK_SUCCESS {
+            return Err("vkCreateCommandPool failed");
+        }
 
         // Allocate command buffer
         let alloc_info = VkCommandBufferAllocateInfo {
@@ -1309,8 +1457,18 @@ impl GpuContext {
             flags: VK_FENCE_CREATE_SIGNALED_BIT,
         };
         let mut gfx_fences: [VkFence; 2] = [0; 2];
-        (fns.create_fence)(device, &fence_info_signaled, ptr::null(), &mut gfx_fences[0]);
-        (fns.create_fence)(device, &fence_info_signaled, ptr::null(), &mut gfx_fences[1]);
+        (fns.create_fence)(
+            device,
+            &fence_info_signaled,
+            ptr::null(),
+            &mut gfx_fences[0],
+        );
+        (fns.create_fence)(
+            device,
+            &fence_info_signaled,
+            ptr::null(),
+            &mut gfx_fences[1],
+        );
 
         // Create descriptor pool (enough for all our pipelines)
         let pool_size = VkDescriptorPoolSize {
@@ -1353,23 +1511,36 @@ impl GpuContext {
 
         // Build pipelines
         ctx.add_pipeline("test_multiply", &gpu_kernels::build_test_multiply(), 1, 4)?;
-        ctx.add_pipeline("particle_update", &gpu_kernels::build_particle_update(), 7, 12)?;
+        ctx.add_pipeline(
+            "particle_update",
+            &gpu_kernels::build_particle_update(),
+            7,
+            12,
+        )?;
 
         Ok(ctx)
     }
 
-    unsafe fn add_pipeline(&mut self, name: &'static str, spirv: &[u32], binding_count: u32, push_size: u32) -> Result<(), &'static str> {
+    unsafe fn add_pipeline(
+        &mut self,
+        name: &'static str,
+        spirv: &[u32],
+        binding_count: u32,
+        push_size: u32,
+    ) -> Result<(), &'static str> {
         // Create shader module
         let module = self.create_shader_module(spirv);
 
         // Descriptor set layout
-        let bindings: Vec<VkDescriptorSetLayoutBinding> = (0..binding_count).map(|i| VkDescriptorSetLayoutBinding {
-            binding: i,
-            descriptor_type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            descriptor_count: 1,
-            stage_flags: VK_SHADER_STAGE_COMPUTE_BIT,
-            p_immutable_samplers: ptr::null(),
-        }).collect();
+        let bindings: Vec<VkDescriptorSetLayoutBinding> = (0..binding_count)
+            .map(|i| VkDescriptorSetLayoutBinding {
+                binding: i,
+                descriptor_type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: VK_SHADER_STAGE_COMPUTE_BIT,
+                p_immutable_samplers: ptr::null(),
+            })
+            .collect();
 
         let layout_info = VkDescriptorSetLayoutCreateInfo {
             s_type: VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -1397,7 +1568,12 @@ impl GpuContext {
             p_push_constant_ranges: &push_range,
         };
         let mut pipe_layout: VkPipelineLayout = 0;
-        (self.fns.create_pipeline_layout)(self.device, &pipe_layout_info, ptr::null(), &mut pipe_layout);
+        (self.fns.create_pipeline_layout)(
+            self.device,
+            &pipe_layout_info,
+            ptr::null(),
+            &mut pipe_layout,
+        );
 
         // Compute pipeline
         let stage_info = VkPipelineShaderStageCreateInfo {
@@ -1419,23 +1595,40 @@ impl GpuContext {
             base_pipeline_index: -1,
         };
         let mut pipeline: VkPipeline = 0;
-        let res = (self.fns.create_compute_pipelines)(self.device, 0, 1, &pipeline_info, ptr::null(), &mut pipeline);
-        if res != VK_SUCCESS { return Err("vkCreateComputePipelines failed"); }
+        let res = (self.fns.create_compute_pipelines)(
+            self.device,
+            0,
+            1,
+            &pipeline_info,
+            ptr::null(),
+            &mut pipeline,
+        );
+        if res != VK_SUCCESS {
+            return Err("vkCreateComputePipelines failed");
+        }
 
         (self.fns.destroy_shader_module)(self.device, module, ptr::null());
 
-        self.pipelines.push((name, ComputePipeline {
-            pipeline,
-            layout: pipe_layout,
-            desc_set_layout: desc_layout,
-        }));
+        self.pipelines.push((
+            name,
+            ComputePipeline {
+                pipeline,
+                layout: pipe_layout,
+                desc_set_layout: desc_layout,
+            },
+        ));
 
         Ok(())
     }
 
     pub fn create_buffer(&self, size_bytes: usize) -> GpuBuf {
         let flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        self.create_buffer_usage_prefer(size_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, flags, flags)
+        self.create_buffer_usage_prefer(
+            size_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            flags,
+            flags,
+        )
     }
 
     pub fn upload(&self, buf: &GpuBuf, data: &[u8]) {
@@ -1452,13 +1645,23 @@ impl GpuContext {
         }
     }
 
-    pub fn dispatch(&mut self, kernel: &str, buffers: &[&GpuBuf], push_constants: &[u8], count: u32) {
+    pub fn dispatch(
+        &mut self,
+        kernel: &str,
+        buffers: &[&GpuBuf],
+        push_constants: &[u8],
+        count: u32,
+    ) {
         unsafe {
             // Reset descriptor pool (previous dispatch is done since we waited on fence)
             (self.fns.reset_desc_pool)(self.device, self.desc_pool, 0);
 
-            let pipe = &self.pipelines.iter().find(|(n, _)| *n == kernel)
-                .expect("Unknown kernel").1;
+            let pipe = &self
+                .pipelines
+                .iter()
+                .find(|(n, _)| *n == kernel)
+                .expect("Unknown kernel")
+                .1;
 
             // Allocate descriptor set
             let alloc_info = VkDescriptorSetAllocateInfo {
@@ -1472,26 +1675,39 @@ impl GpuContext {
             (self.fns.alloc_desc_sets)(self.device, &alloc_info, &mut desc_set);
 
             // Update descriptor set with buffer bindings
-            let buf_infos: Vec<VkDescriptorBufferInfo> = buffers.iter().map(|b| VkDescriptorBufferInfo {
-                buffer: b.buffer,
-                offset: 0,
-                range: VK_WHOLE_SIZE,
-            }).collect();
+            let buf_infos: Vec<VkDescriptorBufferInfo> = buffers
+                .iter()
+                .map(|b| VkDescriptorBufferInfo {
+                    buffer: b.buffer,
+                    offset: 0,
+                    range: VK_WHOLE_SIZE,
+                })
+                .collect();
 
-            let writes: Vec<VkWriteDescriptorSet> = buf_infos.iter().enumerate().map(|(i, info)| VkWriteDescriptorSet {
-                s_type: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                p_next: ptr::null(),
-                dst_set: desc_set,
-                dst_binding: i as u32,
-                dst_array_element: 0,
-                descriptor_count: 1,
-                descriptor_type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                p_image_info: ptr::null(),
-                p_buffer_info: info,
-                p_texel_buffer_view: ptr::null(),
-            }).collect();
+            let writes: Vec<VkWriteDescriptorSet> = buf_infos
+                .iter()
+                .enumerate()
+                .map(|(i, info)| VkWriteDescriptorSet {
+                    s_type: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    p_next: ptr::null(),
+                    dst_set: desc_set,
+                    dst_binding: i as u32,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    p_image_info: ptr::null(),
+                    p_buffer_info: info,
+                    p_texel_buffer_view: ptr::null(),
+                })
+                .collect();
 
-            (self.fns.update_desc_sets)(self.device, writes.len() as u32, writes.as_ptr(), 0, ptr::null());
+            (self.fns.update_desc_sets)(
+                self.device,
+                writes.len() as u32,
+                writes.as_ptr(),
+                0,
+                ptr::null(),
+            );
 
             // Record command buffer
             let begin_info = VkCommandBufferBeginInfo {
@@ -1501,33 +1717,63 @@ impl GpuContext {
                 p_inheritance_info: ptr::null(),
             };
             (self.fns.begin_cmd_buf)(self.cmd_buf, &begin_info);
-            (self.fns.cmd_bind_pipeline)(self.cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipe.pipeline);
-            (self.fns.cmd_bind_desc_sets)(self.cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                pipe.layout, 0, 1, &desc_set, 0, ptr::null());
+            (self.fns.cmd_bind_pipeline)(
+                self.cmd_buf,
+                VK_PIPELINE_BIND_POINT_COMPUTE,
+                pipe.pipeline,
+            );
+            (self.fns.cmd_bind_desc_sets)(
+                self.cmd_buf,
+                VK_PIPELINE_BIND_POINT_COMPUTE,
+                pipe.layout,
+                0,
+                1,
+                &desc_set,
+                0,
+                ptr::null(),
+            );
 
             if !push_constants.is_empty() {
-                (self.fns.cmd_push_constants)(self.cmd_buf, pipe.layout, VK_SHADER_STAGE_COMPUTE_BIT,
-                    0, push_constants.len() as u32, push_constants.as_ptr() as *const c_void);
+                (self.fns.cmd_push_constants)(
+                    self.cmd_buf,
+                    pipe.layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    push_constants.len() as u32,
+                    push_constants.as_ptr() as *const c_void,
+                );
             }
 
             let groups = (count + 63) / 64;
             (self.fns.cmd_dispatch)(self.cmd_buf, groups, 1, 1);
 
             // Memory barrier
-            let barriers: Vec<VkBufferMemoryBarrier> = buffers.iter().map(|b| VkBufferMemoryBarrier {
-                s_type: VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-                p_next: ptr::null(),
-                src_access_mask: VK_ACCESS_SHADER_WRITE_BIT,
-                dst_access_mask: VK_ACCESS_SHADER_READ_BIT,
-                src_queue_family_index: VK_QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: VK_QUEUE_FAMILY_IGNORED,
-                buffer: b.buffer,
-                offset: 0,
-                size: VK_WHOLE_SIZE,
-            }).collect();
-            (self.fns.cmd_pipeline_barrier)(self.cmd_buf,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                0, 0, ptr::null(), barriers.len() as u32, barriers.as_ptr(), 0, ptr::null());
+            let barriers: Vec<VkBufferMemoryBarrier> = buffers
+                .iter()
+                .map(|b| VkBufferMemoryBarrier {
+                    s_type: VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                    p_next: ptr::null(),
+                    src_access_mask: VK_ACCESS_SHADER_WRITE_BIT,
+                    dst_access_mask: VK_ACCESS_SHADER_READ_BIT,
+                    src_queue_family_index: VK_QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: VK_QUEUE_FAMILY_IGNORED,
+                    buffer: b.buffer,
+                    offset: 0,
+                    size: VK_WHOLE_SIZE,
+                })
+                .collect();
+            (self.fns.cmd_pipeline_barrier)(
+                self.cmd_buf,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0,
+                0,
+                ptr::null(),
+                barriers.len() as u32,
+                barriers.as_ptr(),
+                0,
+                ptr::null(),
+            );
 
             (self.fns.end_cmd_buf)(self.cmd_buf);
 
@@ -1571,7 +1817,13 @@ impl GpuContext {
     }
 
     /// Create buffer, trying preferred memory flags first, then falling back
-    fn create_buffer_usage_prefer(&self, size_bytes: usize, usage: u32, preferred: u32, fallback: u32) -> GpuBuf {
+    fn create_buffer_usage_prefer(
+        &self,
+        size_bytes: usize,
+        usage: u32,
+        preferred: u32,
+        fallback: u32,
+    ) -> GpuBuf {
         unsafe {
             let buf_info = VkBufferCreateInfo {
                 s_type: VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -1597,22 +1849,39 @@ impl GpuContext {
             (self.fns.bind_buf_mem)(self.device, buffer, memory, 0);
 
             let mut mapped: *mut c_void = ptr::null_mut();
-            if preferred & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0 || fallback & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0 {
+            if preferred & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0
+                || fallback & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0
+            {
                 (self.fns.map_mem)(self.device, memory, 0, VK_WHOLE_SIZE, 0, &mut mapped);
             }
 
-            GpuBuf { buffer, memory, mapped, size: size_bytes }
+            GpuBuf {
+                buffer,
+                memory,
+                mapped,
+                size: size_bytes,
+            }
         }
     }
 
-    unsafe fn create_image_alloc(&self, width: u32, height: u32, format: u32, usage: u32) -> (VkImage, VkDeviceMemory) {
+    unsafe fn create_image_alloc(
+        &self,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> (VkImage, VkDeviceMemory) {
         let img_info = VkImageCreateInfo {
             s_type: VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             p_next: ptr::null(),
             flags: 0,
             image_type: VK_IMAGE_TYPE_2D,
             format,
-            extent: VkExtent3D { width, height, depth: 1 },
+            extent: VkExtent3D {
+                width,
+                height,
+                depth: 1,
+            },
             mip_levels: 1,
             array_layers: 1,
             samples: VK_SAMPLE_COUNT_1_BIT,
@@ -1625,13 +1894,19 @@ impl GpuContext {
         };
         let mut image: VkImage = 0;
         let res = (self.fns.create_image)(self.device, &img_info, ptr::null(), &mut image);
-        if res != VK_SUCCESS { panic!("vkCreateImage failed: {}", res); }
+        if res != VK_SUCCESS {
+            panic!("vkCreateImage failed: {}", res);
+        }
 
         let mut reqs = std::mem::zeroed::<VkMemoryRequirements>();
         (self.fns.get_image_mem_reqs)(self.device, image, &mut reqs);
 
-        let mem_type = find_memory_type(&self.mem_props, reqs.memory_type_bits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-            .expect("No device-local memory for image");
+        let mem_type = find_memory_type(
+            &self.mem_props,
+            reqs.memory_type_bits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        )
+        .expect("No device-local memory for image");
 
         let memory = self.alloc_device_memory(reqs.size, mem_type);
         (self.fns.bind_image_mem)(self.device, image, memory, 0);
@@ -1722,10 +1997,13 @@ impl GpuContext {
             let dependency = VkSubpassDependency {
                 src_subpass: VK_SUBPASS_EXTERNAL,
                 dst_subpass: 0,
-                src_stage_mask: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                dst_stage_mask: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                src_stage_mask: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                    | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                dst_stage_mask: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                    | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
                 src_access_mask: 0,
-                dst_access_mask: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                dst_access_mask: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                    | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                 dependency_flags: 0,
             };
 
@@ -1742,8 +2020,11 @@ impl GpuContext {
             };
 
             let mut render_pass: VkRenderPass = 0;
-            let res = (self.fns.create_render_pass)(self.device, &rp_info, ptr::null(), &mut render_pass);
-            if res != VK_SUCCESS { panic!("vkCreateRenderPass failed: {}", res); }
+            let res =
+                (self.fns.create_render_pass)(self.device, &rp_info, ptr::null(), &mut render_pass);
+            if res != VK_SUCCESS {
+                panic!("vkCreateRenderPass failed: {}", res);
+            }
 
             // Create graphics pipeline
             let vert_spirv = gpu_shaders::build_vertex_shader();
@@ -1857,8 +2138,13 @@ impl GpuContext {
             };
 
             let stencil_nop = VkStencilOpState {
-                fail_op: 0, pass_op: 0, depth_fail_op: 0, compare_op: 0,
-                compare_mask: 0, write_mask: 0, reference: 0,
+                fail_op: 0,
+                pass_op: 0,
+                depth_fail_op: 0,
+                compare_op: 0,
+                compare_mask: 0,
+                write_mask: 0,
+                reference: 0,
             };
             let depth_stencil = VkPipelineDepthStencilStateCreateInfo {
                 s_type: VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
@@ -1921,7 +2207,12 @@ impl GpuContext {
                 p_push_constant_ranges: &push_range,
             };
             let mut gfx_layout: VkPipelineLayout = 0;
-            (self.fns.create_pipeline_layout)(self.device, &pipe_layout_info, ptr::null(), &mut gfx_layout);
+            (self.fns.create_pipeline_layout)(
+                self.device,
+                &pipe_layout_info,
+                ptr::null(),
+                &mut gfx_layout,
+            );
 
             let gfx_pipeline_info = VkGraphicsPipelineCreateInfo {
                 s_type: VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -1946,13 +2237,25 @@ impl GpuContext {
             };
 
             let mut gfx_pipeline: VkPipeline = 0;
-            let res = (self.fns.create_graphics_pipelines)(self.device, 0, 1, &gfx_pipeline_info, ptr::null(), &mut gfx_pipeline);
-            if res != VK_SUCCESS { panic!("vkCreateGraphicsPipelines failed: {}", res); }
+            let res = (self.fns.create_graphics_pipelines)(
+                self.device,
+                0,
+                1,
+                &gfx_pipeline_info,
+                ptr::null(),
+                &mut gfx_pipeline,
+            );
+            if res != VK_SUCCESS {
+                panic!("vkCreateGraphicsPipelines failed: {}", res);
+            }
 
             (self.fns.destroy_shader_module)(self.device, vert_module, ptr::null());
             (self.fns.destroy_shader_module)(self.device, frag_module, ptr::null());
 
-            self.gfx_pipeline = Some(GfxPipeline { pipeline: gfx_pipeline, layout: gfx_layout });
+            self.gfx_pipeline = Some(GfxPipeline {
+                pipeline: gfx_pipeline,
+                layout: gfx_layout,
+            });
 
             // Create render target at initial resolution
             self.create_render_target(width, height, render_pass);
@@ -1962,7 +2265,9 @@ impl GpuContext {
             self.dynamic_vbuf = Some(self.create_buffer_usage_prefer(
                 vbuf_size,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                    | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                    | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             ));
         }
@@ -1978,24 +2283,35 @@ impl GpuContext {
         };
         let mut module: VkShaderModule = 0;
         let res = (self.fns.create_shader_module)(self.device, &info, ptr::null(), &mut module);
-        if res != VK_SUCCESS { panic!("vkCreateShaderModule failed: {}", res); }
+        if res != VK_SUCCESS {
+            panic!("vkCreateShaderModule failed: {}", res);
+        }
         module
     }
 
     unsafe fn create_render_target(&mut self, width: u32, height: u32, render_pass: VkRenderPass) {
         // Color image
         let (color_image, color_memory) = self.create_image_alloc(
-            width, height, VK_FORMAT_B8G8R8A8_UNORM,
+            width,
+            height,
+            VK_FORMAT_B8G8R8A8_UNORM,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         );
-        let color_view = self.create_image_view(color_image, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+        let color_view = self.create_image_view(
+            color_image,
+            VK_FORMAT_B8G8R8A8_UNORM,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+        );
 
         // Depth image
         let (depth_image, depth_memory) = self.create_image_alloc(
-            width, height, VK_FORMAT_D32_SFLOAT,
+            width,
+            height,
+            VK_FORMAT_D32_SFLOAT,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
         );
-        let depth_view = self.create_image_view(depth_image, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT);
+        let depth_view =
+            self.create_image_view(depth_image, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT);
 
         // Framebuffer
         let attachments = [color_view, depth_view];
@@ -2015,10 +2331,23 @@ impl GpuContext {
 
         // Double-buffered readback — prefer HOST_CACHED for fast CPU reads
         let readback_size = (width * height * 4) as usize;
-        let readback_flags_pref = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
-        let readback_flags_fall = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        let readback_buf_0 = self.create_buffer_usage_prefer(readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, readback_flags_pref, readback_flags_fall);
-        let readback_buf_1 = self.create_buffer_usage_prefer(readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, readback_flags_pref, readback_flags_fall);
+        let readback_flags_pref = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+            | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        let readback_flags_fall =
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        let readback_buf_0 = self.create_buffer_usage_prefer(
+            readback_size,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            readback_flags_pref,
+            readback_flags_fall,
+        );
+        let readback_buf_1 = self.create_buffer_usage_prefer(
+            readback_size,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            readback_flags_pref,
+            readback_flags_fall,
+        );
 
         self.render_target = Some(GpuRenderTarget {
             color_image,
@@ -2062,7 +2391,9 @@ impl GpuContext {
         };
         // Don't recreate if same size
         if let Some(ref rt) = self.render_target {
-            if rt.width == width && rt.height == height { return; }
+            if rt.width == width && rt.height == height {
+                return;
+            }
         }
         self.destroy_render_target_resources();
         unsafe {
@@ -2098,7 +2429,9 @@ impl GpuContext {
             self.static_vbuf = Some(self.create_buffer_usage_prefer(
                 vert_bytes,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                    | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                    | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             ));
         }
@@ -2127,11 +2460,15 @@ impl GpuContext {
         height: u32,
         output: &mut [u32],
     ) {
-        if self.render_target.is_none() || self.gfx_pipeline.is_none() { return; }
+        if self.render_target.is_none() || self.gfx_pipeline.is_none() {
+            return;
+        }
 
         let has_static = self.static_vbuf.is_some() && self.static_vert_count > 0;
         let has_dynamic = !dynamic_verts.is_empty();
-        if !has_static && !has_dynamic { return; }
+        if !has_static && !has_dynamic {
+            return;
+        }
 
         // Resize render target if needed
         {
@@ -2145,7 +2482,9 @@ impl GpuContext {
                 }
                 self.gfx_has_prev_frame = false;
                 self.destroy_render_target_resources();
-                unsafe { self.create_render_target(width, height, rp); }
+                unsafe {
+                    self.create_render_target(width, height, rp);
+                }
             }
         }
 
@@ -2180,8 +2519,11 @@ impl GpuContext {
                         self.dynamic_vbuf = Some(self.create_buffer_usage_prefer(
                             vert_bytes * 2,
                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                                | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                         ));
                     }
                 }
@@ -2213,15 +2555,29 @@ impl GpuContext {
 
             // Begin render pass
             let clear_values = [
-                VkClearValue { color: VkClearColorValue { float32: clear_color } },
-                VkClearValue { depth_stencil: VkClearDepthStencilValue { depth: 1.0, stencil: 0 } },
+                VkClearValue {
+                    color: VkClearColorValue {
+                        float32: clear_color,
+                    },
+                },
+                VkClearValue {
+                    depth_stencil: VkClearDepthStencilValue {
+                        depth: 1.0,
+                        stencil: 0,
+                    },
+                },
             ];
             let rp_begin = VkRenderPassBeginInfo {
                 s_type: VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 p_next: ptr::null(),
                 render_pass: rt.render_pass,
                 framebuffer: rt.framebuffer,
-                render_area: VkRect2D { offset_x: 0, offset_y: 0, extent_w: width, extent_h: height },
+                render_area: VkRect2D {
+                    offset_x: 0,
+                    offset_y: 0,
+                    extent_w: width,
+                    extent_h: height,
+                },
                 clear_value_count: 2,
                 p_clear_values: clear_values.as_ptr(),
             };
@@ -2230,16 +2586,28 @@ impl GpuContext {
             // Bind pipeline + dynamic state
             (self.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_pipeline);
             let viewport = VkViewport {
-                x: 0.0, y: 0.0,
-                width: width as f32, height: height as f32,
-                min_depth: 0.0, max_depth: 1.0,
+                x: 0.0,
+                y: 0.0,
+                width: width as f32,
+                height: height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
             };
             (self.fns.cmd_set_viewport)(cmd, 0, 1, &viewport);
-            let scissor = VkRect2D { offset_x: 0, offset_y: 0, extent_w: width, extent_h: height };
+            let scissor = VkRect2D {
+                offset_x: 0,
+                offset_y: 0,
+                extent_w: width,
+                extent_h: height,
+            };
             (self.fns.cmd_set_scissor)(cmd, 0, 1, &scissor);
             (self.fns.cmd_push_constants)(
-                cmd, gfx_layout, VK_SHADER_STAGE_VERTEX_BIT,
-                0, 128, push_constants as *const GpuPushConstants as *const c_void,
+                cmd,
+                gfx_layout,
+                VK_SHADER_STAGE_VERTEX_BIT,
+                0,
+                128,
+                push_constants as *const GpuPushConstants as *const c_void,
             );
 
             // Draw static vertices (single draw call — GPU handles 1.15M verts efficiently)
@@ -2283,8 +2651,13 @@ impl GpuContext {
                 cmd,
                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT,
-                0, 0, ptr::null(), 0, ptr::null(),
-                1, &barrier as *const VkImageMemoryBarrier as *const c_void,
+                0,
+                0,
+                ptr::null(),
+                0,
+                ptr::null(),
+                1,
+                &barrier as *const VkImageMemoryBarrier as *const c_void,
             );
 
             // Copy to current frame's readback buffer
@@ -2301,11 +2674,19 @@ impl GpuContext {
                 image_offset_x: 0,
                 image_offset_y: 0,
                 image_offset_z: 0,
-                image_extent: VkExtent3D { width, height, depth: 1 },
+                image_extent: VkExtent3D {
+                    width,
+                    height,
+                    depth: 1,
+                },
             };
             (self.fns.cmd_copy_image_to_buffer)(
-                cmd, rt.color_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                rt.readback_bufs[curr].buffer, 1, &region,
+                cmd,
+                rt.color_image,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                rt.readback_bufs[curr].buffer,
+                1,
+                &region,
             );
 
             // Barrier: transfer → host read
@@ -2324,9 +2705,13 @@ impl GpuContext {
                 cmd,
                 VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_PIPELINE_STAGE_HOST_BIT,
-                0, 0, ptr::null(),
-                1, &buf_barrier,
-                0, ptr::null(),
+                0,
+                0,
+                ptr::null(),
+                1,
+                &buf_barrier,
+                0,
+                ptr::null(),
             );
 
             (self.fns.end_cmd_buf)(cmd);

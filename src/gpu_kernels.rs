@@ -1,5 +1,6 @@
-// SPIR-V compute shader binaries, built programmatically
-// Each shader is a function returning Vec<u32> (SPIR-V words)
+//! SPIR-V compute shader binaries, built programmatically in Rust.
+//! Each shader is a function returning `Vec<u32>` of SPIR-V words —
+//! no external shader compiler required.
 
 #![allow(unused)]
 
@@ -147,8 +148,12 @@ pub fn build_particle_update() -> Vec<u32> {
     let ty_buf = 13;
     let ty_ptr_sb_buf = 14;
     // 7 buffer variables: 15-21
-    let buf_px = 15u32; let buf_py = 16; let buf_pz = 17;
-    let buf_vx = 18; let buf_vy = 19; let buf_vz = 20;
+    let buf_px = 15u32;
+    let buf_py = 16;
+    let buf_pz = 17;
+    let buf_vx = 18;
+    let buf_vy = 19;
+    let buf_vz = 20;
     let buf_lt = 21;
     let ty_ptr_sb_f32 = 22;
     let ty_bool = 23;
@@ -162,7 +167,13 @@ pub fn build_particle_update() -> Vec<u32> {
     let (lbl_entry, lbl_merge, lbl_ret, lbl_body) = (30, 31, 32, 33);
 
     let mut next = 34u32;
-    macro_rules! nid { () => {{ let id = next; next += 1; id }} }
+    macro_rules! nid {
+        () => {{
+            let id = next;
+            next += 1;
+            id
+        }};
+    }
 
     emit!(s, OP_CAP, 1);
     emit!(s, OP_MEM_MODEL, 0, 1);
@@ -174,7 +185,10 @@ pub fn build_particle_update() -> Vec<u32> {
     emit!(s, OP_DECORATE, ty_buf, DEC_BLOCK);
     emit!(s, OP_MEMBER_DEC, ty_buf, 0, DEC_OFFSET, 0);
     emit!(s, OP_DECORATE, ty_rt_arr, DEC_STRIDE, 4);
-    for (i, &var) in [buf_px, buf_py, buf_pz, buf_vx, buf_vy, buf_vz, buf_lt].iter().enumerate() {
+    for (i, &var) in [buf_px, buf_py, buf_pz, buf_vx, buf_vy, buf_vz, buf_lt]
+        .iter()
+        .enumerate()
+    {
         emit!(s, OP_DECORATE, var, DEC_DESC_SET, 0);
         emit!(s, OP_DECORATE, var, DEC_BINDING, i as u32);
     }
@@ -213,11 +227,13 @@ pub fn build_particle_update() -> Vec<u32> {
     emit!(s, OP_FN, ty_void, main_fn, 0, ty_fn);
     emit!(s, OP_LABEL, lbl_entry);
 
-    let r_gp = nid!(); let r_gid = nid!();
+    let r_gp = nid!();
+    let r_gid = nid!();
     emit!(s, OP_ACCESS, ty_ptr_in_u32, r_gp, gid_var, c_0);
     emit!(s, OP_LOAD, ty_u32, r_gid, r_gp);
 
-    let r_cp = nid!(); let r_cnt = nid!();
+    let r_cp = nid!();
+    let r_cnt = nid!();
     emit!(s, OP_ACCESS, ty_ptr_pc_u32, r_cp, pc_var, c_0);
     emit!(s, OP_LOAD, ty_u32, r_cnt, r_cp);
 
@@ -232,24 +248,29 @@ pub fn build_particle_update() -> Vec<u32> {
     emit!(s, OP_LABEL, lbl_body);
 
     // Load dt and gravity
-    let r_dtp = nid!(); let r_dt = nid!();
+    let r_dtp = nid!();
+    let r_dt = nid!();
     emit!(s, OP_ACCESS, ty_ptr_pc_f32, r_dtp, pc_var, c_1);
     emit!(s, OP_LOAD, ty_f32, r_dt, r_dtp);
 
-    let r_grvp = nid!(); let r_grv = nid!();
+    let r_grvp = nid!();
+    let r_grv = nid!();
     emit!(s, OP_ACCESS, ty_ptr_pc_f32, r_grvp, pc_var, c_2);
     emit!(s, OP_LOAD, ty_f32, r_grv, r_grvp);
 
     // Load velocities
-    let r_vxp = nid!(); let r_vx = nid!();
+    let r_vxp = nid!();
+    let r_vx = nid!();
     emit!(s, OP_ACCESS, ty_ptr_sb_f32, r_vxp, buf_vx, c_0, r_gid);
     emit!(s, OP_LOAD, ty_f32, r_vx, r_vxp);
 
-    let r_vyp = nid!(); let r_vy = nid!();
+    let r_vyp = nid!();
+    let r_vy = nid!();
     emit!(s, OP_ACCESS, ty_ptr_sb_f32, r_vyp, buf_vy, c_0, r_gid);
     emit!(s, OP_LOAD, ty_f32, r_vy, r_vyp);
 
-    let r_vzp = nid!(); let r_vz = nid!();
+    let r_vzp = nid!();
+    let r_vz = nid!();
     emit!(s, OP_ACCESS, ty_ptr_sb_f32, r_vzp, buf_vz, c_0, r_gid);
     emit!(s, OP_LOAD, ty_f32, r_vz, r_vzp);
 
@@ -261,32 +282,39 @@ pub fn build_particle_update() -> Vec<u32> {
     emit!(s, OP_STORE, r_vyp, r_vy2);
 
     // Load positions and update: pos += vel * dt
-    let r_pxp = nid!(); let r_px = nid!();
+    let r_pxp = nid!();
+    let r_px = nid!();
     emit!(s, OP_ACCESS, ty_ptr_sb_f32, r_pxp, buf_px, c_0, r_gid);
     emit!(s, OP_LOAD, ty_f32, r_px, r_pxp);
-    let r_dx = nid!(); let r_px2 = nid!();
+    let r_dx = nid!();
+    let r_px2 = nid!();
     emit!(s, OP_FMUL, ty_f32, r_dx, r_vx, r_dt);
     emit!(s, OP_FADD, ty_f32, r_px2, r_px, r_dx);
     emit!(s, OP_STORE, r_pxp, r_px2);
 
-    let r_pyp = nid!(); let r_py = nid!();
+    let r_pyp = nid!();
+    let r_py = nid!();
     emit!(s, OP_ACCESS, ty_ptr_sb_f32, r_pyp, buf_py, c_0, r_gid);
     emit!(s, OP_LOAD, ty_f32, r_py, r_pyp);
-    let r_dy = nid!(); let r_py2 = nid!();
+    let r_dy = nid!();
+    let r_py2 = nid!();
     emit!(s, OP_FMUL, ty_f32, r_dy, r_vy2, r_dt);
     emit!(s, OP_FADD, ty_f32, r_py2, r_py, r_dy);
     emit!(s, OP_STORE, r_pyp, r_py2);
 
-    let r_pzp = nid!(); let r_pz = nid!();
+    let r_pzp = nid!();
+    let r_pz = nid!();
     emit!(s, OP_ACCESS, ty_ptr_sb_f32, r_pzp, buf_pz, c_0, r_gid);
     emit!(s, OP_LOAD, ty_f32, r_pz, r_pzp);
-    let r_dz = nid!(); let r_pz2 = nid!();
+    let r_dz = nid!();
+    let r_pz2 = nid!();
     emit!(s, OP_FMUL, ty_f32, r_dz, r_vz, r_dt);
     emit!(s, OP_FADD, ty_f32, r_pz2, r_pz, r_dz);
     emit!(s, OP_STORE, r_pzp, r_pz2);
 
     // lifetime -= dt
-    let r_ltp = nid!(); let r_lt = nid!();
+    let r_ltp = nid!();
+    let r_lt = nid!();
     emit!(s, OP_ACCESS, ty_ptr_sb_f32, r_ltp, buf_lt, c_0, r_gid);
     emit!(s, OP_LOAD, ty_f32, r_lt, r_ltp);
     let r_lt2 = nid!();

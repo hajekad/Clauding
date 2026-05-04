@@ -1,7 +1,7 @@
 //! Skeletal animation runtime — evaluates FBX animation clips and skins meshes.
 //! Designed for the Mixamo skeleton with 65 bones driving the beauty_girl mesh.
 
-use crate::fbx_anim::{FbxSkeleton, AnimationClip, BoneChannel};
+use crate::fbx_anim::{AnimationClip, BoneChannel, FbxSkeleton};
 use crate::math::*;
 use crate::state::WorldTri;
 
@@ -36,7 +36,10 @@ pub fn compute_bind_pose(skeleton: &FbxSkeleton) -> Vec<Mat4> {
 
 /// Compute raw (un-normalized) bone world transforms from the skeleton bind pose,
 /// optionally applying animation channel overrides.
-fn compute_raw_pose(skeleton: &FbxSkeleton, clip_and_time: Option<(&AnimationClip, f32)>) -> Vec<Mat4> {
+fn compute_raw_pose(
+    skeleton: &FbxSkeleton,
+    clip_and_time: Option<(&AnimationClip, f32)>,
+) -> Vec<Mat4> {
     let n = skeleton.bones.len();
     let mut world_transforms: Vec<Mat4> = vec![M4_IDENTITY; n];
 
@@ -69,7 +72,9 @@ fn compute_raw_pose(skeleton: &FbxSkeleton, clip_and_time: Option<(&AnimationCli
 
         let pre = bone.pre_rotation;
         let pre_quat = quat_from_euler_xyz(
-            pre[0].to_radians(), pre[1].to_radians(), pre[2].to_radians()
+            pre[0].to_radians(),
+            pre[1].to_radians(),
+            pre[2].to_radians(),
         );
 
         // FBX order: local = T * Rpre * R → rotation part = Rpre * R
@@ -120,7 +125,11 @@ fn interpolate_channel_rotation(channel: &BoneChannel, t: f32) -> [f32; 3] {
     }
     let k1 = k0 + 1;
     let dt = channel.times[k1] - channel.times[k0];
-    let frac = if dt > 0.0 { (t - channel.times[k0]) / dt } else { 0.0 };
+    let frac = if dt > 0.0 {
+        (t - channel.times[k0]) / dt
+    } else {
+        0.0
+    };
 
     // Lerp the Euler angles. FBX keyframes are dense enough (60fps) that
     // the inter-frame deltas are small, making linear interpolation safe.
@@ -133,7 +142,11 @@ fn interpolate_channel_rotation(channel: &BoneChannel, t: f32) -> [f32; 3] {
     ]
 }
 
-fn interpolate_channel_translation(channel: &BoneChannel, trans_keys: &[[f32; 3]], t: f32) -> [f32; 3] {
+fn interpolate_channel_translation(
+    channel: &BoneChannel,
+    trans_keys: &[[f32; 3]],
+    t: f32,
+) -> [f32; 3] {
     if trans_keys.is_empty() {
         return [0.0; 3];
     }
@@ -153,7 +166,11 @@ fn interpolate_channel_translation(channel: &BoneChannel, trans_keys: &[[f32; 3]
     }
     let k1 = k0 + 1;
     let dt = channel.times[k1] - channel.times[k0];
-    let frac = if dt > 0.0 { (t - channel.times[k0]) / dt } else { 0.0 };
+    let frac = if dt > 0.0 {
+        (t - channel.times[k0]) / dt
+    } else {
+        0.0
+    };
 
     let t0 = trans_keys[k0];
     let t1 = trans_keys[k1];
@@ -172,33 +189,46 @@ pub fn compute_bone_assignments(
     bind_world: &[Mat4],
     tris: &[WorldTri],
 ) -> Vec<usize> {
-    let bone_positions: Vec<Vec3> = bind_world.iter()
-        .map(|m| [m[12], m[13], m[14]])
-        .collect();
+    let bone_positions: Vec<Vec3> = bind_world.iter().map(|m| [m[12], m[13], m[14]]).collect();
 
-    let hips_idx = skeleton.bones.iter()
+    let hips_idx = skeleton
+        .bones
+        .iter()
         .position(|b| b.name.contains("Hips") && !b.name.contains("UpLeg"))
         .unwrap_or(0);
-    let head_idx = skeleton.bones.iter()
+    let head_idx = skeleton
+        .bones
+        .iter()
         .position(|b| b.name.contains("Head") && !b.name.contains("Top"))
         .unwrap_or(0);
     let head_y = bone_positions[head_idx][1];
 
     // Classify each bone as left(1), right(-1), or center(0)
-    let bone_side: Vec<i8> = skeleton.bones.iter().map(|b| {
-        if b.name.contains("Left") { 1 }
-        else if b.name.contains("Right") { -1 }
-        else { 0 }
-    }).collect();
+    let bone_side: Vec<i8> = skeleton
+        .bones
+        .iter()
+        .map(|b| {
+            if b.name.contains("Left") {
+                1
+            } else if b.name.contains("Right") {
+                -1
+            } else {
+                0
+            }
+        })
+        .collect();
 
     // Skip finger and end bones
     let important_bones: Vec<usize> = (0..skeleton.bones.len())
         .filter(|&i| {
             let name = &skeleton.bones[i].name;
-            !name.contains("_End") && !name.contains("End") &&
-            !name.contains("Thumb") && !name.contains("Index") &&
-            !name.contains("Middle") && !name.contains("Ring") &&
-            !name.contains("Pinky")
+            !name.contains("_End")
+                && !name.contains("End")
+                && !name.contains("Thumb")
+                && !name.contains("Index")
+                && !name.contains("Middle")
+                && !name.contains("Ring")
+                && !name.contains("Pinky")
         })
         .collect();
 
@@ -213,9 +243,13 @@ pub fn compute_bone_assignments(
             }
 
             // Vertex side: +X = left, -X = right, near center = either
-            let v_side: i8 = if v[0] > 0.02 { 1 }
-                             else if v[0] < -0.02 { -1 }
-                             else { 0 };
+            let v_side: i8 = if v[0] > 0.02 {
+                1
+            } else if v[0] < -0.02 {
+                -1
+            } else {
+                0
+            };
 
             let mut best_bone = hips_idx;
             let mut best_dist = f32::MAX;
@@ -230,7 +264,7 @@ pub fn compute_bone_assignments(
                 let dx = v[0] - bp[0];
                 let dy = v[1] - bp[1];
                 let dz = v[2] - bp[2];
-                let mut d = dx*dx + dy*dy + dz*dz;
+                let mut d = dx * dx + dy * dy + dz * dz;
 
                 // Bias: center bones (Spine, Hips, Neck, Head) get priority
                 // over limb bones when distances are similar. This prevents
@@ -256,9 +290,12 @@ pub fn compute_bone_assignments(
 /// If a bone is a finger bone, remap it to the nearest Hand bone
 fn remap_to_parent_if_finger(skeleton: &FbxSkeleton, bone_idx: usize) -> usize {
     let name = &skeleton.bones[bone_idx].name;
-    if name.contains("Thumb") || name.contains("Index") ||
-       name.contains("Middle") || name.contains("Ring") ||
-       name.contains("Pinky") {
+    if name.contains("Thumb")
+        || name.contains("Index")
+        || name.contains("Middle")
+        || name.contains("Ring")
+        || name.contains("Pinky")
+    {
         // Walk up to find the Hand bone
         let mut idx = bone_idx;
         for _ in 0..5 {
@@ -308,7 +345,9 @@ pub fn skin_mesh(
         let tri_bone = if vi < bone_assignments.len() {
             let bi = bone_assignments[vi];
             if bi < skin_matrices.len() { bi } else { 0 }
-        } else { 0 };
+        } else {
+            0
+        };
 
         for v in &mut tri.v {
             if tri_bone < skin_matrices.len() {
@@ -331,19 +370,25 @@ pub fn recenter_skinned_mesh(
     hips_bone: usize,
 ) {
     // The animated Hips position in model space
-    let anim_hips = [animated_transforms[hips_bone][12],
-                     animated_transforms[hips_bone][13],
-                     animated_transforms[hips_bone][14]];
+    let anim_hips = [
+        animated_transforms[hips_bone][12],
+        animated_transforms[hips_bone][13],
+        animated_transforms[hips_bone][14],
+    ];
     // The bind Hips position
-    let bind_hips = [bind_transforms[hips_bone][12],
-                     bind_transforms[hips_bone][13],
-                     bind_transforms[hips_bone][14]];
+    let bind_hips = [
+        bind_transforms[hips_bone][12],
+        bind_transforms[hips_bone][13],
+        bind_transforms[hips_bone][14],
+    ];
 
     // Offset to subtract: remove horizontal root motion, keep vertical bobbing
     let dx = anim_hips[0] - bind_hips[0];
     let dz = anim_hips[2] - bind_hips[2];
 
-    if dx.abs() < 0.001 && dz.abs() < 0.001 { return; }
+    if dx.abs() < 0.001 && dz.abs() < 0.001 {
+        return;
+    }
 
     for tri in output.iter_mut() {
         for v in &mut tri.v {
@@ -361,9 +406,9 @@ pub struct AnimationData {
     pub skeleton: FbxSkeleton,
     pub clips: Vec<AnimationClip>,
     pub model_bone_assignments: Vec<Vec<usize>>, // per-model, per-vertex bone index
-    pub inverse_bind: Vec<Mat4>,         // inverse bind-pose matrices
-    pub bind_transforms: Vec<Mat4>,      // bind-pose world transforms
-    pub hips_bone: usize,                // index of the Hips bone
+    pub inverse_bind: Vec<Mat4>,                 // inverse bind-pose matrices
+    pub bind_transforms: Vec<Mat4>,              // bind-pose world transforms
+    pub hips_bone: usize,                        // index of the Hips bone
 }
 
 impl AnimationData {
@@ -394,15 +439,21 @@ impl AnimationData {
         } else {
             compute_bind_pose(&skeleton)
         };
-        let inverse_bind: Vec<Mat4> = bind_transforms.iter()
+        let inverse_bind: Vec<Mat4> = bind_transforms
+            .iter()
             .map(|m| m4_inverse_affine(m))
             .collect();
-        let hips_bone = skeleton.bones.iter()
+        let hips_bone = skeleton
+            .bones
+            .iter()
             .position(|b| b.name.contains("Hips") && !b.name.contains("UpLeg"))
             .unwrap_or(0);
 
-        eprintln!("[skeleton_anim] hips Y={:.3}, {} bones",
-            bind_transforms[hips_bone][13], skeleton.bones.len());
+        eprintln!(
+            "[skeleton_anim] hips Y={:.3}, {} bones",
+            bind_transforms[hips_bone][13],
+            skeleton.bones.len()
+        );
 
         // Compute bone assignments only for models that were rigged through Mixamo.
         // Other models get empty assignments → will render in bind pose (T-pose).
@@ -415,10 +466,18 @@ impl AnimationData {
 
             if has_obj && !model_tris.is_empty() {
                 let assignments = compute_bone_assignments(&skeleton, &bind_transforms, model_tris);
-                eprintln!("[skeleton_anim] model[{}] '{}': {} verts rigged", i, name, assignments.len());
+                eprintln!(
+                    "[skeleton_anim] model[{}] '{}': {} verts rigged",
+                    i,
+                    name,
+                    assignments.len()
+                );
                 model_bone_assignments.push(assignments);
             } else {
-                eprintln!("[skeleton_anim] model[{}] '{}': no OBJ → bind pose only", i, name);
+                eprintln!(
+                    "[skeleton_anim] model[{}] '{}': no OBJ → bind pose only",
+                    i, name
+                );
                 model_bone_assignments.push(Vec::new()); // empty = no animation
             }
         }
@@ -435,12 +494,18 @@ impl AnimationData {
 
     /// Backward-compatible load for a single mesh (used by body_view)
     pub fn load_single(anim_dir: &str, mesh_tris: &[WorldTri]) -> Self {
-        Self::load(anim_dir, &[mesh_tris.to_vec()], &["beauty_girl".to_string()])
+        Self::load(
+            anim_dir,
+            &[mesh_tris.to_vec()],
+            &["beauty_girl".to_string()],
+        )
     }
 
     /// Check if animation data is available
     pub fn is_ready(&self) -> bool {
-        !self.skeleton.bones.is_empty() && !self.clips.is_empty() && !self.model_bone_assignments.is_empty()
+        !self.skeleton.bones.is_empty()
+            && !self.clips.is_empty()
+            && !self.model_bone_assignments.is_empty()
     }
 
     /// Determine which clip + time to use based on game state.
@@ -459,7 +524,9 @@ impl AnimationData {
         sprinting: bool,
         attack_type: u8, // 0=punch, 1=hook, 2=kick, 3=dropkick
     ) -> Option<(usize, f32)> {
-        if !self.is_ready() { return None; }
+        if !self.is_ready() {
+            return None;
+        }
 
         // Sitting pose
         if sitting && CLIP_SITTING_POSE < self.clips.len() {
@@ -476,7 +543,8 @@ impl AnimationData {
             };
             if clip_idx < self.clips.len() {
                 let clip = &self.clips[clip_idx];
-                let t = (attack_phase / crate::state::ATTACK_ANIM_DURATION).clamp(0.0, 1.0) * clip.duration;
+                let t = (attack_phase / crate::state::ATTACK_ANIM_DURATION).clamp(0.0, 1.0)
+                    * clip.duration;
                 return Some((clip_idx, t));
             }
         }
@@ -515,8 +583,10 @@ impl AnimationData {
     ) {
         let assignments = self.model_bone_assignments.get(model_index);
         // Fall back to bind pose if no assignments (model not rigged) or no clips
-        if !self.is_ready() || clip_index >= self.clips.len()
-            || assignments.is_none() || assignments.map_or(true, |a| a.is_empty())
+        if !self.is_ready()
+            || clip_index >= self.clips.len()
+            || assignments.is_none()
+            || assignments.map_or(true, |a| a.is_empty())
         {
             output.extend_from_slice(bind_tris);
             return;
@@ -526,7 +596,18 @@ impl AnimationData {
         let animated = evaluate_pose(&self.skeleton, clip, time);
 
         let start = output.len();
-        skin_mesh(bind_tris, assignments.unwrap(), &animated, &self.inverse_bind, output);
-        recenter_skinned_mesh(&mut output[start..], &animated, &self.bind_transforms, self.hips_bone);
+        skin_mesh(
+            bind_tris,
+            assignments.unwrap(),
+            &animated,
+            &self.inverse_bind,
+            output,
+        );
+        recenter_skinned_mesh(
+            &mut output[start..],
+            &animated,
+            &self.bind_transforms,
+            self.hips_bone,
+        );
     }
 }

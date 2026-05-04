@@ -1,10 +1,10 @@
-// Menu system: title screen, loading, pause, settings, keybinds, new world
-// AAA dark/gold aesthetic inspired by Tarkov/Warframe/Dune
+//! Menu system: title screen, loading, pause, settings, keybinds, new world.
+//! Dark/gold aesthetic inspired by Tarkov, Warframe, and Dune.
 
+use crate::color::{darken, lerp_color};
+use crate::hud::{draw_rect, draw_text, draw_text_bytes};
+use crate::input::{ALL_ACTIONS, KeyBinds, key_name};
 use crate::raster::Framebuffer;
-use crate::input::{KeyBinds, ALL_ACTIONS, key_name};
-use crate::hud::{draw_text, draw_text_bytes, draw_rect};
-use crate::color::{lerp_color, darken};
 
 // Raw scancodes for menu navigation (never rebindable)
 const KEY_ESC: usize = 1;
@@ -34,13 +34,13 @@ const BORDER_ACCENT: u32 = 0xFF6A5A30;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum MenuState {
-    Title,      // startup main menu (before world loads)
-    Loading,    // world generation in progress
-    None,       // gameplay (no menu)
-    Paused,     // ESC pause menu
-    NewWorld,   // seed input (from pause menu)
-    Settings,   // settings
-    Keybinds,   // keybind editor
+    Title,    // startup main menu (before world loads)
+    Loading,  // world generation in progress
+    None,     // gameplay (no menu)
+    Paused,   // ESC pause menu
+    NewWorld, // seed input (from pause menu)
+    Settings, // settings
+    Keybinds, // keybind editor
 }
 
 pub struct MenuData {
@@ -52,9 +52,9 @@ pub struct MenuData {
     pub seed_len: usize,
     pub regenerate_seed: Option<u64>,
     // Title/flow control
-    pub start_new_game: bool,       // signal to main.rs: begin world gen
-    pub came_from_title: bool,      // Settings was opened from Title (not Pause)
-    pub loading_seed: u64,          // seed being loaded (for display)
+    pub start_new_game: bool,  // signal to main.rs: begin world gen
+    pub came_from_title: bool, // Settings was opened from Title (not Pause)
+    pub loading_seed: u64,     // seed being loaded (for display)
 }
 
 impl MenuData {
@@ -139,7 +139,11 @@ pub fn sys_menu_input(
             if menu.cursor == 2 && character_count > 0 {
                 // Left/Right to cycle character model
                 if edge(keys, prev_keys, KEY_LEFT) {
-                    *player_model_index = if *player_model_index == 0 { character_count - 1 } else { *player_model_index - 1 };
+                    *player_model_index = if *player_model_index == 0 {
+                        character_count - 1
+                    } else {
+                        *player_model_index - 1
+                    };
                 }
                 if edge(keys, prev_keys, KEY_RIGHT) {
                     *player_model_index = (*player_model_index + 1) % character_count;
@@ -185,7 +189,11 @@ pub fn sys_menu_input(
             if menu.cursor == 0 {
                 for sc in 2..=11 {
                     if edge(keys, prev_keys, sc) && menu.seed_len < 19 {
-                        let digit = if sc == 11 { b'0' } else { b'0' + (sc as u8 - 1) };
+                        let digit = if sc == 11 {
+                            b'0'
+                        } else {
+                            b'0' + (sc as u8 - 1)
+                        };
                         menu.seed_digits[menu.seed_len] = digit;
                         menu.seed_len += 1;
                     }
@@ -237,18 +245,27 @@ pub fn sys_menu_input(
             }
             if menu.cursor == 1 {
                 if edge(keys, prev_keys, KEY_LEFT) {
-                    *mouse_sensitivity = (*mouse_sensitivity - SENSITIVITY_STEP).max(SENSITIVITY_MIN);
+                    *mouse_sensitivity =
+                        (*mouse_sensitivity - SENSITIVITY_STEP).max(SENSITIVITY_MIN);
                 }
                 if edge(keys, prev_keys, KEY_RIGHT) {
-                    *mouse_sensitivity = (*mouse_sensitivity + SENSITIVITY_STEP).min(SENSITIVITY_MAX);
+                    *mouse_sensitivity =
+                        (*mouse_sensitivity + SENSITIVITY_STEP).min(SENSITIVITY_MAX);
                 }
             }
             if edge(keys, prev_keys, KEY_ENTER) {
                 match menu.cursor {
-                    0 => { menu.state = MenuState::Keybinds; menu.cursor = 0; }
+                    0 => {
+                        menu.state = MenuState::Keybinds;
+                        menu.cursor = 0;
+                    }
                     1 => {}
-                    2 => { *invert_x = !*invert_x; }
-                    3 => { *invert_y = !*invert_y; }
+                    2 => {
+                        *invert_x = !*invert_x;
+                    }
+                    3 => {
+                        *invert_y = !*invert_y;
+                    }
                     LAST => {
                         if menu.came_from_title {
                             menu.state = MenuState::Title;
@@ -269,7 +286,9 @@ pub fn sys_menu_input(
                     return false;
                 }
                 for sc in 0..256 {
-                    if sc == KEY_ESC { continue; }
+                    if sc == KEY_ESC {
+                        continue;
+                    }
                     if keys[sc] && !prev_keys[sc] {
                         keybinds.set_key(ALL_ACTIONS[action_idx], sc);
                         menu.rebinding = None;
@@ -306,11 +325,18 @@ pub fn sys_menu_input(
 }
 
 pub fn sys_menu_render(
-    fb: &mut Framebuffer, menu: &MenuData, keybinds: &KeyBinds,
-    sensitivity: f32, invert_x: bool, invert_y: bool,
-    player_model_index: usize, character_names: &[String],
+    fb: &mut Framebuffer,
+    menu: &MenuData,
+    keybinds: &KeyBinds,
+    sensitivity: f32,
+    invert_x: bool,
+    invert_y: bool,
+    player_model_index: usize,
+    character_names: &[String],
 ) {
-    if menu.state == MenuState::None { return; }
+    if menu.state == MenuState::None {
+        return;
+    }
 
     let cx = fb.w / 2;
     let cy = fb.h / 2;
@@ -362,7 +388,14 @@ pub fn sys_menu_render(
             let hint_scale = 2;
             let hint = "ARROWS TO NAVIGATE   ENTER TO SELECT";
             let hw = text_pw(hint, hint_scale);
-            draw_text(fb, cx - hw / 2, fb.h - hint_scale * 5 - hint_scale * 6, hint, hint_scale, TEXT_DIM);
+            draw_text(
+                fb,
+                cx - hw / 2,
+                fb.h - hint_scale * 5 - hint_scale * 6,
+                hint,
+                hint_scale,
+                TEXT_DIM,
+            );
         }
         MenuState::Loading => {
             draw_atmospheric_bg(fb);
@@ -378,10 +411,20 @@ pub fn sys_menu_render(
             let seed_scale = 3;
             let mut seed_buf = [b' '; 64];
             let mut si = 0;
-            for &c in b"SEED  " { if si < 64 { seed_buf[si] = c; si += 1; } }
+            for &c in b"SEED  " {
+                if si < 64 {
+                    seed_buf[si] = c;
+                    si += 1;
+                }
+            }
             let mut digit_buf = [0u8; 20];
             let dlen = u64_to_digits(menu.loading_seed, &mut digit_buf);
-            for j in 0..dlen { if si < 64 { seed_buf[si] = digit_buf[j]; si += 1; } }
+            for j in 0..dlen {
+                if si < 64 {
+                    seed_buf[si] = digit_buf[j];
+                    si += 1;
+                }
+            }
             let seed_w = text_pw_buf(&seed_buf, seed_scale);
             let seed_y = title_y + title_scale * 5 + title_scale * 4;
             draw_text_bytes(fb, cx - seed_w / 2, seed_y, &seed_buf, seed_scale, TEXT_DIM);
@@ -426,7 +469,13 @@ pub fn sys_menu_render(
 
             // Separator
             let sep_y = by + title_scale * 5 + scale * 6;
-            draw_hline(fb, bx + scale * 2, sep_y, panel_w - scale * 4, BORDER_ACCENT);
+            draw_hline(
+                fb,
+                bx + scale * 2,
+                sep_y,
+                panel_w - scale * 4,
+                BORDER_ACCENT,
+            );
 
             // Items
             let items_y = sep_y + scale * 3;
@@ -474,7 +523,13 @@ pub fn sys_menu_render(
             draw_text(fb, cx - tw / 2, by + scale * 4, title, title_scale, GOLD);
 
             let sep_y = by + title_scale * 5 + scale * 6;
-            draw_hline(fb, bx + scale * 2, sep_y, panel_w - scale * 4, BORDER_ACCENT);
+            draw_hline(
+                fb,
+                bx + scale * 2,
+                sep_y,
+                panel_w - scale * 4,
+                BORDER_ACCENT,
+            );
 
             let items_y = sep_y + scale * 3;
 
@@ -492,7 +547,14 @@ pub fn sys_menu_render(
             // Hint
             {
                 let y = items_y + line_h;
-                draw_text(fb, bx + scale * 4 + text_pw("  ", scale), y, "EMPTY - RANDOM", 2, TEXT_DIM);
+                draw_text(
+                    fb,
+                    bx + scale * 4 + text_pw("  ", scale),
+                    y,
+                    "EMPTY - RANDOM",
+                    2,
+                    TEXT_DIM,
+                );
             }
             // Separator before buttons
             let btn_sep_y = items_y + line_h * 2;
@@ -546,7 +608,13 @@ pub fn sys_menu_render(
             draw_text(fb, cx - tw / 2, by + scale * 4, title, title_scale, GOLD);
 
             let sep_y = by + title_scale * 5 + scale * 6;
-            draw_hline(fb, bx + scale * 2, sep_y, panel_w - scale * 4, BORDER_ACCENT);
+            draw_hline(
+                fb,
+                bx + scale * 2,
+                sep_y,
+                panel_w - scale * 4,
+                BORDER_ACCENT,
+            );
 
             let items_y = sep_y + scale * 3;
             let mut row = 0;
@@ -558,7 +626,9 @@ pub fn sys_menu_render(
                 let c = if sel { TEXT_SEL } else { TEXT_DIM };
                 let iw = text_pw("KEYBINDS", scale);
                 draw_text(fb, cx - iw / 2, y, "KEYBINDS", scale, c);
-                if sel { draw_hline(fb, cx - iw / 2 - scale * 4, y + scale * 2, scale * 2, GOLD); }
+                if sel {
+                    draw_hline(fb, cx - iw / 2 - scale * 4, y + scale * 2, scale * 2, GOLD);
+                }
                 row += 1;
             }
             // Sensitivity
@@ -575,7 +645,9 @@ pub fn sys_menu_render(
                     let slider_w = 120;
                     let slider_y = y + scale;
                     draw_rect(fb, slider_x, slider_y, slider_w, scale * 2, BORDER);
-                    let fill = ((sensitivity - SENSITIVITY_MIN) / (SENSITIVITY_MAX - SENSITIVITY_MIN)).clamp(0.0, 1.0);
+                    let fill = ((sensitivity - SENSITIVITY_MIN)
+                        / (SENSITIVITY_MAX - SENSITIVITY_MIN))
+                        .clamp(0.0, 1.0);
                     let fw = (fill * slider_w as f32) as usize;
                     if fw > 0 {
                         draw_rect(fb, slider_x, slider_y, fw, scale * 2, GOLD);
@@ -590,7 +662,9 @@ pub fn sys_menu_render(
                 let c = if sel { TEXT_SEL } else { TEXT_MAIN };
                 let buf = format_toggle(sel, "INVERT X", invert_x);
                 draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, c);
-                if sel { draw_hline(fb, bx + scale * 2, y - scale, scale * 2, GOLD); }
+                if sel {
+                    draw_hline(fb, bx + scale * 2, y - scale, scale * 2, GOLD);
+                }
                 row += 1;
             }
             // Invert Y
@@ -600,7 +674,9 @@ pub fn sys_menu_render(
                 let c = if sel { TEXT_SEL } else { TEXT_MAIN };
                 let buf = format_toggle(sel, "INVERT Y", invert_y);
                 draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, c);
-                if sel { draw_hline(fb, bx + scale * 2, y - scale, scale * 2, GOLD); }
+                if sel {
+                    draw_hline(fb, bx + scale * 2, y - scale, scale * 2, GOLD);
+                }
                 row += 1;
             }
             // Back
@@ -610,7 +686,9 @@ pub fn sys_menu_render(
                 let c = if sel { TEXT_SEL } else { TEXT_DIM };
                 let iw = text_pw("BACK", scale);
                 draw_text(fb, cx - iw / 2, y, "BACK", scale, c);
-                if sel { draw_hline(fb, cx - iw / 2 - scale * 4, y + scale * 2, scale * 2, GOLD); }
+                if sel {
+                    draw_hline(fb, cx - iw / 2 - scale * 4, y + scale * 2, scale * 2, GOLD);
+                }
             }
         }
         MenuState::Keybinds => {
@@ -640,7 +718,13 @@ pub fn sys_menu_render(
             draw_text(fb, cx - tw / 2, by + scale * 4, title, title_scale, GOLD);
 
             let sep_y = by + title_scale * 5 + scale * 6;
-            draw_hline(fb, bx + scale * 2, sep_y, panel_w - scale * 4, BORDER_ACCENT);
+            draw_hline(
+                fb,
+                bx + scale * 2,
+                sep_y,
+                panel_w - scale * 4,
+                BORDER_ACCENT,
+            );
 
             let items_y = sep_y + scale * 3;
 
@@ -652,7 +736,11 @@ pub fn sys_menu_render(
                 let c = if sel { TEXT_SEL } else { TEXT_MAIN };
 
                 if menu.rebinding == Some(i) {
-                    let buf = concat3(if sel { "> " } else { "  " }, action.name(), "  PRESS KEY...");
+                    let buf = concat3(
+                        if sel { "> " } else { "  " },
+                        action.name(),
+                        "  PRESS KEY...",
+                    );
                     draw_text_bytes(fb, bx + scale * 4, y, &buf, scale, GOLD_BRIGHT);
                 } else {
                     let kn = key_name(keybinds.key_for(action));
@@ -666,13 +754,26 @@ pub fn sys_menu_render(
 
             // Vehicle controls section (read-only, uses same keybinds contextually)
             let veh_y = items_y + num_actions * line_h;
-            draw_hline(fb, bx + scale * 2, veh_y, panel_w - scale * 4, BORDER_ACCENT);
-            draw_text(fb, bx + scale * 4, veh_y + scale * 2, "VEHICLE", 2, GOLD_DIM);
+            draw_hline(
+                fb,
+                bx + scale * 2,
+                veh_y,
+                panel_w - scale * 4,
+                BORDER_ACCENT,
+            );
+            draw_text(
+                fb,
+                bx + scale * 4,
+                veh_y + scale * 2,
+                "VEHICLE",
+                2,
+                GOLD_DIM,
+            );
             let veh_items_y = veh_y + scale * 2 + 2 * 5 + scale * 2;
             let veh_binds: [(&str, crate::input::Action); 4] = [
                 ("Throttle", crate::input::Action::MoveForward),
                 ("Brake", crate::input::Action::MoveBack),
-                ("Steer", crate::input::Action::MoveLeft),  // display both L/R
+                ("Steer", crate::input::Action::MoveLeft), // display both L/R
                 ("Handbrake", crate::input::Action::Jump),
             ];
             for (vi, (label, action)) in veh_binds.iter().enumerate() {
@@ -697,7 +798,9 @@ pub fn sys_menu_render(
                 let c = if sel { TEXT_SEL } else { TEXT_DIM };
                 let iw = text_pw("RESET DEFAULTS", scale);
                 draw_text(fb, bx + scale * 4, y, "RESET DEFAULTS", scale, c);
-                if sel { draw_hline(fb, bx + scale * 2, y - scale, scale * 2, GOLD); }
+                if sel {
+                    draw_hline(fb, bx + scale * 2, y - scale, scale * 2, GOLD);
+                }
                 let _ = iw;
             }
             // Back
@@ -707,7 +810,9 @@ pub fn sys_menu_render(
                 let sel = menu.cursor == i;
                 let c = if sel { TEXT_SEL } else { TEXT_DIM };
                 draw_text(fb, bx + scale * 4, y, "BACK", scale, c);
-                if sel { draw_hline(fb, bx + scale * 2, y - scale, scale * 2, GOLD); }
+                if sel {
+                    draw_hline(fb, bx + scale * 2, y - scale, scale * 2, GOLD);
+                }
             }
         }
         MenuState::None => {}
@@ -717,7 +822,9 @@ pub fn sys_menu_render(
 // ── Rendering primitives ─────────────────────────────────────────────────
 
 fn draw_hline(fb: &mut Framebuffer, x: usize, y: usize, w: usize, color: u32) {
-    if y >= fb.h { return; }
+    if y >= fb.h {
+        return;
+    }
     let start = x.min(fb.w);
     let end = (x + w).min(fb.w);
     let row = y * fb.w;
@@ -774,7 +881,14 @@ fn draw_title_vignette(fb: &mut Framebuffer) {
 /// Panel with border and gold accent line at top
 fn draw_panel(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize) {
     // Outer border
-    draw_rect(fb, x.saturating_sub(1), y.saturating_sub(1), w + 2, h + 2, BORDER);
+    draw_rect(
+        fb,
+        x.saturating_sub(1),
+        y.saturating_sub(1),
+        w + 2,
+        h + 2,
+        BORDER,
+    );
     // Panel fill
     draw_rect(fb, x, y, w, h, BG_PANEL);
     // Gold accent at top
@@ -785,50 +899,128 @@ fn draw_panel(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize) {
 
 fn text_pw(s: &str, scale: usize) -> usize {
     let n = s.len();
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     n * (3 * scale + scale) - scale
 }
 
 fn text_pw_buf(buf: &[u8; 64], scale: usize) -> usize {
     let mut len = 64;
-    while len > 0 && buf[len - 1] == b' ' { len -= 1; }
-    if len == 0 { return 0; }
+    while len > 0 && buf[len - 1] == b' ' {
+        len -= 1;
+    }
+    if len == 0 {
+        return 0;
+    }
     len * (3 * scale + scale) - scale
 }
-
 
 fn concat3(a: &str, b: &str, c: &str) -> [u8; 64] {
     let mut buf = [b' '; 64];
     let mut i = 0;
-    for &ch in a.as_bytes() { if i < 64 { buf[i] = ch; i += 1; } }
-    for &ch in b.as_bytes() { if i < 64 { buf[i] = ch; i += 1; } }
-    for &ch in c.as_bytes() { if i < 64 { buf[i] = ch; i += 1; } }
+    for &ch in a.as_bytes() {
+        if i < 64 {
+            buf[i] = ch;
+            i += 1;
+        }
+    }
+    for &ch in b.as_bytes() {
+        if i < 64 {
+            buf[i] = ch;
+            i += 1;
+        }
+    }
+    for &ch in c.as_bytes() {
+        if i < 64 {
+            buf[i] = ch;
+            i += 1;
+        }
+    }
     buf
 }
 
 fn format_keybind_line(prefix: &str, action_name: &str, key: &str) -> [u8; 64] {
     let mut buf = [b' '; 64];
     let mut i = 0;
-    for &c in prefix.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    for &c in action_name.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    while i < 20 { if i < 64 { buf[i] = b' '; } i += 1; }
-    if i < 64 { buf[i] = b'['; i += 1; }
-    for &c in key.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    if i < 64 { buf[i] = b']'; }
+    for &c in prefix.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    for &c in action_name.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    while i < 20 {
+        if i < 64 {
+            buf[i] = b' ';
+        }
+        i += 1;
+    }
+    if i < 64 {
+        buf[i] = b'[';
+        i += 1;
+    }
+    for &c in key.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    if i < 64 {
+        buf[i] = b']';
+    }
     buf
 }
 
 fn format_vehicle_steer_line(label: &str, left_key: &str, right_key: &str) -> [u8; 64] {
     let mut buf = [b' '; 64];
     let mut i = 0;
-    for &c in b"  " { if i < 64 { buf[i] = c; i += 1; } }
-    for &c in label.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    while i < 20 { if i < 64 { buf[i] = b' '; } i += 1; }
-    if i < 64 { buf[i] = b'['; i += 1; }
-    for &c in left_key.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    if i < 64 { buf[i] = b'/'; i += 1; }
-    for &c in right_key.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    if i < 64 { buf[i] = b']'; }
+    for &c in b"  " {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    for &c in label.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    while i < 20 {
+        if i < 64 {
+            buf[i] = b' ';
+        }
+        i += 1;
+    }
+    if i < 64 {
+        buf[i] = b'[';
+        i += 1;
+    }
+    for &c in left_key.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    if i < 64 {
+        buf[i] = b'/';
+        i += 1;
+    }
+    for &c in right_key.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    if i < 64 {
+        buf[i] = b']';
+    }
     buf
 }
 
@@ -836,14 +1028,37 @@ fn format_sensitivity(selected: bool, val: f32) -> [u8; 64] {
     let prefix = if selected { "> " } else { "  " };
     let mut buf = [b' '; 64];
     let mut i = 0;
-    for &c in prefix.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    for &c in b"SENSITIVITY" { if i < 64 { buf[i] = c; i += 1; } }
-    while i < 18 { if i < 64 { buf[i] = b' '; } i += 1; }
+    for &c in prefix.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    for &c in b"SENSITIVITY" {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    while i < 18 {
+        if i < 64 {
+            buf[i] = b' ';
+        }
+        i += 1;
+    }
     let whole = val as u32;
     let frac = ((val - whole as f32) * 10.0 + 0.5) as u32;
-    if i < 64 { buf[i] = b'0' + whole as u8; i += 1; }
-    if i < 64 { buf[i] = b'.'; i += 1; }
-    if i < 64 { buf[i] = b'0' + frac as u8; }
+    if i < 64 {
+        buf[i] = b'0' + whole as u8;
+        i += 1;
+    }
+    if i < 64 {
+        buf[i] = b'.';
+        i += 1;
+    }
+    if i < 64 {
+        buf[i] = b'0' + frac as u8;
+    }
     buf
 }
 
@@ -851,11 +1066,31 @@ fn format_toggle(selected: bool, label: &str, value: bool) -> [u8; 64] {
     let prefix = if selected { "> " } else { "  " };
     let mut buf = [b' '; 64];
     let mut i = 0;
-    for &c in prefix.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    for &c in label.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    while i < 18 { if i < 64 { buf[i] = b' '; } i += 1; }
+    for &c in prefix.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    for &c in label.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    while i < 18 {
+        if i < 64 {
+            buf[i] = b' ';
+        }
+        i += 1;
+    }
     let val_str = if value { b"ON" as &[u8] } else { b"OFF" };
-    for &c in val_str { if i < 64 { buf[i] = c; i += 1; } }
+    for &c in val_str {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
     buf
 }
 
@@ -863,10 +1098,23 @@ fn format_seed_line(selected: bool, digits: &[u8; 20], len: usize) -> [u8; 64] {
     let prefix = if selected { "> " } else { "  " };
     let mut buf = [b' '; 64];
     let mut i = 0;
-    for &c in prefix.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    for &c in b"SEED: " { if i < 64 { buf[i] = c; i += 1; } }
+    for &c in prefix.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    for &c in b"SEED: " {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
     for j in 0..len {
-        if i < 64 { buf[i] = digits[j]; i += 1; }
+        if i < 64 {
+            buf[i] = digits[j];
+            i += 1;
+        }
     }
     if selected && i < 64 {
         buf[i] = b'_';
@@ -878,20 +1126,52 @@ fn format_character_line(selected: bool, model_name: &str) -> [u8; 64] {
     let prefix = if selected { "> " } else { "  " };
     let mut buf = [b' '; 64];
     let mut i = 0;
-    for &c in prefix.as_bytes() { if i < 64 { buf[i] = c; i += 1; } }
-    for &c in b"CHARACTER" { if i < 64 { buf[i] = c; i += 1; } }
-    while i < 18 { if i < 64 { buf[i] = b' '; } i += 1; }
-    if i < 64 { buf[i] = b'<'; i += 1; }
-    if i < 64 { buf[i] = b' '; i += 1; }
-    // Convert name to uppercase for display
-    for &c in model_name.as_bytes() {
-        if i < 58 {
-            buf[i] = if c >= b'a' && c <= b'z' { c - 32 } else if c == b'_' { b' ' } else { c };
+    for &c in prefix.as_bytes() {
+        if i < 64 {
+            buf[i] = c;
             i += 1;
         }
     }
-    if i < 64 { buf[i] = b' '; i += 1; }
-    if i < 64 { buf[i] = b'>'; }
+    for &c in b"CHARACTER" {
+        if i < 64 {
+            buf[i] = c;
+            i += 1;
+        }
+    }
+    while i < 18 {
+        if i < 64 {
+            buf[i] = b' ';
+        }
+        i += 1;
+    }
+    if i < 64 {
+        buf[i] = b'<';
+        i += 1;
+    }
+    if i < 64 {
+        buf[i] = b' ';
+        i += 1;
+    }
+    // Convert name to uppercase for display
+    for &c in model_name.as_bytes() {
+        if i < 58 {
+            buf[i] = if c >= b'a' && c <= b'z' {
+                c - 32
+            } else if c == b'_' {
+                b' '
+            } else {
+                c
+            };
+            i += 1;
+        }
+    }
+    if i < 64 {
+        buf[i] = b' ';
+        i += 1;
+    }
+    if i < 64 {
+        buf[i] = b'>';
+    }
     buf
 }
 
@@ -921,5 +1201,3 @@ fn digits_to_u64(buf: &[u8; 20], len: usize) -> u64 {
     }
     val
 }
-
-

@@ -1,10 +1,12 @@
-// Wayland platform: window via libwayland-client.so dlopen, shm framebuffer, keyboard input
-// Uses raw Wayland protocol through libwayland-client function pointers.
-// xdg-shell interfaces defined manually (not in libwayland-client).
+//! Wayland platform — window, shm framebuffer, and keyboard input.
+//!
+//! `libwayland-client.so` is `dlopen`'d at runtime; the raw Wayland protocol
+//! is driven through resolved function pointers, and the `xdg-shell` interfaces
+//! are defined manually (they ship as XML, not as symbols in libwayland-client).
 
 #![allow(non_upper_case_globals, unsafe_op_in_unsafe_fn)]
 
-use std::ffi::{c_char, c_int, c_void, CStr};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 
 // --- libc FFI (always linked in Rust programs) ---
@@ -14,7 +16,14 @@ unsafe extern "C" {
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     fn memfd_create(name: *const c_char, flags: c_int) -> c_int;
     fn ftruncate(fd: c_int, length: i64) -> c_int;
-    fn mmap(addr: *mut c_void, length: usize, prot: c_int, flags: c_int, fd: c_int, offset: i64) -> *mut c_void;
+    fn mmap(
+        addr: *mut c_void,
+        length: usize,
+        prot: c_int,
+        flags: c_int,
+        fd: c_int,
+        offset: i64,
+    ) -> *mut c_void;
     fn munmap(addr: *mut c_void, length: usize) -> c_int;
     fn close(fd: c_int) -> c_int;
     fn poll(fds: *mut PollFd, nfds: u64, timeout: c_int) -> c_int;
@@ -76,7 +85,8 @@ type FnDisplayPrepareRead = unsafe extern "C" fn(*mut c_void) -> c_int;
 type FnDisplayReadEvents = unsafe extern "C" fn(*mut c_void) -> c_int;
 type FnDisplayCancelRead = unsafe extern "C" fn(*mut c_void);
 type FnDisplayDispatchPending = unsafe extern "C" fn(*mut c_void) -> c_int;
-type FnProxyMarshalFlags = unsafe extern "C" fn(*mut c_void, u32, *const WlInterface, u32, u32, ...) -> *mut c_void;
+type FnProxyMarshalFlags =
+    unsafe extern "C" fn(*mut c_void, u32, *const WlInterface, u32, u32, ...) -> *mut c_void;
 type FnProxyAddListener = unsafe extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> c_int;
 type FnProxyGetVersion = unsafe extern "C" fn(*mut c_void) -> u32;
 type FnProxyDestroy = unsafe extern "C" fn(*mut c_void);
@@ -113,88 +123,227 @@ static NULL_TYPES: [IfacePtr; 8] = [NP; 8];
 
 // xdg_wm_base: 4 requests (destroy, create_positioner, get_xdg_surface, pong), 1 event (ping)
 static XDG_WM_BASE_REQUESTS: [WlMessage; 4] = [
-    WlMessage { name: c"destroy".as_ptr(),            signature: c"".as_ptr(),  types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"create_positioner".as_ptr(),  signature: c"n".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"get_xdg_surface".as_ptr(),    signature: c"no".as_ptr(),types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"pong".as_ptr(),               signature: c"u".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
+    WlMessage {
+        name: c"destroy".as_ptr(),
+        signature: c"".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"create_positioner".as_ptr(),
+        signature: c"n".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"get_xdg_surface".as_ptr(),
+        signature: c"no".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"pong".as_ptr(),
+        signature: c"u".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
 ];
-static XDG_WM_BASE_EVENTS: [WlMessage; 1] = [
-    WlMessage { name: c"ping".as_ptr(), signature: c"u".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-];
+static XDG_WM_BASE_EVENTS: [WlMessage; 1] = [WlMessage {
+    name: c"ping".as_ptr(),
+    signature: c"u".as_ptr(),
+    types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+}];
 static XDG_WM_BASE_INTERFACE: WlInterface = WlInterface {
-    name: c"xdg_wm_base".as_ptr(), version: 2, method_count: 4,
-    methods: XDG_WM_BASE_REQUESTS.as_ptr(), event_count: 1,
+    name: c"xdg_wm_base".as_ptr(),
+    version: 2,
+    method_count: 4,
+    methods: XDG_WM_BASE_REQUESTS.as_ptr(),
+    event_count: 1,
     events: XDG_WM_BASE_EVENTS.as_ptr(),
 };
 
 // xdg_surface: 5 requests (destroy, get_toplevel, get_popup, set_window_geometry, ack_configure), 1 event (configure)
 static XDG_SURFACE_REQUESTS: [WlMessage; 5] = [
-    WlMessage { name: c"destroy".as_ptr(),              signature: c"".as_ptr(),    types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"get_toplevel".as_ptr(),         signature: c"n".as_ptr(),   types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"get_popup".as_ptr(),            signature: c"n?oo".as_ptr(),types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"set_window_geometry".as_ptr(),  signature: c"iiii".as_ptr(),types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"ack_configure".as_ptr(),        signature: c"u".as_ptr(),   types: NULL_TYPES.as_ptr() as *const *const WlInterface },
+    WlMessage {
+        name: c"destroy".as_ptr(),
+        signature: c"".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"get_toplevel".as_ptr(),
+        signature: c"n".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"get_popup".as_ptr(),
+        signature: c"n?oo".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"set_window_geometry".as_ptr(),
+        signature: c"iiii".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"ack_configure".as_ptr(),
+        signature: c"u".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
 ];
-static XDG_SURFACE_EVENTS: [WlMessage; 1] = [
-    WlMessage { name: c"configure".as_ptr(), signature: c"u".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-];
+static XDG_SURFACE_EVENTS: [WlMessage; 1] = [WlMessage {
+    name: c"configure".as_ptr(),
+    signature: c"u".as_ptr(),
+    types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+}];
 static XDG_SURFACE_INTERFACE: WlInterface = WlInterface {
-    name: c"xdg_surface".as_ptr(), version: 2, method_count: 5,
-    methods: XDG_SURFACE_REQUESTS.as_ptr(), event_count: 1,
+    name: c"xdg_surface".as_ptr(),
+    version: 2,
+    method_count: 5,
+    methods: XDG_SURFACE_REQUESTS.as_ptr(),
+    event_count: 1,
     events: XDG_SURFACE_EVENTS.as_ptr(),
 };
 
 // xdg_toplevel: 14 requests, 2 events (configure, close) for v1
 static XDG_TOPLEVEL_REQUESTS: [WlMessage; 14] = [
-    WlMessage { name: c"destroy".as_ptr(),          signature: c"".as_ptr(),    types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"set_parent".as_ptr(),       signature: c"?o".as_ptr(),  types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"set_title".as_ptr(),        signature: c"s".as_ptr(),   types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"set_app_id".as_ptr(),       signature: c"s".as_ptr(),   types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"show_window_menu".as_ptr(), signature: c"ouii".as_ptr(),types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"move".as_ptr(),             signature: c"ou".as_ptr(),  types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"resize".as_ptr(),           signature: c"ouu".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"set_max_size".as_ptr(),     signature: c"ii".as_ptr(),  types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"set_min_size".as_ptr(),     signature: c"ii".as_ptr(),  types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"set_maximized".as_ptr(),    signature: c"".as_ptr(),    types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"unset_maximized".as_ptr(),  signature: c"".as_ptr(),    types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"set_fullscreen".as_ptr(),   signature: c"?o".as_ptr(),  types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"unset_fullscreen".as_ptr(), signature: c"".as_ptr(),    types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"set_minimized".as_ptr(),    signature: c"".as_ptr(),    types: NULL_TYPES.as_ptr() as *const *const WlInterface },
+    WlMessage {
+        name: c"destroy".as_ptr(),
+        signature: c"".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"set_parent".as_ptr(),
+        signature: c"?o".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"set_title".as_ptr(),
+        signature: c"s".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"set_app_id".as_ptr(),
+        signature: c"s".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"show_window_menu".as_ptr(),
+        signature: c"ouii".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"move".as_ptr(),
+        signature: c"ou".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"resize".as_ptr(),
+        signature: c"ouu".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"set_max_size".as_ptr(),
+        signature: c"ii".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"set_min_size".as_ptr(),
+        signature: c"ii".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"set_maximized".as_ptr(),
+        signature: c"".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"unset_maximized".as_ptr(),
+        signature: c"".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"set_fullscreen".as_ptr(),
+        signature: c"?o".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"unset_fullscreen".as_ptr(),
+        signature: c"".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"set_minimized".as_ptr(),
+        signature: c"".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
 ];
 static XDG_TOPLEVEL_EVENTS: [WlMessage; 4] = [
-    WlMessage { name: c"configure".as_ptr(),       signature: c"iia".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"close".as_ptr(),           signature: c"".as_ptr(),    types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"configure_bounds".as_ptr(),signature: c"ii".as_ptr(),  types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"wm_capabilities".as_ptr(), signature: c"a".as_ptr(),   types: NULL_TYPES.as_ptr() as *const *const WlInterface },
+    WlMessage {
+        name: c"configure".as_ptr(),
+        signature: c"iia".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"close".as_ptr(),
+        signature: c"".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"configure_bounds".as_ptr(),
+        signature: c"ii".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"wm_capabilities".as_ptr(),
+        signature: c"a".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
 ];
 static XDG_TOPLEVEL_INTERFACE: WlInterface = WlInterface {
-    name: c"xdg_toplevel".as_ptr(), version: 2, method_count: 14,
-    methods: XDG_TOPLEVEL_REQUESTS.as_ptr(), event_count: 4,
+    name: c"xdg_toplevel".as_ptr(),
+    version: 2,
+    method_count: 14,
+    methods: XDG_TOPLEVEL_REQUESTS.as_ptr(),
+    event_count: 4,
     events: XDG_TOPLEVEL_EVENTS.as_ptr(),
 };
 
 // --- zwp_relative_pointer_manager_v1 / zwp_relative_pointer_v1 interfaces ---
 
 static ZWP_REL_PTR_MGR_REQUESTS: [WlMessage; 2] = [
-    WlMessage { name: c"destroy".as_ptr(), signature: c"".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-    WlMessage { name: c"get_relative_pointer".as_ptr(), signature: c"no".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
+    WlMessage {
+        name: c"destroy".as_ptr(),
+        signature: c"".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
+    WlMessage {
+        name: c"get_relative_pointer".as_ptr(),
+        signature: c"no".as_ptr(),
+        types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+    },
 ];
 static ZWP_REL_PTR_MGR_INTERFACE: WlInterface = WlInterface {
-    name: c"zwp_relative_pointer_manager_v1".as_ptr(), version: 1,
-    method_count: 2, methods: ZWP_REL_PTR_MGR_REQUESTS.as_ptr(),
-    event_count: 0, events: ptr::null(),
+    name: c"zwp_relative_pointer_manager_v1".as_ptr(),
+    version: 1,
+    method_count: 2,
+    methods: ZWP_REL_PTR_MGR_REQUESTS.as_ptr(),
+    event_count: 0,
+    events: ptr::null(),
 };
 
-static ZWP_REL_PTR_REQUESTS: [WlMessage; 1] = [
-    WlMessage { name: c"destroy".as_ptr(), signature: c"".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-];
-static ZWP_REL_PTR_EVENTS: [WlMessage; 1] = [
-    WlMessage { name: c"relative_motion".as_ptr(), signature: c"uuffff".as_ptr(), types: NULL_TYPES.as_ptr() as *const *const WlInterface },
-];
+static ZWP_REL_PTR_REQUESTS: [WlMessage; 1] = [WlMessage {
+    name: c"destroy".as_ptr(),
+    signature: c"".as_ptr(),
+    types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+}];
+static ZWP_REL_PTR_EVENTS: [WlMessage; 1] = [WlMessage {
+    name: c"relative_motion".as_ptr(),
+    signature: c"uuffff".as_ptr(),
+    types: NULL_TYPES.as_ptr() as *const *const WlInterface,
+}];
 static ZWP_REL_PTR_INTERFACE: WlInterface = WlInterface {
-    name: c"zwp_relative_pointer_v1".as_ptr(), version: 1,
-    method_count: 1, methods: ZWP_REL_PTR_REQUESTS.as_ptr(),
-    event_count: 1, events: ZWP_REL_PTR_EVENTS.as_ptr(),
+    name: c"zwp_relative_pointer_v1".as_ptr(),
+    version: 1,
+    method_count: 1,
+    methods: ZWP_REL_PTR_REQUESTS.as_ptr(),
+    event_count: 1,
+    events: ZWP_REL_PTR_EVENTS.as_ptr(),
 };
 
 // --- Listener structs ---
@@ -366,49 +515,133 @@ struct WlState {
 
 // --- Callback implementations ---
 
-unsafe extern "C" fn cb_registry_global(data: *mut c_void, registry: *mut c_void, name: u32, interface: *const c_char, version: u32) {
+unsafe extern "C" fn cb_registry_global(
+    data: *mut c_void,
+    registry: *mut c_void,
+    name: u32,
+    interface: *const c_char,
+    version: u32,
+) {
     let s = &mut *(data as *mut WlState);
     let iface = CStr::from_ptr(interface);
 
     if iface == c"wl_compositor" {
         let ver = version.min(4);
-        s.compositor = (s.fns.proxy_marshal_flags)(registry, 0, s.wl_compositor_iface, ver, 0,
-            name, c"wl_compositor".as_ptr(), ver, ptr::null::<c_void>());
+        s.compositor = (s.fns.proxy_marshal_flags)(
+            registry,
+            0,
+            s.wl_compositor_iface,
+            ver,
+            0,
+            name,
+            c"wl_compositor".as_ptr(),
+            ver,
+            ptr::null::<c_void>(),
+        );
     } else if iface == c"wl_shm" {
         let ver = version.min(1);
-        s.shm = (s.fns.proxy_marshal_flags)(registry, 0, s.wl_shm_iface, ver, 0,
-            name, c"wl_shm".as_ptr(), ver, ptr::null::<c_void>());
+        s.shm = (s.fns.proxy_marshal_flags)(
+            registry,
+            0,
+            s.wl_shm_iface,
+            ver,
+            0,
+            name,
+            c"wl_shm".as_ptr(),
+            ver,
+            ptr::null::<c_void>(),
+        );
     } else if iface == c"xdg_wm_base" {
         let ver = version.min(2);
-        s.xdg_wm_base = (s.fns.proxy_marshal_flags)(registry, 0, &XDG_WM_BASE_INTERFACE, ver, 0,
-            name, c"xdg_wm_base".as_ptr(), ver, ptr::null::<c_void>());
-        (s.fns.proxy_add_listener)(s.xdg_wm_base, &XDG_WM_BASE_LISTENER as *const _ as *const c_void, data);
+        s.xdg_wm_base = (s.fns.proxy_marshal_flags)(
+            registry,
+            0,
+            &XDG_WM_BASE_INTERFACE,
+            ver,
+            0,
+            name,
+            c"xdg_wm_base".as_ptr(),
+            ver,
+            ptr::null::<c_void>(),
+        );
+        (s.fns.proxy_add_listener)(
+            s.xdg_wm_base,
+            &XDG_WM_BASE_LISTENER as *const _ as *const c_void,
+            data,
+        );
     } else if iface == c"zwp_relative_pointer_manager_v1" {
-        s.rel_pointer_mgr = (s.fns.proxy_marshal_flags)(registry, 0, &ZWP_REL_PTR_MGR_INTERFACE, 1, 0,
-            name, c"zwp_relative_pointer_manager_v1".as_ptr(), 1u32, ptr::null::<c_void>());
+        s.rel_pointer_mgr = (s.fns.proxy_marshal_flags)(
+            registry,
+            0,
+            &ZWP_REL_PTR_MGR_INTERFACE,
+            1,
+            0,
+            name,
+            c"zwp_relative_pointer_manager_v1".as_ptr(),
+            1u32,
+            ptr::null::<c_void>(),
+        );
     } else if iface == c"wl_seat" {
         let ver = version.min(5);
-        s.seat = (s.fns.proxy_marshal_flags)(registry, 0, s.wl_seat_iface, ver, 0,
-            name, c"wl_seat".as_ptr(), ver, ptr::null::<c_void>());
+        s.seat = (s.fns.proxy_marshal_flags)(
+            registry,
+            0,
+            s.wl_seat_iface,
+            ver,
+            0,
+            name,
+            c"wl_seat".as_ptr(),
+            ver,
+            ptr::null::<c_void>(),
+        );
         (s.fns.proxy_add_listener)(s.seat, &SEAT_LISTENER as *const _ as *const c_void, data);
     }
 }
 
-unsafe extern "C" fn cb_registry_global_remove(_data: *mut c_void, _registry: *mut c_void, _name: u32) {}
+unsafe extern "C" fn cb_registry_global_remove(
+    _data: *mut c_void,
+    _registry: *mut c_void,
+    _name: u32,
+) {
+}
 
 unsafe extern "C" fn cb_xdg_wm_base_ping(data: *mut c_void, xdg_wm_base: *mut c_void, serial: u32) {
     let s = &*(data as *mut WlState);
-    (s.fns.proxy_marshal_flags)(xdg_wm_base, 3, ptr::null(), (s.fns.proxy_get_version)(xdg_wm_base), 0, serial);
+    (s.fns.proxy_marshal_flags)(
+        xdg_wm_base,
+        3,
+        ptr::null(),
+        (s.fns.proxy_get_version)(xdg_wm_base),
+        0,
+        serial,
+    );
 }
 
-unsafe extern "C" fn cb_xdg_surface_configure(data: *mut c_void, xdg_surface: *mut c_void, serial: u32) {
+unsafe extern "C" fn cb_xdg_surface_configure(
+    data: *mut c_void,
+    xdg_surface: *mut c_void,
+    serial: u32,
+) {
     let s = &mut *(data as *mut WlState);
     // ack_configure (opcode 4)
-    (s.fns.proxy_marshal_flags)(xdg_surface, 4, ptr::null(), (s.fns.proxy_get_version)(xdg_surface), 0, serial);
+    (s.fns.proxy_marshal_flags)(
+        xdg_surface,
+        4,
+        ptr::null(),
+        (s.fns.proxy_get_version)(xdg_surface),
+        0,
+        serial,
+    );
     s.configured = true;
 }
 
-unsafe extern "C" fn cb_xdg_toplevel_configure(data: *mut c_void, _toplevel: *mut c_void, width: i32, height: i32, _states: *mut WlArray) {
+unsafe extern "C" fn cb_xdg_toplevel_configure(
+    data: *mut c_void,
+    _toplevel: *mut c_void,
+    width: i32,
+    height: i32,
+    _states: *mut WlArray,
+) {
     let s = &mut *(data as *mut WlState);
     if width > 0 && height > 0 {
         s.pending_width = width;
@@ -421,62 +654,161 @@ unsafe extern "C" fn cb_xdg_toplevel_close(data: *mut c_void, _toplevel: *mut c_
     s.should_close = true;
 }
 
-unsafe extern "C" fn cb_xdg_toplevel_configure_bounds(_data: *mut c_void, _toplevel: *mut c_void, _w: i32, _h: i32) {}
-unsafe extern "C" fn cb_xdg_toplevel_wm_capabilities(_data: *mut c_void, _toplevel: *mut c_void, _caps: *mut WlArray) {}
+unsafe extern "C" fn cb_xdg_toplevel_configure_bounds(
+    _data: *mut c_void,
+    _toplevel: *mut c_void,
+    _w: i32,
+    _h: i32,
+) {
+}
+unsafe extern "C" fn cb_xdg_toplevel_wm_capabilities(
+    _data: *mut c_void,
+    _toplevel: *mut c_void,
+    _caps: *mut WlArray,
+) {
+}
 
 unsafe extern "C" fn cb_seat_capabilities(data: *mut c_void, _seat: *mut c_void, caps: u32) {
     let s = &mut *(data as *mut WlState);
     if caps & WL_SEAT_CAPABILITY_POINTER != 0 && s.pointer.is_null() {
         // wl_seat.get_pointer (opcode 0)
-        s.pointer = (s.fns.proxy_marshal_flags)(s.seat, 0, s.wl_pointer_iface,
-            (s.fns.proxy_get_version)(s.seat), 0, ptr::null::<c_void>());
-        (s.fns.proxy_add_listener)(s.pointer, &POINTER_LISTENER as *const _ as *const c_void, data);
+        s.pointer = (s.fns.proxy_marshal_flags)(
+            s.seat,
+            0,
+            s.wl_pointer_iface,
+            (s.fns.proxy_get_version)(s.seat),
+            0,
+            ptr::null::<c_void>(),
+        );
+        (s.fns.proxy_add_listener)(
+            s.pointer,
+            &POINTER_LISTENER as *const _ as *const c_void,
+            data,
+        );
     }
     if caps & WL_SEAT_CAPABILITY_KEYBOARD != 0 && s.keyboard.is_null() {
         // wl_seat.get_keyboard (opcode 1)
-        s.keyboard = (s.fns.proxy_marshal_flags)(s.seat, 1, s.wl_keyboard_iface,
-            (s.fns.proxy_get_version)(s.seat), 0, ptr::null::<c_void>());
-        (s.fns.proxy_add_listener)(s.keyboard, &KEYBOARD_LISTENER as *const _ as *const c_void, data);
+        s.keyboard = (s.fns.proxy_marshal_flags)(
+            s.seat,
+            1,
+            s.wl_keyboard_iface,
+            (s.fns.proxy_get_version)(s.seat),
+            0,
+            ptr::null::<c_void>(),
+        );
+        (s.fns.proxy_add_listener)(
+            s.keyboard,
+            &KEYBOARD_LISTENER as *const _ as *const c_void,
+            data,
+        );
     }
 }
 
 unsafe extern "C" fn cb_seat_name(_data: *mut c_void, _seat: *mut c_void, _name: *const c_char) {}
 
-unsafe extern "C" fn cb_keyboard_keymap(_data: *mut c_void, _kb: *mut c_void, _format: u32, fd: i32, _size: u32) {
+unsafe extern "C" fn cb_keyboard_keymap(
+    _data: *mut c_void,
+    _kb: *mut c_void,
+    _format: u32,
+    fd: i32,
+    _size: u32,
+) {
     close(fd);
 }
 
-unsafe extern "C" fn cb_keyboard_enter(_data: *mut c_void, _kb: *mut c_void, _serial: u32, _surface: *mut c_void, _keys: *mut WlArray) {}
-unsafe extern "C" fn cb_keyboard_leave(_data: *mut c_void, _kb: *mut c_void, _serial: u32, _surface: *mut c_void) {}
+unsafe extern "C" fn cb_keyboard_enter(
+    _data: *mut c_void,
+    _kb: *mut c_void,
+    _serial: u32,
+    _surface: *mut c_void,
+    _keys: *mut WlArray,
+) {
+}
+unsafe extern "C" fn cb_keyboard_leave(
+    _data: *mut c_void,
+    _kb: *mut c_void,
+    _serial: u32,
+    _surface: *mut c_void,
+) {
+}
 
-unsafe extern "C" fn cb_keyboard_key(data: *mut c_void, _kb: *mut c_void, _serial: u32, _time: u32, key: u32, state: u32) {
+unsafe extern "C" fn cb_keyboard_key(
+    data: *mut c_void,
+    _kb: *mut c_void,
+    _serial: u32,
+    _time: u32,
+    key: u32,
+    state: u32,
+) {
     let s = &mut *(data as *mut WlState);
     if (key as usize) < s.keys.len() {
         s.keys[key as usize] = state != 0;
     }
 }
 
-unsafe extern "C" fn cb_keyboard_modifiers(_data: *mut c_void, _kb: *mut c_void, _serial: u32, _dep: u32, _lat: u32, _lock: u32, _group: u32) {}
-unsafe extern "C" fn cb_keyboard_repeat_info(_data: *mut c_void, _kb: *mut c_void, _rate: i32, _delay: i32) {}
+unsafe extern "C" fn cb_keyboard_modifiers(
+    _data: *mut c_void,
+    _kb: *mut c_void,
+    _serial: u32,
+    _dep: u32,
+    _lat: u32,
+    _lock: u32,
+    _group: u32,
+) {
+}
+unsafe extern "C" fn cb_keyboard_repeat_info(
+    _data: *mut c_void,
+    _kb: *mut c_void,
+    _rate: i32,
+    _delay: i32,
+) {
+}
 
 // --- Pointer callbacks ---
 
-unsafe extern "C" fn cb_pointer_enter(data: *mut c_void, pointer: *mut c_void, serial: u32, _surface: *mut c_void, sx: i32, sy: i32) {
+unsafe extern "C" fn cb_pointer_enter(
+    data: *mut c_void,
+    pointer: *mut c_void,
+    serial: u32,
+    _surface: *mut c_void,
+    sx: i32,
+    sy: i32,
+) {
     let s = &mut *(data as *mut WlState);
     s.pointer_entered = true;
     s.prev_mouse_x = sx;
     s.prev_mouse_y = sy;
     // Hide cursor: wl_pointer.set_cursor (opcode 0): "u?oii"
-    (s.fns.proxy_marshal_flags)(pointer, 0, ptr::null(), (s.fns.proxy_get_version)(pointer), 0,
-        serial, ptr::null::<c_void>(), 0i32, 0i32);
+    (s.fns.proxy_marshal_flags)(
+        pointer,
+        0,
+        ptr::null(),
+        (s.fns.proxy_get_version)(pointer),
+        0,
+        serial,
+        ptr::null::<c_void>(),
+        0i32,
+        0i32,
+    );
 }
 
-unsafe extern "C" fn cb_pointer_leave(data: *mut c_void, _pointer: *mut c_void, _serial: u32, _surface: *mut c_void) {
+unsafe extern "C" fn cb_pointer_leave(
+    data: *mut c_void,
+    _pointer: *mut c_void,
+    _serial: u32,
+    _surface: *mut c_void,
+) {
     let s = &mut *(data as *mut WlState);
     s.pointer_entered = false;
 }
 
-unsafe extern "C" fn cb_pointer_motion(data: *mut c_void, _pointer: *mut c_void, _time: u32, sx: i32, sy: i32) {
+unsafe extern "C" fn cb_pointer_motion(
+    data: *mut c_void,
+    _pointer: *mut c_void,
+    _time: u32,
+    sx: i32,
+    sy: i32,
+) {
     let s = &mut *(data as *mut WlState);
     // Fallback: compute delta from absolute coords (only if no relative pointer)
     if !s.has_rel_pointer && s.pointer_entered {
@@ -487,14 +819,55 @@ unsafe extern "C" fn cb_pointer_motion(data: *mut c_void, _pointer: *mut c_void,
     s.prev_mouse_y = sy;
 }
 
-unsafe extern "C" fn cb_pointer_button(_data: *mut c_void, _pointer: *mut c_void, _serial: u32, _time: u32, _button: u32, _state: u32) {}
-unsafe extern "C" fn cb_pointer_axis(_data: *mut c_void, _pointer: *mut c_void, _time: u32, _axis: u32, _value: i32) {}
+unsafe extern "C" fn cb_pointer_button(
+    _data: *mut c_void,
+    _pointer: *mut c_void,
+    _serial: u32,
+    _time: u32,
+    _button: u32,
+    _state: u32,
+) {
+}
+unsafe extern "C" fn cb_pointer_axis(
+    _data: *mut c_void,
+    _pointer: *mut c_void,
+    _time: u32,
+    _axis: u32,
+    _value: i32,
+) {
+}
 unsafe extern "C" fn cb_pointer_frame(_data: *mut c_void, _pointer: *mut c_void) {}
-unsafe extern "C" fn cb_pointer_axis_source(_data: *mut c_void, _pointer: *mut c_void, _axis_source: u32) {}
-unsafe extern "C" fn cb_pointer_axis_stop(_data: *mut c_void, _pointer: *mut c_void, _time: u32, _axis: u32) {}
-unsafe extern "C" fn cb_pointer_axis_discrete(_data: *mut c_void, _pointer: *mut c_void, _axis: u32, _discrete: i32) {}
+unsafe extern "C" fn cb_pointer_axis_source(
+    _data: *mut c_void,
+    _pointer: *mut c_void,
+    _axis_source: u32,
+) {
+}
+unsafe extern "C" fn cb_pointer_axis_stop(
+    _data: *mut c_void,
+    _pointer: *mut c_void,
+    _time: u32,
+    _axis: u32,
+) {
+}
+unsafe extern "C" fn cb_pointer_axis_discrete(
+    _data: *mut c_void,
+    _pointer: *mut c_void,
+    _axis: u32,
+    _discrete: i32,
+) {
+}
 
-unsafe extern "C" fn cb_relative_motion(data: *mut c_void, _rel_pointer: *mut c_void, _utime_hi: u32, _utime_lo: u32, dx: i32, dy: i32, _dx_unaccel: i32, _dy_unaccel: i32) {
+unsafe extern "C" fn cb_relative_motion(
+    data: *mut c_void,
+    _rel_pointer: *mut c_void,
+    _utime_hi: u32,
+    _utime_lo: u32,
+    dx: i32,
+    dy: i32,
+    _dx_unaccel: i32,
+    _dy_unaccel: i32,
+) {
     let s = &mut *(data as *mut WlState);
     s.mouse_dx += dx as f32 / 256.0;
     s.mouse_dy += dy as f32 / 256.0;
@@ -540,31 +913,70 @@ unsafe fn create_shm_buffers(s: &mut WlState, width: usize, height: usize) {
     for i in 0..2 {
         if !s.buffers[i].is_null() {
             // wl_buffer.destroy (opcode 0)
-            (s.fns.proxy_marshal_flags)(s.buffers[i], 0, ptr::null(), (s.fns.proxy_get_version)(s.buffers[i]), 1);
+            (s.fns.proxy_marshal_flags)(
+                s.buffers[i],
+                0,
+                ptr::null(),
+                (s.fns.proxy_get_version)(s.buffers[i]),
+                1,
+            );
             s.buffers[i] = ptr::null_mut();
         }
     }
 
     let fd = memfd_create(c"clauding-shm".as_ptr(), MFD_CLOEXEC);
-    if fd < 0 { panic!("memfd_create failed"); }
-    if ftruncate(fd, pool_size as i64) < 0 { panic!("ftruncate failed"); }
+    if fd < 0 {
+        panic!("memfd_create failed");
+    }
+    if ftruncate(fd, pool_size as i64) < 0 {
+        panic!("ftruncate failed");
+    }
 
-    let data = mmap(ptr::null_mut(), pool_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if data == usize::MAX as *mut c_void { panic!("mmap failed"); }
+    let data = mmap(
+        ptr::null_mut(),
+        pool_size,
+        PROT_READ | PROT_WRITE,
+        MAP_SHARED,
+        fd,
+        0,
+    );
+    if data == usize::MAX as *mut c_void {
+        panic!("mmap failed");
+    }
 
     // wl_shm.create_pool (opcode 0): signature "nhi" (new_id, fd, int32)
-    let pool = (s.fns.proxy_marshal_flags)(s.shm, 0, s.wl_shm_pool_iface,
-        (s.fns.proxy_get_version)(s.shm), 0,
-        ptr::null::<c_void>(), fd, pool_size as i32);
+    let pool = (s.fns.proxy_marshal_flags)(
+        s.shm,
+        0,
+        s.wl_shm_pool_iface,
+        (s.fns.proxy_get_version)(s.shm),
+        0,
+        ptr::null::<c_void>(),
+        fd,
+        pool_size as i32,
+    );
 
     // wl_shm_pool.create_buffer (opcode 0): signature "niiiiu" (new_id, offset, width, height, stride, format)
     for i in 0..2u32 {
         let offset = (i as usize * buf_size) as i32;
-        s.buffers[i as usize] = (s.fns.proxy_marshal_flags)(pool, 0, s.wl_buffer_iface,
-            (s.fns.proxy_get_version)(pool), 0,
-            ptr::null::<c_void>(), offset, width as i32, height as i32, stride as i32, WL_SHM_FORMAT_XRGB8888);
-        (s.fns.proxy_add_listener)(s.buffers[i as usize], &BUFFER_LISTENER as *const _ as *const c_void,
-            s as *mut WlState as *mut c_void);
+        s.buffers[i as usize] = (s.fns.proxy_marshal_flags)(
+            pool,
+            0,
+            s.wl_buffer_iface,
+            (s.fns.proxy_get_version)(pool),
+            0,
+            ptr::null::<c_void>(),
+            offset,
+            width as i32,
+            height as i32,
+            stride as i32,
+            WL_SHM_FORMAT_XRGB8888,
+        );
+        (s.fns.proxy_add_listener)(
+            s.buffers[i as usize],
+            &BUFFER_LISTENER as *const _ as *const c_void,
+            s as *mut WlState as *mut c_void,
+        );
         s.buf_released[i as usize] = true;
     }
 
@@ -588,26 +1000,30 @@ impl WaylandWindow {
     pub fn new() -> Self {
         unsafe {
             let lib = dlopen(c"libwayland-client.so.0".as_ptr(), RTLD_LAZY);
-            if lib.is_null() { panic!("Failed to load libwayland-client.so.0"); }
+            if lib.is_null() {
+                panic!("Failed to load libwayland-client.so.0");
+            }
 
             let fns = WlFns {
-                display_connect:        load_sym(lib, c"wl_display_connect"),
-                display_disconnect:     load_sym(lib, c"wl_display_disconnect"),
-                display_roundtrip:      load_sym(lib, c"wl_display_roundtrip"),
-                display_flush:          load_sym(lib, c"wl_display_flush"),
-                display_get_fd:         load_sym(lib, c"wl_display_get_fd"),
-                display_prepare_read:   load_sym(lib, c"wl_display_prepare_read"),
-                display_read_events:    load_sym(lib, c"wl_display_read_events"),
-                display_cancel_read:    load_sym(lib, c"wl_display_cancel_read"),
-                display_dispatch_pending:load_sym(lib, c"wl_display_dispatch_pending"),
-                proxy_marshal_flags:    load_sym(lib, c"wl_proxy_marshal_flags"),
-                proxy_add_listener:     load_sym(lib, c"wl_proxy_add_listener"),
-                proxy_get_version:      load_sym(lib, c"wl_proxy_get_version"),
-                proxy_destroy:          load_sym(lib, c"wl_proxy_destroy"),
+                display_connect: load_sym(lib, c"wl_display_connect"),
+                display_disconnect: load_sym(lib, c"wl_display_disconnect"),
+                display_roundtrip: load_sym(lib, c"wl_display_roundtrip"),
+                display_flush: load_sym(lib, c"wl_display_flush"),
+                display_get_fd: load_sym(lib, c"wl_display_get_fd"),
+                display_prepare_read: load_sym(lib, c"wl_display_prepare_read"),
+                display_read_events: load_sym(lib, c"wl_display_read_events"),
+                display_cancel_read: load_sym(lib, c"wl_display_cancel_read"),
+                display_dispatch_pending: load_sym(lib, c"wl_display_dispatch_pending"),
+                proxy_marshal_flags: load_sym(lib, c"wl_proxy_marshal_flags"),
+                proxy_add_listener: load_sym(lib, c"wl_proxy_add_listener"),
+                proxy_get_version: load_sym(lib, c"wl_proxy_get_version"),
+                proxy_destroy: load_sym(lib, c"wl_proxy_destroy"),
             };
 
             let display = (fns.display_connect)(ptr::null());
-            if display.is_null() { panic!("Failed to connect to Wayland display"); }
+            if display.is_null() {
+                panic!("Failed to connect to Wayland display");
+            }
 
             let mut state = Box::new(WlState {
                 fns,
@@ -655,58 +1071,131 @@ impl WaylandWindow {
             let data_ptr = &mut *state as *mut WlState as *mut c_void;
 
             // wl_display.get_registry (opcode 1)
-            let registry = (state.fns.proxy_marshal_flags)(display, 1, state.wl_registry_iface,
-                (state.fns.proxy_get_version)(display), 0, ptr::null::<c_void>());
-            (state.fns.proxy_add_listener)(registry, &REGISTRY_LISTENER as *const _ as *const c_void, data_ptr);
+            let registry = (state.fns.proxy_marshal_flags)(
+                display,
+                1,
+                state.wl_registry_iface,
+                (state.fns.proxy_get_version)(display),
+                0,
+                ptr::null::<c_void>(),
+            );
+            (state.fns.proxy_add_listener)(
+                registry,
+                &REGISTRY_LISTENER as *const _ as *const c_void,
+                data_ptr,
+            );
 
             (state.fns.display_roundtrip)(display);
             (state.fns.display_roundtrip)(display);
 
-            if state.compositor.is_null() { panic!("No wl_compositor"); }
-            if state.shm.is_null() { panic!("No wl_shm"); }
-            if state.xdg_wm_base.is_null() { panic!("No xdg_wm_base"); }
+            if state.compositor.is_null() {
+                panic!("No wl_compositor");
+            }
+            if state.shm.is_null() {
+                panic!("No wl_shm");
+            }
+            if state.xdg_wm_base.is_null() {
+                panic!("No xdg_wm_base");
+            }
 
             // wl_compositor.create_surface (opcode 0): signature "n"
-            state.surface = (state.fns.proxy_marshal_flags)(state.compositor, 0, state.wl_surface_iface,
-                (state.fns.proxy_get_version)(state.compositor), 0, ptr::null::<c_void>());
+            state.surface = (state.fns.proxy_marshal_flags)(
+                state.compositor,
+                0,
+                state.wl_surface_iface,
+                (state.fns.proxy_get_version)(state.compositor),
+                0,
+                ptr::null::<c_void>(),
+            );
 
             // xdg_wm_base.get_xdg_surface (opcode 2): signature "no"
-            state.xdg_surface = (state.fns.proxy_marshal_flags)(state.xdg_wm_base, 2, &XDG_SURFACE_INTERFACE,
-                (state.fns.proxy_get_version)(state.xdg_wm_base), 0,
-                ptr::null::<c_void>(), state.surface);
-            (state.fns.proxy_add_listener)(state.xdg_surface, &XDG_SURFACE_LISTENER as *const _ as *const c_void, data_ptr);
+            state.xdg_surface = (state.fns.proxy_marshal_flags)(
+                state.xdg_wm_base,
+                2,
+                &XDG_SURFACE_INTERFACE,
+                (state.fns.proxy_get_version)(state.xdg_wm_base),
+                0,
+                ptr::null::<c_void>(),
+                state.surface,
+            );
+            (state.fns.proxy_add_listener)(
+                state.xdg_surface,
+                &XDG_SURFACE_LISTENER as *const _ as *const c_void,
+                data_ptr,
+            );
 
             // xdg_surface.get_toplevel (opcode 1): signature "n"
-            state.xdg_toplevel = (state.fns.proxy_marshal_flags)(state.xdg_surface, 1, &XDG_TOPLEVEL_INTERFACE,
-                (state.fns.proxy_get_version)(state.xdg_surface), 0, ptr::null::<c_void>());
-            (state.fns.proxy_add_listener)(state.xdg_toplevel, &XDG_TOPLEVEL_LISTENER as *const _ as *const c_void, data_ptr);
+            state.xdg_toplevel = (state.fns.proxy_marshal_flags)(
+                state.xdg_surface,
+                1,
+                &XDG_TOPLEVEL_INTERFACE,
+                (state.fns.proxy_get_version)(state.xdg_surface),
+                0,
+                ptr::null::<c_void>(),
+            );
+            (state.fns.proxy_add_listener)(
+                state.xdg_toplevel,
+                &XDG_TOPLEVEL_LISTENER as *const _ as *const c_void,
+                data_ptr,
+            );
 
             // xdg_toplevel.set_title (opcode 2): signature "s"
-            (state.fns.proxy_marshal_flags)(state.xdg_toplevel, 2, ptr::null(),
-                (state.fns.proxy_get_version)(state.xdg_toplevel), 0, c"Clauding".as_ptr());
+            (state.fns.proxy_marshal_flags)(
+                state.xdg_toplevel,
+                2,
+                ptr::null(),
+                (state.fns.proxy_get_version)(state.xdg_toplevel),
+                0,
+                c"Clauding".as_ptr(),
+            );
 
             // xdg_toplevel.set_app_id (opcode 3): signature "s"
-            (state.fns.proxy_marshal_flags)(state.xdg_toplevel, 3, ptr::null(),
-                (state.fns.proxy_get_version)(state.xdg_toplevel), 0, c"clauding".as_ptr());
+            (state.fns.proxy_marshal_flags)(
+                state.xdg_toplevel,
+                3,
+                ptr::null(),
+                (state.fns.proxy_get_version)(state.xdg_toplevel),
+                0,
+                c"clauding".as_ptr(),
+            );
 
             // xdg_toplevel.set_fullscreen (opcode 11): signature "?o"
-            (state.fns.proxy_marshal_flags)(state.xdg_toplevel, 11, ptr::null(),
-                (state.fns.proxy_get_version)(state.xdg_toplevel), 0, ptr::null::<c_void>());
+            (state.fns.proxy_marshal_flags)(
+                state.xdg_toplevel,
+                11,
+                ptr::null(),
+                (state.fns.proxy_get_version)(state.xdg_toplevel),
+                0,
+                ptr::null::<c_void>(),
+            );
 
             // Initial empty commit to indicate we're ready
             // wl_surface.commit (opcode 6)
-            (state.fns.proxy_marshal_flags)(state.surface, 6, ptr::null(),
-                (state.fns.proxy_get_version)(state.surface), 0);
+            (state.fns.proxy_marshal_flags)(
+                state.surface,
+                6,
+                ptr::null(),
+                (state.fns.proxy_get_version)(state.surface),
+                0,
+            );
 
             // Create relative pointer if available (after globals are bound)
             if !state.pointer.is_null() && !state.rel_pointer_mgr.is_null() {
                 // zwp_relative_pointer_manager_v1.get_relative_pointer (opcode 1): "no"
                 state.rel_pointer = (state.fns.proxy_marshal_flags)(
-                    state.rel_pointer_mgr, 1, &ZWP_REL_PTR_INTERFACE,
-                    (state.fns.proxy_get_version)(state.rel_pointer_mgr), 0,
-                    ptr::null::<c_void>(), state.pointer);
-                (state.fns.proxy_add_listener)(state.rel_pointer,
-                    &REL_POINTER_LISTENER as *const _ as *const c_void, data_ptr);
+                    state.rel_pointer_mgr,
+                    1,
+                    &ZWP_REL_PTR_INTERFACE,
+                    (state.fns.proxy_get_version)(state.rel_pointer_mgr),
+                    0,
+                    ptr::null::<c_void>(),
+                    state.pointer,
+                );
+                (state.fns.proxy_add_listener)(
+                    state.rel_pointer,
+                    &REL_POINTER_LISTENER as *const _ as *const c_void,
+                    data_ptr,
+                );
                 state.has_rel_pointer = true;
                 eprintln!("Relative pointer: enabled");
             } else if !state.pointer.is_null() {
@@ -719,8 +1208,16 @@ impl WaylandWindow {
             }
 
             // Use pending size or fallback
-            let w = if state.pending_width > 0 { state.pending_width as usize } else { crate::state::DEFAULT_WIDTH };
-            let h = if state.pending_height > 0 { state.pending_height as usize } else { crate::state::DEFAULT_HEIGHT };
+            let w = if state.pending_width > 0 {
+                state.pending_width as usize
+            } else {
+                crate::state::DEFAULT_WIDTH
+            };
+            let h = if state.pending_height > 0 {
+                state.pending_height as usize
+            } else {
+                crate::state::DEFAULT_HEIGHT
+            };
 
             create_shm_buffers(&mut state, w, h);
 
@@ -728,9 +1225,19 @@ impl WaylandWindow {
         }
     }
 
-    pub fn width(&self) -> usize { self.state.width }
-    pub fn height(&self) -> usize { self.state.height }
-    pub fn poll_events(&mut self, keys: &mut [bool; 256], should_quit: &mut bool, mouse_dx: &mut f32, mouse_dy: &mut f32) {
+    pub fn width(&self) -> usize {
+        self.state.width
+    }
+    pub fn height(&self) -> usize {
+        self.state.height
+    }
+    pub fn poll_events(
+        &mut self,
+        keys: &mut [bool; 256],
+        should_quit: &mut bool,
+        mouse_dx: &mut f32,
+        mouse_dy: &mut f32,
+    ) {
         unsafe {
             let s = &mut *self.state;
             let fd = (s.fns.display_get_fd)(s.display);
@@ -738,7 +1245,11 @@ impl WaylandWindow {
             (s.fns.display_flush)(s.display);
 
             if (s.fns.display_prepare_read)(s.display) == 0 {
-                let mut pfd = PollFd { fd, events: POLLIN, revents: 0 };
+                let mut pfd = PollFd {
+                    fd,
+                    events: POLLIN,
+                    revents: 0,
+                };
                 let ret = poll(&mut pfd, 1, 0);
                 if ret > 0 && pfd.revents & POLLIN != 0 {
                     (s.fns.display_read_events)(s.display);
@@ -772,7 +1283,9 @@ impl WaylandWindow {
     pub fn present(&mut self, pixels: &[u32]) {
         unsafe {
             let s = &mut *self.state;
-            if s.width == 0 || s.height == 0 { return; }
+            if s.width == 0 || s.height == 0 {
+                return;
+            }
 
             let buf_idx = s.cur_buf;
             if !s.buf_released[buf_idx] {
@@ -789,18 +1302,38 @@ impl WaylandWindow {
             s.buf_released[buf_idx] = false;
 
             // wl_surface.attach (opcode 1): signature "oii"
-            (s.fns.proxy_marshal_flags)(s.surface, 1, ptr::null(),
-                (s.fns.proxy_get_version)(s.surface), 0,
-                s.buffers[buf_idx], 0i32, 0i32);
+            (s.fns.proxy_marshal_flags)(
+                s.surface,
+                1,
+                ptr::null(),
+                (s.fns.proxy_get_version)(s.surface),
+                0,
+                s.buffers[buf_idx],
+                0i32,
+                0i32,
+            );
 
             // wl_surface.damage_buffer (opcode 9): signature "iiii"
-            (s.fns.proxy_marshal_flags)(s.surface, 9, ptr::null(),
-                (s.fns.proxy_get_version)(s.surface), 0,
-                0i32, 0i32, s.width as i32, s.height as i32);
+            (s.fns.proxy_marshal_flags)(
+                s.surface,
+                9,
+                ptr::null(),
+                (s.fns.proxy_get_version)(s.surface),
+                0,
+                0i32,
+                0i32,
+                s.width as i32,
+                s.height as i32,
+            );
 
             // wl_surface.commit (opcode 6)
-            (s.fns.proxy_marshal_flags)(s.surface, 6, ptr::null(),
-                (s.fns.proxy_get_version)(s.surface), 0);
+            (s.fns.proxy_marshal_flags)(
+                s.surface,
+                6,
+                ptr::null(),
+                (s.fns.proxy_get_version)(s.surface),
+                0,
+            );
 
             (s.fns.display_flush)(s.display);
 

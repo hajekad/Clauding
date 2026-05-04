@@ -1,9 +1,8 @@
-// Vehicle suspension: spring-damper per wheel
-//
-// Each wheel has an independent spring-damper that:
-// 1. Raycasts down from the wheel attachment point
-// 2. Compresses/extends based on terrain height
-// 3. Produces a normal force that both supports the vehicle and feeds into tire model
+//! Vehicle suspension — spring-damper per wheel.
+//!
+//! Each wheel runs an independent spring-damper that raycasts to the terrain,
+//! compresses/extends based on the contact, and produces the normal force used
+//! to support the vehicle and to feed the tire model.
 
 use crate::math::*;
 use crate::tire::WheelState;
@@ -12,11 +11,11 @@ use crate::tire::WheelState;
 
 #[derive(Clone, Copy)]
 pub struct SuspensionParams {
-    pub rest_length: f32,      // natural spring length (m)
-    pub spring_rate: f32,      // spring constant k (N/m)
-    pub damper_rate: f32,      // damping constant c (N*s/m)
-    pub max_compression: f32,  // maximum compression travel (m)
-    pub max_extension: f32,    // maximum droop travel (m)
+    pub rest_length: f32,     // natural spring length (m)
+    pub spring_rate: f32,     // spring constant k (N/m)
+    pub damper_rate: f32,     // damping constant c (N*s/m)
+    pub max_compression: f32, // maximum compression travel (m)
+    pub max_extension: f32,   // maximum droop travel (m)
 }
 
 impl SuspensionParams {
@@ -24,8 +23,8 @@ impl SuspensionParams {
     pub fn default_car() -> Self {
         SuspensionParams {
             rest_length: 0.35,
-            spring_rate: 35000.0,   // 35 kN/m per wheel (total ~140 kN for 1500kg car)
-            damper_rate: 3500.0,    // critical damping ≈ 2*sqrt(k*m) ≈ 2*sqrt(35000*375) ≈ 7245
+            spring_rate: 35000.0, // 35 kN/m per wheel (total ~140 kN for 1500kg car)
+            damper_rate: 3500.0,  // critical damping ≈ 2*sqrt(k*m) ≈ 2*sqrt(35000*375) ≈ 7245
             max_compression: 0.15,
             max_extension: 0.20,
         }
@@ -37,13 +36,17 @@ impl SuspensionParams {
 #[derive(Clone, Copy)]
 pub struct SuspensionState {
     pub params: SuspensionParams,
-    pub compression: f32,       // current compression distance (positive = compressed)
-    pub prev_compression: f32,  // previous frame compression (for velocity)
+    pub compression: f32, // current compression distance (positive = compressed)
+    pub prev_compression: f32, // previous frame compression (for velocity)
 }
 
 impl SuspensionState {
     pub fn new(params: SuspensionParams) -> Self {
-        SuspensionState { params, compression: 0.0, prev_compression: 0.0 }
+        SuspensionState {
+            params,
+            compression: 0.0,
+            prev_compression: 0.0,
+        }
     }
 }
 

@@ -1,26 +1,36 @@
-// Pacejka "Magic Formula" tire model + wheel state + drivetrain
-//
-// Computes longitudinal/lateral forces from slip ratios and slip angles.
-// Each wheel tracks angular velocity, steering angle, and produces forces
-// that feed back into the rigid body solver.
+//! Pacejka "Magic Formula" tire model — wheel state and drivetrain.
+//!
+//! Computes longitudinal/lateral forces from slip ratios and slip angles.
+//! Each wheel tracks angular velocity and steering angle, producing forces
+//! that feed back into the rigid body solver.
 
-use crate::math::*;
 use crate::material::SurfaceMaterial;
+use crate::math::*;
 
 // ── Pacejka Magic Formula ────────────────────────────────────────────────
 
 /// Pacejka coefficients for a single axis (longitudinal or lateral)
 #[derive(Clone, Copy)]
 pub struct PacejkaCoeffs {
-    pub b: f32,  // stiffness
-    pub c: f32,  // shape
-    pub d: f32,  // peak (force = d * Fz)
-    pub e: f32,  // curvature
+    pub b: f32, // stiffness
+    pub c: f32, // shape
+    pub d: f32, // peak (force = d * Fz)
+    pub e: f32, // curvature
 }
 
 /// Default coefficients for performance tires (d > 1.0 = tire compound exceeds surface μ)
-pub const PACEJKA_LONG: PacejkaCoeffs = PacejkaCoeffs { b: 10.0, c: 1.9, d: 1.15, e: 0.97 };
-pub const PACEJKA_LAT: PacejkaCoeffs = PacejkaCoeffs { b: 12.0, c: 2.3, d: 1.05, e: 0.97 };
+pub const PACEJKA_LONG: PacejkaCoeffs = PacejkaCoeffs {
+    b: 10.0,
+    c: 1.9,
+    d: 1.15,
+    e: 0.97,
+};
+pub const PACEJKA_LAT: PacejkaCoeffs = PacejkaCoeffs {
+    b: 12.0,
+    c: 2.3,
+    d: 1.05,
+    e: 0.97,
+};
 
 /// Evaluate the Magic Formula: F = D * sin(C * atan(B*x - E*(B*x - atan(B*x))))
 fn pacejka(p: &PacejkaCoeffs, slip: f32) -> f32 {
@@ -33,22 +43,22 @@ fn pacejka(p: &PacejkaCoeffs, slip: f32) -> f32 {
 
 #[derive(Clone, Copy)]
 pub struct WheelState {
-    pub ang_vel: f32,           // wheel angular velocity (rad/s)
-    pub steer_angle: f32,       // steering angle (rad, 0 for rear wheels)
-    pub radius: f32,            // tire radius (m)
-    pub inertia: f32,           // wheel rotational inertia (kg*m^2)
-    pub brake_torque: f32,      // applied brake torque (N*m)
-    pub drive_torque: f32,      // applied drive torque from engine (N*m)
-    pub punctured: bool,        // punctured tire: reduced friction, no grip recovery
-    pub abs: bool,              // ABS active on this wheel (false for handbrake)
+    pub ang_vel: f32,      // wheel angular velocity (rad/s)
+    pub steer_angle: f32,  // steering angle (rad, 0 for rear wheels)
+    pub radius: f32,       // tire radius (m)
+    pub inertia: f32,      // wheel rotational inertia (kg*m^2)
+    pub brake_torque: f32, // applied brake torque (N*m)
+    pub drive_torque: f32, // applied drive torque from engine (N*m)
+    pub punctured: bool,   // punctured tire: reduced friction, no grip recovery
+    pub abs: bool,         // ABS active on this wheel (false for handbrake)
     // Suspension attachment point in local vehicle space
     pub local_pos: Vec3,
     // Output (computed each frame)
-    pub contact_force: Vec3,    // world-space force from this tire
+    pub contact_force: Vec3, // world-space force from this tire
     pub on_ground: bool,
-    pub compression: f32,       // current suspension compression (0..1)
-    pub ground_y: f32,          // terrain height at contact
-    pub slip_ratio: f32,        // last computed longitudinal slip ratio
+    pub compression: f32, // current suspension compression (0..1)
+    pub ground_y: f32,    // terrain height at contact
+    pub slip_ratio: f32,  // last computed longitudinal slip ratio
 }
 
 impl WheelState {
@@ -57,7 +67,7 @@ impl WheelState {
             ang_vel: 0.0,
             steer_angle: 0.0,
             radius,
-            inertia: 1.2,       // typical car wheel ~1.2 kg*m^2
+            inertia: 1.2, // typical car wheel ~1.2 kg*m^2
             brake_torque: 0.0,
             drive_torque: 0.0,
             punctured: false,
@@ -76,15 +86,15 @@ impl WheelState {
 
 #[derive(Clone, Copy)]
 pub struct Drivetrain {
-    pub engine_torque: f32,     // max engine torque (N*m)
-    pub gear_ratio: f32,        // current gear ratio * final drive
-    pub max_power: f32,         // max engine power (W) — limits force at high speed
-    pub max_speed: f32,         // electronic speed governor (m/s) — 0 = no limit
-    pub throttle: f32,          // 0..1
-    pub brake: f32,             // 0..1
+    pub engine_torque: f32, // max engine torque (N*m)
+    pub gear_ratio: f32,    // current gear ratio * final drive
+    pub max_power: f32,     // max engine power (W) — limits force at high speed
+    pub max_speed: f32,     // electronic speed governor (m/s) — 0 = no limit
+    pub throttle: f32,      // 0..1
+    pub brake: f32,         // 0..1
     pub handbrake: bool,
-    pub max_steer: f32,         // max steering angle (rad)
-    pub steer_input: f32,       // -1..1 steering input
+    pub max_steer: f32,   // max steering angle (rad)
+    pub steer_input: f32, // -1..1 steering input
 }
 
 impl Drivetrain {
@@ -109,11 +119,11 @@ impl Drivetrain {
 /// Returns (world_force, tire_torque_feedback) applied to the rigid body.
 pub fn compute_tire_forces(
     wheel: &mut WheelState,
-    body_vel_at_contact: Vec3,  // velocity of body at wheel contact point (world space)
-    _body_up: Vec3,             // vehicle up direction (from quat)
-    body_fwd: Vec3,             // vehicle forward direction (from quat)
-    body_right: Vec3,           // vehicle right direction (from quat)
-    normal_load: f32,           // suspension force pushing tire into ground (N)
+    body_vel_at_contact: Vec3, // velocity of body at wheel contact point (world space)
+    _body_up: Vec3,            // vehicle up direction (from quat)
+    body_fwd: Vec3,            // vehicle forward direction (from quat)
+    body_right: Vec3,          // vehicle right direction (from quat)
+    normal_load: f32,          // suspension force pushing tire into ground (N)
     surface: &SurfaceMaterial,
     dt: f32,
 ) -> Vec3 {
@@ -135,8 +145,8 @@ pub fn compute_tire_forces(
     let tire_right = v3_sub(v3_scale(body_right, cos_s), v3_scale(body_fwd, sin_s));
 
     // Project contact velocity onto tire axes (ground plane)
-    let vx_tire = v3_dot(body_vel_at_contact, tire_fwd);    // longitudinal
-    let vy_tire = v3_dot(body_vel_at_contact, tire_right);   // lateral
+    let vx_tire = v3_dot(body_vel_at_contact, tire_fwd); // longitudinal
+    let vy_tire = v3_dot(body_vel_at_contact, tire_right); // lateral
 
     // Longitudinal slip ratio: (wheel_speed - ground_speed) / max(|ground_speed|, |wheel_speed|, small)
     let wheel_speed = wheel.ang_vel * wheel.radius;
@@ -207,8 +217,8 @@ pub fn compute_tire_forces(
     // drive torque against the tire's grip reaction (linearized Pacejka around current slip)
     let _ground_speed_ang = vx_tire / wheel.radius;
     let tire_reaction_torque = -fx * wheel.radius;
-    let net_torque = effective_drive + tire_reaction_torque
-        - effective_brake * wheel.ang_vel.signum();
+    let net_torque =
+        effective_drive + tire_reaction_torque - effective_brake * wheel.ang_vel.signum();
     wheel.ang_vel += net_torque / wheel.inertia * dt;
 
     // Stabilization: strongly blend wheel speed toward no-slip speed

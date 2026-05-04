@@ -1,11 +1,11 @@
-// HUD: health bar, stamina bar, money, score, minimap, vehicle prompt
-// Draws directly to framebuffer pixels (no z-buffer, overlaid on top)
+//! HUD overlay — health, stamina, money, score, minimap, vehicle prompt.
+//! Draws directly to framebuffer pixels (no z-buffer, overlaid on the rendered scene).
 
-use crate::state::*;
-use crate::raster::Framebuffer;
-use crate::math::*;
 use crate::color::alpha_blend;
+use crate::math::*;
+use crate::raster::Framebuffer;
 use crate::render::clip_to_screen;
+use crate::state::*;
 
 const DAY_COLOR: u32 = 0xFFCCCCCC;
 
@@ -102,15 +102,55 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
     let p = &game.player;
 
     // Health bar
-    draw_bar(fb, BAR_X, HEALTH_Y, BAR_W, BAR_H, p.health / 100.0, HEALTH_COLOR);
+    draw_bar(
+        fb,
+        BAR_X,
+        HEALTH_Y,
+        BAR_W,
+        BAR_H,
+        p.health / 100.0,
+        HEALTH_COLOR,
+    );
     // Stamina bar
-    draw_bar(fb, BAR_X, STAMINA_Y, BAR_W, BAR_H, p.stamina / 100.0, STAMINA_COLOR);
+    draw_bar(
+        fb,
+        BAR_X,
+        STAMINA_Y,
+        BAR_W,
+        BAR_H,
+        p.stamina / 100.0,
+        STAMINA_COLOR,
+    );
     // Hunger bar (flash red when < 20%)
-    let hunger_color = if p.hunger < 20.0 { BAR_LOW_FLASH } else { HUNGER_COLOR };
-    draw_bar(fb, BAR_X, HUNGER_Y, BAR_W, BAR_H, p.hunger / 100.0, hunger_color);
+    let hunger_color = if p.hunger < 20.0 {
+        BAR_LOW_FLASH
+    } else {
+        HUNGER_COLOR
+    };
+    draw_bar(
+        fb,
+        BAR_X,
+        HUNGER_Y,
+        BAR_W,
+        BAR_H,
+        p.hunger / 100.0,
+        hunger_color,
+    );
     // Thirst bar (flash red when < 20%)
-    let thirst_color = if p.thirst < 20.0 { BAR_LOW_FLASH } else { THIRST_COLOR };
-    draw_bar(fb, BAR_X, THIRST_Y, BAR_W, BAR_H, p.thirst / 100.0, thirst_color);
+    let thirst_color = if p.thirst < 20.0 {
+        BAR_LOW_FLASH
+    } else {
+        THIRST_COLOR
+    };
+    draw_bar(
+        fb,
+        BAR_X,
+        THIRST_Y,
+        BAR_W,
+        BAR_H,
+        p.thirst / 100.0,
+        thirst_color,
+    );
 
     // Money ($ + number)
     let money_y = THIRST_Y + BAR_H + BAR_GAP + 2;
@@ -158,7 +198,14 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
         // Items counter
         draw_number(fb, BAR_X + progress_w + 6, status_y, done, 1, JOB_COLOR);
         draw_text(fb, BAR_X + progress_w + 6 + 16, status_y, "-", 1, JOB_COLOR);
-        draw_number(fb, BAR_X + progress_w + 6 + 24, status_y, needed, 1, JOB_COLOR);
+        draw_number(
+            fb,
+            BAR_X + progress_w + 6 + 24,
+            status_y,
+            needed,
+            1,
+            JOB_COLOR,
+        );
         status_y += 14;
         // Time remaining
         if p.active_job.time_remaining > 0.0 {
@@ -176,7 +223,14 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
         let bank_y = money_y + 12;
         draw_text(fb, BAR_X + 80, bank_y - 12, "BANK", 1, 0xFF88BBFF);
         draw_char_idx(fb, BAR_X + 112, bank_y - 12, 10, 1, 0xFF88BBFF);
-        draw_number(fb, BAR_X + 118, bank_y - 12, p.bank_balance as u32, 1, 0xFF88BBFF);
+        draw_number(
+            fb,
+            BAR_X + 118,
+            bank_y - 12,
+            p.bank_balance as u32,
+            1,
+            0xFF88BBFF,
+        );
     }
 
     // Time of day (top-right, HH:MM format)
@@ -219,7 +273,9 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
         if p.carrying_item {
             // Near bin? Show "E DEPOSIT"
             let near_bin = game.world.trash_bins.iter().any(|b| {
-                if b.carried_by.is_some() { return false; }
+                if b.carried_by.is_some() {
+                    return false;
+                }
                 dist_sq_2d(p.x, p.z, b.x, b.z) < bin_dist_sq
             });
             if near_bin {
@@ -233,20 +289,27 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
         } else {
             // Not carrying anything — check what's nearby
             let near_item = game.world.items.iter().any(|it| {
-                if !it.active || it.falling { return false; }
+                if !it.active || it.falling {
+                    return false;
+                }
                 dist_sq_2d(p.x, p.z, it.x, it.z) < pickup_dist_sq
             });
             let near_bin = game.world.trash_bins.iter().any(|b| {
-                if b.carried_by.is_some() { return false; }
+                if b.carried_by.is_some() {
+                    return false;
+                }
                 dist_sq_2d(p.x, p.z, b.x, b.z) < bin_dist_sq
             });
-            let near_vehicle = game.world.vehicles.iter().any(|v| {
-                dist_sq_2d(p.x, p.z, v.x, v.z) < VEHICLE_ENTER_DIST * VEHICLE_ENTER_DIST
-            });
+            let near_vehicle =
+                game.world.vehicles.iter().any(|v| {
+                    dist_sq_2d(p.x, p.z, v.x, v.z) < VEHICLE_ENTER_DIST * VEHICLE_ENTER_DIST
+                });
             // Check interactibles
             let interact_dist_sq = INTERACT_DIST * INTERACT_DIST;
             let near_interactible = game.world.interactibles.iter().find(|i| {
-                if i.cooldown > 0.0 { return false; }
+                if i.cooldown > 0.0 {
+                    return false;
+                }
                 dist_sq_2d(p.x, p.z, i.x, i.z) < interact_dist_sq
             });
 
@@ -278,7 +341,9 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
                 // Attack prompt near NPC
                 let attack_dist_sq = ATTACK_RANGE * ATTACK_RANGE * 4.0;
                 let near_npc = game.world.npcs.iter().any(|n| {
-                    if n.state == NpcState::KnockedOut || n.state == NpcState::Sleeping { return false; }
+                    if n.state == NpcState::KnockedOut || n.state == NpcState::Sleeping {
+                        return false;
+                    }
                     dist_sq_2d(p.x, p.z, n.x, n.z) < attack_dist_sq
                 });
                 if near_npc {
@@ -298,28 +363,54 @@ pub fn sys_hud(fb: &mut Framebuffer, game: &GameState) {
         draw_text(fb, menu_x + 8, menu_y + 8, "SELECT JOB", 2, JOB_COLOR);
 
         let jobs = [
-            "GARBAGE COLLECTOR", "TAXI DRIVER", "DELIVERY COURIER",
-            "MAIL CARRIER", "PARAMEDIC", "FIREFIGHTER", "POLICE PATROL",
-            "STREET VENDOR", "MECHANIC", "CONSTRUCTION", "FISHERMAN",
-            "FARMER", "LUMBERJACK", "SCAVENGER",
+            "GARBAGE COLLECTOR",
+            "TAXI DRIVER",
+            "DELIVERY COURIER",
+            "MAIL CARRIER",
+            "PARAMEDIC",
+            "FIREFIGHTER",
+            "POLICE PATROL",
+            "STREET VENDOR",
+            "MECHANIC",
+            "CONSTRUCTION",
+            "FISHERMAN",
+            "FARMER",
+            "LUMBERJACK",
+            "SCAVENGER",
         ];
         let cursor = game.player.job_menu_cursor;
         for (i, name) in jobs.iter().enumerate() {
             let iy = menu_y + 30 + i * 13;
-            if iy + 10 > menu_y + 220 { break; }
+            if iy + 10 > menu_y + 220 {
+                break;
+            }
             let color = if i == cursor { 0xFFFFAA33 } else { 0xFFCCCCCC };
             if i == cursor {
                 draw_rect(fb, menu_x + 2, iy - 1, 236, 12, 0xFF333355);
             }
             draw_text(fb, menu_x + 8, iy, name, 1, color);
         }
-        draw_text(fb, menu_x + 8, menu_y + 205, "UP-DOWN  ENTER  ESC", 1, 0xFF888888);
+        draw_text(
+            fb,
+            menu_x + 8,
+            menu_y + 205,
+            "UP-DOWN  ENTER  ESC",
+            1,
+            0xFF888888,
+        );
     }
 }
 
 fn draw_bar(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize, fill: f32, color: u32) {
     // Border
-    draw_rect(fb, x.saturating_sub(1), y.saturating_sub(1), w + 2, h + 2, BAR_BORDER);
+    draw_rect(
+        fb,
+        x.saturating_sub(1),
+        y.saturating_sub(1),
+        w + 2,
+        h + 2,
+        BAR_BORDER,
+    );
     // Background
     draw_rect(fb, x, y, w, h, BAR_BG);
     // Fill
@@ -333,10 +424,14 @@ pub fn draw_rect(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize, c
     let alpha = (color >> 24) & 0xFF;
     for dy in 0..h {
         let py = y + dy;
-        if py >= fb.h { break; }
+        if py >= fb.h {
+            break;
+        }
         for dx in 0..w {
             let px = x + dx;
-            if px >= fb.w { break; }
+            if px >= fb.w {
+                break;
+            }
             let idx = py * fb.w + px;
             if alpha >= 0xF0 {
                 fb.pixels[idx] = color;
@@ -349,7 +444,9 @@ pub fn draw_rect(fb: &mut Framebuffer, x: usize, y: usize, w: usize, h: usize, c
 }
 
 fn draw_char_idx(fb: &mut Framebuffer, x: usize, y: usize, idx: usize, scale: usize, color: u32) {
-    if idx >= FONT.len() { return; }
+    if idx >= FONT.len() {
+        return;
+    }
     draw_glyph(fb, x, y, &FONT[idx], scale, color);
 }
 
@@ -366,7 +463,7 @@ fn ascii_to_font_idx(c: u8) -> Option<usize> {
         b'>' => Some(41),
         b'[' => Some(14), // reuse C glyph shape for [
         b']' => Some(15), // reuse D glyph shape for ]
-        b'?' => Some(28),  // reuse Q shape
+        b'?' => Some(28), // reuse Q shape
         b'_' => Some(42),
         _ => Some(38), // space for unknown
     }
@@ -386,10 +483,19 @@ pub fn draw_text(fb: &mut Framebuffer, x: usize, y: usize, text: &str, scale: us
 }
 
 /// Draw a string from a fixed byte buffer, stopping at trailing spaces
-pub fn draw_text_bytes(fb: &mut Framebuffer, x: usize, y: usize, text: &[u8; 64], scale: usize, color: u32) {
+pub fn draw_text_bytes(
+    fb: &mut Framebuffer,
+    x: usize,
+    y: usize,
+    text: &[u8; 64],
+    scale: usize,
+    color: u32,
+) {
     // Find actual length (trim trailing spaces)
     let mut len = 64;
-    while len > 0 && text[len - 1] == b' ' { len -= 1; }
+    while len > 0 && text[len - 1] == b' ' {
+        len -= 1;
+    }
     let char_w = 3 * scale + scale;
     let mut cx = x;
     for i in 0..len {
@@ -439,7 +545,15 @@ fn draw_number(fb: &mut Framebuffer, x: usize, y: usize, mut val: u32, scale: us
     }
 }
 
-fn draw_number_padded(fb: &mut Framebuffer, x: usize, y: usize, val: u32, min_digits: usize, scale: usize, color: u32) {
+fn draw_number_padded(
+    fb: &mut Framebuffer,
+    x: usize,
+    y: usize,
+    val: u32,
+    min_digits: usize,
+    scale: usize,
+    color: u32,
+) {
     let char_w = 3 * scale + scale;
     let mut digits = [0u8; 10];
     let mut n = 0;
@@ -448,9 +562,14 @@ fn draw_number_padded(fb: &mut Framebuffer, x: usize, y: usize, val: u32, min_di
         digits[n] = (v % 10) as u8;
         v /= 10;
         n += 1;
-        if v == 0 { break; }
+        if v == 0 {
+            break;
+        }
     }
-    while n < min_digits { digits[n] = 0; n += 1; }
+    while n < min_digits {
+        digits[n] = 0;
+        n += 1;
+    }
     for i in 0..n {
         let d = digits[n - 1 - i] as usize;
         draw_char_idx(fb, x + i * char_w, y, d, scale, color);
@@ -465,15 +584,27 @@ fn draw_dot_pair(fb: &mut Framebuffer, x: usize, y: usize, scale: usize, color: 
             let py1 = y + 1 * scale + sy;
             let py2 = y + 3 * scale + sy;
             if px < fb.w {
-                if py1 < fb.h { fb.pixels[py1 * fb.w + px] = color; }
-                if py2 < fb.h { fb.pixels[py2 * fb.w + px] = color; }
+                if py1 < fb.h {
+                    fb.pixels[py1 * fb.w + px] = color;
+                }
+                if py2 < fb.h {
+                    fb.pixels[py2 * fb.w + px] = color;
+                }
             }
         }
     }
 }
 
 /// Draw a thick line on the framebuffer using Bresenham's algorithm
-fn draw_minimap_line(fb: &mut Framebuffer, x0: usize, y0: usize, x1: usize, y1: usize, thickness: usize, color: u32) {
+fn draw_minimap_line(
+    fb: &mut Framebuffer,
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+    thickness: usize,
+    color: u32,
+) {
     let (mut cx, mut cy) = (x0 as i32, y0 as i32);
     let (ex, ey) = (x1 as i32, y1 as i32);
     let dx = (ex - cx).abs();
@@ -488,7 +619,9 @@ fn draw_minimap_line(fb: &mut Framebuffer, x0: usize, y0: usize, x1: usize, y1: 
             for tx in -half..=(half) {
                 let sx = cx + tx;
                 let sy = cy + ty;
-                if sx < 0 || sy < 0 { continue; }
+                if sx < 0 || sy < 0 {
+                    continue;
+                }
                 let px = sx as usize;
                 let py = sy as usize;
                 if px < fb.w && py < fb.h {
@@ -496,10 +629,18 @@ fn draw_minimap_line(fb: &mut Framebuffer, x0: usize, y0: usize, x1: usize, y1: 
                 }
             }
         }
-        if cx == ex && cy == ey { break; }
+        if cx == ex && cy == ey {
+            break;
+        }
         let e2 = 2 * err;
-        if e2 >= dy { err += dy; cx += sx; }
-        if e2 <= dx { err += dx; cy += sy; }
+        if e2 >= dy {
+            err += dy;
+            cx += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            cy += sy;
+        }
     }
 }
 
@@ -526,7 +667,9 @@ fn draw_minimap(fb: &mut Framebuffer, game: &GameState) {
 
     // Items
     for item in &game.world.items {
-        if !item.active { continue; }
+        if !item.active {
+            continue;
+        }
         let ix = world_to_minimap(item.x, size);
         let iz = world_to_minimap(item.z, size);
         if ix < size && iz < size {
@@ -545,7 +688,9 @@ fn draw_minimap(fb: &mut Framebuffer, game: &GameState) {
 
     // Trash bins
     for bin in &game.world.trash_bins {
-        if bin.carried_by.is_some() { continue; }
+        if bin.carried_by.is_some() {
+            continue;
+        }
         let bx = world_to_minimap(bin.x, size);
         let bz = world_to_minimap(bin.z, size);
         if bx < size && bz < size {
@@ -612,27 +757,39 @@ fn draw_npc_health_bars(fb: &mut Framebuffer, game: &GameState) {
 
     for npc in &game.world.npcs {
         // Only show health bar if damaged or KO'd
-        if npc.health >= NPC_HEALTH_MAX && npc.state != NpcState::KnockedOut { continue; }
-        if npc.state == NpcState::Sleeping { continue; }
-        if npc.in_vehicle { continue; }
+        if npc.health >= NPC_HEALTH_MAX && npc.state != NpcState::KnockedOut {
+            continue;
+        }
+        if npc.state == NpcState::Sleeping {
+            continue;
+        }
+        if npc.in_vehicle {
+            continue;
+        }
 
         // Project NPC head position to screen
         let world_pos = [npc.x, npc.y + 2.3, npc.z];
         let clip = m4_transform_no_div(&vp, world_pos);
-        if clip[3] < 0.1 { continue; } // behind camera
+        if clip[3] < 0.1 {
+            continue;
+        } // behind camera
 
         let scr = clip_to_screen(clip, fw, fh);
         let sx = scr[0] as i32;
         let sy = scr[1] as i32;
 
         // Distance-based size (12-40px)
-        let dist = dist_sq_2d(npc.x, npc.z, game.camera.x, game.camera.z).sqrt().max(1.0);
+        let dist = dist_sq_2d(npc.x, npc.z, game.camera.x, game.camera.z)
+            .sqrt()
+            .max(1.0);
         let bar_w = (40.0 / (dist * 0.1 + 1.0)).clamp(12.0, 40.0) as usize;
         let bar_h = 3usize;
 
         let bx = (sx - bar_w as i32 / 2).max(0) as usize;
         let by = sy.max(0) as usize;
-        if bx + bar_w >= fb.w || by + bar_h >= fb.h { continue; }
+        if bx + bar_w >= fb.w || by + bar_h >= fb.h {
+            continue;
+        }
 
         let fill = (npc.health / NPC_HEALTH_MAX).clamp(0.0, 1.0);
         let fill_w = (bar_w as f32 * fill) as usize;
@@ -640,7 +797,11 @@ fn draw_npc_health_bars(fb: &mut Framebuffer, game: &GameState) {
         // Background
         draw_rect(fb, bx, by, bar_w, bar_h, 0xCC333333);
         // Fill
-        let bar_color = if npc.state == NpcState::KnockedOut { 0xCC888888 } else { 0xCCCC2222 };
+        let bar_color = if npc.state == NpcState::KnockedOut {
+            0xCC888888
+        } else {
+            0xCCCC2222
+        };
         if fill_w > 0 {
             draw_rect(fb, bx, by, fill_w, bar_h, bar_color);
         }

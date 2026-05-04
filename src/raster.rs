@@ -1,4 +1,6 @@
-// Software rasterizer: framebuffer, z-buffer, incremental edge-function triangle fill
+//! Software rasterizer — `Framebuffer` (pixels + z-buffer) and an
+//! incremental edge-function triangle fill. Used as the CPU fallback
+//! when the Vulkan backend is unavailable.
 
 pub struct Framebuffer {
     pub pixels: Vec<u32>,
@@ -72,11 +74,15 @@ pub fn draw_triangle_smooth(fb: &mut Framebuffer, tri: &ScreenTriSmooth) {
     let max_x = ((v0[0].max(v1[0]).max(v2[0]) + 1.0).min((fb.w - 1) as f32)) as usize;
     let min_y = (v0[1].min(v1[1]).min(v2[1]) - 1.0).max(0.0) as usize;
     let max_y = ((v0[1].max(v1[1]).max(v2[1]) + 1.0).min((fb.h - 1) as f32)) as usize;
-    if min_x > max_x || min_y > max_y { return; }
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
 
     // Signed 2x area — ensure positive for edge functions, render both faces
     let mut area = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
-    if area.abs() < 0.5 { return; } // degenerate reject
+    if area.abs() < 0.5 {
+        return;
+    } // degenerate reject
     if area < 0.0 {
         std::mem::swap(&mut v1, &mut v2);
         std::mem::swap(&mut c1_raw, &mut c2_raw);
@@ -113,9 +119,12 @@ pub fn draw_triangle_smooth(fb: &mut Framebuffer, tri: &ScreenTriSmooth) {
     let b2 = (c2_raw & 0xFF) as f32;
 
     // Color deltas relative to v2 (same pattern as Z)
-    let dr0 = r0 - r2; let dr1 = r1 - r2;
-    let dg0 = g0 - g2; let dg1 = g1 - g2;
-    let db0 = b0 - b2; let db1 = b1 - b2;
+    let dr0 = r0 - r2;
+    let dr1 = r1 - r2;
+    let dg0 = g0 - g2;
+    let dg1 = g1 - g2;
+    let db0 = b0 - b2;
+    let db1 = b1 - b2;
 
     let r_step_x = (dx0 * dr0 + dx1 * dr1) * inv_area;
     let r_step_y = (dy0 * dr0 + dy1 * dr1) * inv_area;
@@ -186,11 +195,15 @@ pub fn draw_triangle(fb: &mut Framebuffer, tri: &ScreenTri) {
     let max_x = ((v0[0].max(v1[0]).max(v2[0]) + 1.0).min((fb.w - 1) as f32)) as usize;
     let min_y = (v0[1].min(v1[1]).min(v2[1]) - 1.0).max(0.0) as usize;
     let max_y = ((v0[1].max(v1[1]).max(v2[1]) + 1.0).min((fb.h - 1) as f32)) as usize;
-    if min_x > max_x || min_y > max_y { return; }
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
 
     // Signed 2x area — ensure positive for edge functions, render both faces
     let mut area = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
-    if area.abs() < 0.5 { return; } // degenerate reject
+    if area.abs() < 0.5 {
+        return;
+    } // degenerate reject
     if area < 0.0 {
         std::mem::swap(&mut v1, &mut v2);
         area = -area;

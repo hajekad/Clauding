@@ -1,13 +1,18 @@
-// Shared SPIR-V utilities: constants, macros, and helpers used by both
-// gpu_kernels.rs (compute shaders) and gpu_shaders.rs (graphics shaders)
+//! Shared SPIR-V utilities — constants, macros, and helpers used by both
+//! `gpu_kernels` (compute shaders) and `gpu_shaders` (graphics shaders).
 
 #![allow(unused)]
 
 pub fn encode_spirv_string(s: &str) -> Vec<u32> {
     let mut bytes: Vec<u8> = s.bytes().collect();
     bytes.push(0);
-    while bytes.len() % 4 != 0 { bytes.push(0); }
-    bytes.chunks(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+    while bytes.len() % 4 != 0 {
+        bytes.push(0);
+    }
+    bytes
+        .chunks(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
 }
 
 #[macro_export]

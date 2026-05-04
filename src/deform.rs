@@ -1,8 +1,8 @@
-// Vehicle panel deformation: visible crash damage
-//
-// Each vehicle has deformation state per panel region.
-// On collision, impact energy deforms panels proportional to relative velocity.
-// Deformation offsets are applied during mesh generation in render.rs.
+//! Vehicle panel deformation — visible crash damage.
+//!
+//! Each vehicle has deformation state per panel region.
+//! On collision, impact energy deforms panels proportional to relative velocity.
+//! Deformation offsets are applied during mesh generation in render.rs.
 
 use crate::math::*;
 
@@ -33,7 +33,8 @@ impl VehicleDeformation {
     pub fn apply_impact(&mut self, local_impact: Vec3, energy: f32, _half_w: f32, _half_d: f32) {
         // Map impact point to panel index (8 panels around perimeter)
         let angle = local_impact[2].atan2(local_impact[0]); // -PI..PI
-        let idx = ((angle + std::f32::consts::PI) / std::f32::consts::TAU * DEFORM_POINTS as f32) as usize;
+        let idx = ((angle + std::f32::consts::PI) / std::f32::consts::TAU * DEFORM_POINTS as f32)
+            as usize;
         let idx = idx.min(DEFORM_POINTS - 1);
 
         // Deformation amount: sqrt(energy) scaled to reasonable range
@@ -73,7 +74,8 @@ impl VehicleDeformation {
     /// Engine torque multiplier (front panels damaged → less power).
     /// Panel indices 1-3 correspond to the front arc of the vehicle.
     pub fn engine_factor(&self) -> f32 {
-        let front_avg = (self.offsets[1] + self.offsets[2] + self.offsets[3]) / (3.0 * self.max_deform);
+        let front_avg =
+            (self.offsets[1] + self.offsets[2] + self.offsets[3]) / (3.0 * self.max_deform);
         (1.0 - front_avg * 0.8).max(0.05) // up to 80% torque loss, never fully zero
     }
 
@@ -93,7 +95,8 @@ impl VehicleDeformation {
 
     /// Steering angle multiplier (front axle damage → reduced lock).
     pub fn steering_factor(&self) -> f32 {
-        let front_avg = (self.offsets[1] + self.offsets[2] + self.offsets[3]) / (3.0 * self.max_deform);
+        let front_avg =
+            (self.offsets[1] + self.offsets[2] + self.offsets[3]) / (3.0 * self.max_deform);
         (1.0 - front_avg * 0.6).max(0.2) // up to 60% lock reduction
     }
 

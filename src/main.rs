@@ -1,5 +1,12 @@
-use clauding::{state, npc, vehicle, vehicle_physics, player, camera, hud, particle, raster, render, menu, input, combat, collision, player_jobs, telemetry, gpu, platform, math};
+//! Clauding game binary — main loop, fixed-timestep tick, frame-time telemetry.
+//! 500 FPS render cap, percentile-based frame stats, ESC-to-pause menu.
+//! Drives the Vulkan renderer (with software rasterizer fallback) over Wayland.
+
 use clauding::gpu::{bytemuck_cast, bytemuck_cast_mut};
+use clauding::{
+    camera, collision, combat, gpu, hud, input, math, menu, npc, particle, platform, player,
+    player_jobs, raster, render, state, telemetry, vehicle, vehicle_physics,
+};
 
 use std::time::Instant;
 
@@ -9,22 +16,31 @@ const SCENIC_CUT_INTERVAL: f32 = 20.0; // seconds between camera cuts
 
 /// Frame time ring buffer for percentile analysis
 struct FrameStats {
-    times: Vec<f32>,      // frame times in seconds
+    times: Vec<f32>, // frame times in seconds
     head: usize,
     count: usize,
     report_timer: f32,
 }
 impl FrameStats {
     fn new(capacity: usize) -> Self {
-        FrameStats { times: vec![0.0; capacity], head: 0, count: 0, report_timer: 0.0 }
+        FrameStats {
+            times: vec![0.0; capacity],
+            head: 0,
+            count: 0,
+            report_timer: 0.0,
+        }
     }
     fn push(&mut self, dt: f32) {
         self.times[self.head] = dt;
         self.head = (self.head + 1) % self.times.len();
-        if self.count < self.times.len() { self.count += 1; }
+        if self.count < self.times.len() {
+            self.count += 1;
+        }
     }
     fn percentile_fps(&self, pct: f32) -> f32 {
-        if self.count < 10 { return 0.0; }
+        if self.count < 10 {
+            return 0.0;
+        }
         let mut sorted: Vec<f32> = self.times[..self.count].to_vec();
         sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)); // descending (worst first)
         let idx = ((self.count as f32 * pct / 100.0) as usize).min(self.count - 1);
@@ -32,7 +48,9 @@ impl FrameStats {
         if worst_dt > 0.0 { 1.0 / worst_dt } else { 0.0 }
     }
     fn avg_fps(&self) -> f32 {
-        if self.count < 2 { return 0.0; }
+        if self.count < 2 {
+            return 0.0;
+        }
         let sum: f32 = self.times[..self.count].iter().sum();
         self.count as f32 / sum
     }
@@ -95,7 +113,10 @@ fn main() {
             ctx.free_buffer(buf);
             Some(ctx)
         }
-        None => { eprintln!("No Vulkan GPU, CPU fallback"); None }
+        None => {
+            eprintln!("No Vulkan GPU, CPU fallback");
+            None
+        }
     };
 
     let mut window = platform::PlatformWindow::new();
@@ -124,7 +145,16 @@ fn main() {
         loading_menu.state = menu::MenuState::Loading;
         loading_menu.loading_seed = world_seed;
         let tmp_keybinds = input::KeyBinds::default_binds();
-        menu::sys_menu_render(&mut fb, &loading_menu, &tmp_keybinds, 1.0, false, false, 0, &[]);
+        menu::sys_menu_render(
+            &mut fb,
+            &loading_menu,
+            &tmp_keybinds,
+            1.0,
+            false,
+            false,
+            0,
+            &[],
+        );
         window.present(&fb.pixels);
     }
 
@@ -150,9 +180,14 @@ fn main() {
 
     if gpu.as_ref().is_some_and(|g| g.has_graphics()) {
         render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
-        gpu.as_mut().unwrap().upload_static_vertices(&gpu_static_verts);
-        eprintln!("Static GPU verts: {} ({:.1}MB) — uploaded once", gpu_static_verts.len(),
-            gpu_static_verts.len() as f64 * 28.0 / 1_000_000.0);
+        gpu.as_mut()
+            .unwrap()
+            .upload_static_vertices(&gpu_static_verts);
+        eprintln!(
+            "Static GPU verts: {} ({:.1}MB) — uploaded once",
+            gpu_static_verts.len(),
+            gpu_static_verts.len() as f64 * 28.0 / 1_000_000.0
+        );
     }
 
     // Scenic camera system for title screen
@@ -162,8 +197,12 @@ fn main() {
 
     // Set initial scenic camera
     if let Some(&(pos, target)) = scenic_cameras.first() {
-        game.camera.x = pos[0]; game.camera.y = pos[1]; game.camera.z = pos[2];
-        game.camera.tx = target[0]; game.camera.ty = target[1]; game.camera.tz = target[2];
+        game.camera.x = pos[0];
+        game.camera.y = pos[1];
+        game.camera.z = pos[2];
+        game.camera.tx = target[0];
+        game.camera.ty = target[1];
+        game.camera.tz = target[2];
     }
 
     let mut last_frame = Instant::now();
@@ -176,8 +215,15 @@ fn main() {
     loop {
         game.prev_keys = game.keys;
 
-        window.poll_events(&mut game.keys, &mut game.should_quit, &mut game.mouse_dx, &mut game.mouse_dy);
-        if game.should_quit { break; }
+        window.poll_events(
+            &mut game.keys,
+            &mut game.should_quit,
+            &mut game.mouse_dx,
+            &mut game.mouse_dy,
+        );
+        if game.should_quit {
+            break;
+        }
 
         // Menu input (always processed)
         let quit = menu::sys_menu_input(
@@ -192,7 +238,9 @@ fn main() {
             &mut game.player.model_index,
             game.character_models.len(),
         );
-        if quit { break; }
+        if quit {
+            break;
+        }
 
         // ── Title → gameplay transition ─────────────────────────────────
         if game.menu.start_new_game {
@@ -225,9 +273,14 @@ fn main() {
             game.menu.state = menu::MenuState::Loading;
             game.menu.loading_seed = new_seed;
             menu::sys_menu_render(
-                &mut fb, &game.menu, &game.keybinds,
-                game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
-                game.player.model_index, &game.model_library.character_names,
+                &mut fb,
+                &game.menu,
+                &game.keybinds,
+                game.mouse_sensitivity,
+                game.invert_mouse_x,
+                game.invert_mouse_y,
+                game.player.model_index,
+                &game.model_library.character_names,
             );
             window.present(&fb.pixels);
 
@@ -250,7 +303,9 @@ fn main() {
 
             if gpu.as_ref().is_some_and(|g| g.has_graphics()) {
                 render::generate_static_gpu_vertices(&game.world, &mut gpu_static_verts);
-                gpu.as_mut().unwrap().upload_static_vertices(&gpu_static_verts);
+                gpu.as_mut()
+                    .unwrap()
+                    .upload_static_vertices(&gpu_static_verts);
             }
             particles = particle::ParticleSystem::new(&mut gpu, new_seed.wrapping_add(0xBEEF));
             scenic_cameras = generate_scenic_cameras(&game);
@@ -263,18 +318,25 @@ fn main() {
         // ── Frame timing ────────────────────────────────────────────────
         let now = Instant::now();
         let frame_dt = now.duration_since(last_frame).as_secs_f32();
-        if frame_dt < state::FRAME_TIME_MIN { continue; }
+        if frame_dt < state::FRAME_TIME_MIN {
+            continue;
+        }
         last_frame = now;
 
         frame_stats.push(frame_dt);
         frame_stats.report_timer += frame_dt;
         if frame_stats.report_timer >= 5.0 {
             frame_stats.report_timer = 0.0;
-            eprintln!("FPS avg={:.0} 1%low={:.0} 0.1%low={:.0} | sverts={} dverts={} | {}x{}",
-                frame_stats.avg_fps(), frame_stats.percentile_fps(1.0),
+            eprintln!(
+                "FPS avg={:.0} 1%low={:.0} 0.1%low={:.0} | sverts={} dverts={} | {}x{}",
+                frame_stats.avg_fps(),
+                frame_stats.percentile_fps(1.0),
                 frame_stats.percentile_fps(0.1),
-                gpu_static_verts.len(), gpu_dynamic_verts.len(),
-                fb.w, fb.h);
+                gpu_static_verts.len(),
+                gpu_dynamic_verts.len(),
+                fb.w,
+                fb.h
+            );
         }
 
         let nw = window.width();
@@ -305,8 +367,12 @@ fn main() {
                 scenic_idx = (scenic_idx + 1) % scenic_cameras.len().max(1);
             }
             if let Some(&(pos, target)) = scenic_cameras.get(scenic_idx) {
-                game.camera.x = pos[0]; game.camera.y = pos[1]; game.camera.z = pos[2];
-                game.camera.tx = target[0]; game.camera.ty = target[1]; game.camera.tz = target[2];
+                game.camera.x = pos[0];
+                game.camera.y = pos[1];
+                game.camera.z = pos[2];
+                game.camera.tx = target[0];
+                game.camera.ty = target[1];
+                game.camera.tz = target[2];
             }
 
             particles.update(&mut gpu, frame_dt);
@@ -348,11 +414,16 @@ fn main() {
                 prev_time_of_day = game.time_of_day;
 
                 game.time_of_day += FIXED_DT * 24.0 / state::DAY_LENGTH;
-                if game.time_of_day >= 24.0 { game.time_of_day -= 24.0; }
+                if game.time_of_day >= 24.0 {
+                    game.time_of_day -= 24.0;
+                }
 
                 if npc::sys_midnight_reset(
-                    &mut game.world, game.time_of_day, prev_time_of_day,
-                    &mut game.neat_population, &mut game.neat_brains,
+                    &mut game.world,
+                    game.time_of_day,
+                    prev_time_of_day,
+                    &mut game.neat_population,
+                    &mut game.neat_brains,
                 ) {
                     game.day_count += 1;
                 }
@@ -362,7 +433,10 @@ fn main() {
 
                 for vi in 0..game.world.vehicles.len() {
                     vehicle_physics::step_vehicle_physics(
-                        &mut game.world.vehicles[vi], &game.terrain, &game.road_network, FIXED_DT,
+                        &mut game.world.vehicles[vi],
+                        &game.terrain,
+                        &game.road_network,
+                        FIXED_DT,
                     );
                 }
 
@@ -375,35 +449,60 @@ fn main() {
                 }
 
                 npc::sys_npc(
-                    &mut game.world, &mut game.road_network, &game.terrain,
-                    FIXED_DT, game.time_of_day, &mut game.neat_brains,
-                    game.player.x, game.player.z, &game.walk_grid,
+                    &mut game.world,
+                    &mut game.road_network,
+                    &game.terrain,
+                    FIXED_DT,
+                    game.time_of_day,
+                    &mut game.neat_brains,
+                    game.player.x,
+                    game.player.z,
+                    &game.walk_grid,
                 );
                 npc::sys_night_spawning(
-                    &mut game.world, &game.terrain, game.time_of_day,
-                    FIXED_DT, &mut game.spawn_rng, &game.road_network,
+                    &mut game.world,
+                    &game.terrain,
+                    game.time_of_day,
+                    FIXED_DT,
+                    &mut game.spawn_rng,
+                    &game.road_network,
                 );
                 npc::sys_items_update(&mut game.world, FIXED_DT);
                 npc::sys_npc_interactions(&mut game.world, FIXED_DT);
                 collision::sys_collisions(
-                    &mut game.world, &mut game.player, &game.terrain, FIXED_DT,
+                    &mut game.world,
+                    &mut game.player,
+                    &game.terrain,
+                    FIXED_DT,
                 );
                 combat::sys_ragdoll_update(&mut game.world, &game.terrain, FIXED_DT);
                 combat::sys_combat(
-                    &mut game.world, &mut game.player, &mut particles,
-                    &game.terrain, &game.keys, &game.prev_keys,
-                    &game.keybinds, FIXED_DT,
+                    &mut game.world,
+                    &mut game.player,
+                    &mut particles,
+                    &game.terrain,
+                    &game.keys,
+                    &game.prev_keys,
+                    &game.keybinds,
+                    FIXED_DT,
                 );
                 npc::sys_hunger_thirst(&mut game.world, &mut game.player, FIXED_DT);
                 player_jobs::sys_interactibles_update(&mut game.world, FIXED_DT);
                 player_jobs::sys_player_job(&mut game, FIXED_DT);
 
-                let interact_now = game.keybinds.is_pressed(input::Action::Interact, &game.keys);
-                let interact_prev = game.keybinds.is_pressed(input::Action::Interact, &game.prev_keys);
+                let interact_now = game
+                    .keybinds
+                    .is_pressed(input::Action::Interact, &game.keys);
+                let interact_prev = game
+                    .keybinds
+                    .is_pressed(input::Action::Interact, &game.prev_keys);
                 let interact_edge = interact_now && !interact_prev;
                 let do_interact = interact_edge && game.player.in_vehicle.is_none();
                 if let Some((sx, sz, sc)) = npc::sys_player_interact(
-                    &mut game.world, &mut game.player, &game.terrain, do_interact,
+                    &mut game.world,
+                    &mut game.player,
+                    &game.terrain,
+                    do_interact,
                 ) {
                     particle::emit_pickup_sparkle(&mut particles, sx, sz, sc);
                 }
@@ -413,10 +512,16 @@ fn main() {
             }
 
             camera::sys_camera(
-                &mut game.camera, &game.player, &game.terrain,
-                game.mouse_dx, game.mouse_dy,
-                game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
-                frame_dt, game.frame_counter,
+                &mut game.camera,
+                &game.player,
+                &game.terrain,
+                game.mouse_dx,
+                game.mouse_dy,
+                game.mouse_sensitivity,
+                game.invert_mouse_x,
+                game.invert_mouse_y,
+                frame_dt,
+                game.frame_counter,
             );
             game.mouse_dx = 0.0;
             game.mouse_dy = 0.0;
@@ -437,8 +542,11 @@ fn main() {
             ctx.resize_render_target(fb.w as u32, fb.h as u32);
 
             render::generate_dynamic_gpu_vertices(
-                &game.world, &game.player, &game.camera,
-                &mut render_scratch, &mut gpu_dynamic_verts,
+                &game.world,
+                &game.player,
+                &game.camera,
+                &mut render_scratch,
+                &mut gpu_dynamic_verts,
                 game.time_of_day,
                 &game.character_models,
                 game.animation_data.as_ref(),
@@ -454,27 +562,58 @@ fn main() {
             let push = render::gpu_push_constants(game.time_of_day, eye, target, &vp);
 
             let clear = render::sky_color_f32(game.time_of_day);
-            ctx.render_frame(&gpu_dynamic_verts, &push, clear, fb.w as u32, fb.h as u32, &mut fb.pixels);
+            ctx.render_frame(
+                &gpu_dynamic_verts,
+                &push,
+                clear,
+                fb.w as u32,
+                fb.h as u32,
+                &mut fb.pixels,
+            );
 
             particle::sys_render_particles(&mut fb, &particles, &game.camera);
-            if !in_title { hud::sys_hud(&mut fb, &game); }
+            if !in_title {
+                hud::sys_hud(&mut fb, &game);
+            }
             menu::sys_menu_render(
-                &mut fb, &game.menu, &game.keybinds,
-                game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
-                game.player.model_index, &game.model_library.character_names,
+                &mut fb,
+                &game.menu,
+                &game.keybinds,
+                game.mouse_sensitivity,
+                game.invert_mouse_x,
+                game.invert_mouse_y,
+                game.player.model_index,
+                &game.model_library.character_names,
             );
 
             window.present(&fb.pixels);
         } else {
             fb.clear(render::sky_color(game.time_of_day));
-            render::sys_render(&mut fb, &game.world, &game.player, &game.camera, game.time_of_day, &mut render_scratch, &game.character_models, game.animation_data.as_ref(), &game.model_library.cars);
+            render::sys_render(
+                &mut fb,
+                &game.world,
+                &game.player,
+                &game.camera,
+                game.time_of_day,
+                &mut render_scratch,
+                &game.character_models,
+                game.animation_data.as_ref(),
+                &game.model_library.cars,
+            );
 
             particle::sys_render_particles(&mut fb, &particles, &game.camera);
-            if !in_title { hud::sys_hud(&mut fb, &game); }
+            if !in_title {
+                hud::sys_hud(&mut fb, &game);
+            }
             menu::sys_menu_render(
-                &mut fb, &game.menu, &game.keybinds,
-                game.mouse_sensitivity, game.invert_mouse_x, game.invert_mouse_y,
-                game.player.model_index, &game.model_library.character_names,
+                &mut fb,
+                &game.menu,
+                &game.keybinds,
+                game.mouse_sensitivity,
+                game.invert_mouse_x,
+                game.invert_mouse_y,
+                game.player.model_index,
+                &game.model_library.character_names,
             );
 
             window.present(&fb.pixels);

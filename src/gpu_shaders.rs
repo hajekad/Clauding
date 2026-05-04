@@ -1,6 +1,6 @@
-// SPIR-V graphics shader binaries (vertex + fragment), built programmatically
-// Vertex: VP transform + GPU-side lighting (sun, ambient, fog, emissive) via push constants
-// Fragment: writes interpolated color to attachment
+//! SPIR-V graphics shader binaries (vertex + fragment), built programmatically.
+//! Vertex: VP transform + GPU-side lighting (sun, ambient, fog, emissive) via push constants.
+//! Fragment: writes interpolated color to the attachment.
 
 #![allow(unused)]
 
@@ -86,10 +86,10 @@ pub fn build_vertex_shader() -> Vec<u32> {
     let c_01f = 29;
     let c_13f = 30;
     // New constants for emissive
-    let c_05f = 70;   // 0.5
-    let c_07f = 84;   // 0.7
-    let c_20f = 85;   // 2.0
-    let c_25f = 86;   // 2.5
+    let c_05f = 70; // 0.5
+    let c_07f = 84; // 0.7
+    let c_20f = 85; // 2.0
+    let c_25f = 86; // 2.5
 
     // Function IDs
     let main_fn = 31;
@@ -129,7 +129,7 @@ pub fn build_vertex_shader() -> Vec<u32> {
     let r_dist_sq = 60;
     let r_fog_raw = 61;
     let r_fog_sq = 62;
-    let r_fog_t = 89;  // sqrt(fog_raw) = dist/FOG_DIST for smoothstep input
+    let r_fog_t = 89; // sqrt(fog_raw) = dist/FOG_DIST for smoothstep input
     // Color mixing
     let r_color_rgb = 63;
     let r_lit_rgb = 64;
@@ -139,20 +139,20 @@ pub fn build_vertex_shader() -> Vec<u32> {
     let r_final_rgb = 68;
     let r_final = 69;
     // Half-Lambert wrap lighting (IDs 73-74)
-    let r_wrap_half = 73;     // dot*0.5 + 0.5
-    let r_wrap_sq = 74;       // wrap_half * wrap_half (half-Lambert)
+    let r_wrap_half = 73; // dot*0.5 + 0.5
+    let r_wrap_sq = 74; // wrap_half * wrap_half (half-Lambert)
     // Emissive path (IDs 75+)
     let r_alpha = 75;
-    let r_emissive_f = 76;    // 1.0 - alpha (0=normal, 1=emissive)
-    let r_sun_x2 = 77;        // sun_strength * 2.0
-    let r_boost_raw = 78;     // 2.0 - sun_x2
-    let r_boost = 79;         // clamp(boost_raw, 1.0, 2.5) — night glow intensity
-    let r_int_alpha = 80;     // intensity * alpha
-    let r_boost_ef = 81;      // boost * emissive_f
-    let r_mixed_int = 82;     // final intensity (normal+emissive blended)
-    let r_ef_07 = 83;         // emissive_f * 0.7
-    let r_fog_reduce = 87;    // 1.0 - ef_07 (fog reduction factor)
-    let r_eff_fog = 88;       // fog_sq * fog_reduce (effective fog for this vertex)
+    let r_emissive_f = 76; // 1.0 - alpha (0=normal, 1=emissive)
+    let r_sun_x2 = 77; // sun_strength * 2.0
+    let r_boost_raw = 78; // 2.0 - sun_x2
+    let r_boost = 79; // clamp(boost_raw, 1.0, 2.5) — night glow intensity
+    let r_int_alpha = 80; // intensity * alpha
+    let r_boost_ef = 81; // boost * emissive_f
+    let r_mixed_int = 82; // final intensity (normal+emissive blended)
+    let r_ef_07 = 83; // emissive_f * 0.7
+    let r_fog_reduce = 87; // 1.0 - ef_07 (fog reduction factor)
+    let r_eff_fog = 88; // fog_sq * fog_reduce (effective fog for this vertex)
 
     let bound = 90u32;
 
@@ -168,8 +168,13 @@ pub fn build_vertex_shader() -> Vec<u32> {
     emit!(s, OP_MEM_MODEL, 0, 1);
 
     // 4. Entry point: Vertex shader
-    emit_str!(s, OP_ENTRY, [0, main_fn], "main",
-        [in_pos, in_color, in_normal, gl_position, out_frag_color]);
+    emit_str!(
+        s,
+        OP_ENTRY,
+        [0, main_fn],
+        "main",
+        [in_pos, in_color, in_normal, gl_position, out_frag_color]
+    );
 
     // --- Decorations ---
     emit!(s, OP_DECORATE, in_pos, DEC_LOCATION, 0);
@@ -202,7 +207,16 @@ pub fn build_vertex_shader() -> Vec<u32> {
     emit!(s, OP_TYPE_PTR, ty_ptr_in_vec3, SC_INPUT, ty_vec3);
     emit!(s, OP_TYPE_PTR, ty_ptr_in_vec4, SC_INPUT, ty_vec4);
     emit!(s, OP_TYPE_PTR, ty_ptr_out_vec4, SC_OUTPUT, ty_vec4);
-    emit!(s, OP_TYPE_STRUCT, ty_pc_struct, ty_mat4, ty_vec4, ty_vec4, ty_vec4, ty_vec4);
+    emit!(
+        s,
+        OP_TYPE_STRUCT,
+        ty_pc_struct,
+        ty_mat4,
+        ty_vec4,
+        ty_vec4,
+        ty_vec4,
+        ty_vec4
+    );
     emit!(s, OP_TYPE_PTR, ty_ptr_pc, SC_PUSH_CONST, ty_pc_struct);
     emit!(s, OP_TYPE_PTR, ty_ptr_pc_mat4, SC_PUSH_CONST, ty_mat4);
     emit!(s, OP_TYPE_PTR, ty_ptr_pc_vec4, SC_PUSH_CONST, ty_vec4);
@@ -221,14 +235,14 @@ pub fn build_vertex_shader() -> Vec<u32> {
     emit!(s, OP_CONST, ty_uint, c_2u, 2);
     emit!(s, OP_CONST, ty_uint, c_3u, 3);
     emit!(s, OP_CONST, ty_uint, c_4u, 4);
-    emit!(s, OP_CONST, ty_float, c_0f, 0u32);                   // 0.0
-    emit!(s, OP_CONST, ty_float, c_1f, 0x3F800000u32);          // 1.0
-    emit!(s, OP_CONST, ty_float, c_01f, 0.1_f32.to_bits());     // 0.1
-    emit!(s, OP_CONST, ty_float, c_13f, 1.3_f32.to_bits());     // 1.3
-    emit!(s, OP_CONST, ty_float, c_05f, 0.5_f32.to_bits());     // 0.5
-    emit!(s, OP_CONST, ty_float, c_07f, 0.7_f32.to_bits());     // 0.7
-    emit!(s, OP_CONST, ty_float, c_20f, 2.0_f32.to_bits());     // 2.0
-    emit!(s, OP_CONST, ty_float, c_25f, 2.5_f32.to_bits());     // 2.5
+    emit!(s, OP_CONST, ty_float, c_0f, 0u32); // 0.0
+    emit!(s, OP_CONST, ty_float, c_1f, 0x3F800000u32); // 1.0
+    emit!(s, OP_CONST, ty_float, c_01f, 0.1_f32.to_bits()); // 0.1
+    emit!(s, OP_CONST, ty_float, c_13f, 1.3_f32.to_bits()); // 1.3
+    emit!(s, OP_CONST, ty_float, c_05f, 0.5_f32.to_bits()); // 0.5
+    emit!(s, OP_CONST, ty_float, c_07f, 0.7_f32.to_bits()); // 0.7
+    emit!(s, OP_CONST, ty_float, c_20f, 2.0_f32.to_bits()); // 2.0
+    emit!(s, OP_CONST, ty_float, c_25f, 2.5_f32.to_bits()); // 2.5
 
     // --- Function ---
     emit!(s, OP_FN, ty_void, main_fn, 0, ty_fn_void);
@@ -249,7 +263,17 @@ pub fn build_vertex_shader() -> Vec<u32> {
     // Load push constants: lighting params
     emit!(s, OP_ACCESS, ty_ptr_pc_vec4, r_ld_ptr, pc_var, c_1u);
     emit!(s, OP_LOAD, ty_vec4, r_ld_vec, r_ld_ptr);
-    emit!(s, OP_VECTOR_SHUFFLE, ty_vec3, r_light_dir, r_ld_vec, r_ld_vec, 0, 1, 2);
+    emit!(
+        s,
+        OP_VECTOR_SHUFFLE,
+        ty_vec3,
+        r_light_dir,
+        r_ld_vec,
+        r_ld_vec,
+        0,
+        1,
+        2
+    );
     emit!(s, OP_COMPOSITE_EXTRACT, ty_float, r_ambient, r_ld_vec, 3);
 
     emit!(s, OP_ACCESS, ty_ptr_pc_vec4, r_sf_ptr, pc_var, c_2u);
@@ -259,21 +283,51 @@ pub fn build_vertex_shader() -> Vec<u32> {
 
     emit!(s, OP_ACCESS, ty_ptr_pc_vec4, r_fc_ptr, pc_var, c_3u);
     emit!(s, OP_LOAD, ty_vec4, r_fc_vec, r_fc_ptr);
-    emit!(s, OP_VECTOR_SHUFFLE, ty_vec3, r_fog_rgb, r_fc_vec, r_fc_vec, 0, 1, 2);
+    emit!(
+        s,
+        OP_VECTOR_SHUFFLE,
+        ty_vec3,
+        r_fog_rgb,
+        r_fc_vec,
+        r_fc_vec,
+        0,
+        1,
+        2
+    );
 
     emit!(s, OP_ACCESS, ty_ptr_pc_vec4, r_ep_ptr, pc_var, c_4u);
     emit!(s, OP_LOAD, ty_vec4, r_ep_vec, r_ep_ptr);
-    emit!(s, OP_VECTOR_SHUFFLE, ty_vec3, r_eye_xyz, r_ep_vec, r_ep_vec, 0, 1, 2);
+    emit!(
+        s,
+        OP_VECTOR_SHUFFLE,
+        ty_vec3,
+        r_eye_xyz,
+        r_ep_vec,
+        r_ep_vec,
+        0,
+        1,
+        2
+    );
 
     // === Lighting ===
     // Half-Lambert wrap: wrap = (dot*0.5+0.5)^2 — softer shadow falloff on building faces
     emit!(s, OP_DOT, ty_float, r_sun_dot, r_normal, r_light_dir);
-    emit!(s, OP_FMUL, ty_float, r_sun_max, r_sun_dot, c_05f);                // dot * 0.5
-    emit!(s, OP_FADD, ty_float, r_wrap_half, r_sun_max, c_05f);              // dot*0.5 + 0.5
-    emit!(s, OP_FMUL, ty_float, r_wrap_sq, r_wrap_half, r_wrap_half);        // (dot*0.5+0.5)^2
+    emit!(s, OP_FMUL, ty_float, r_sun_max, r_sun_dot, c_05f); // dot * 0.5
+    emit!(s, OP_FADD, ty_float, r_wrap_half, r_sun_max, c_05f); // dot*0.5 + 0.5
+    emit!(s, OP_FMUL, ty_float, r_wrap_sq, r_wrap_half, r_wrap_half); // (dot*0.5+0.5)^2
     emit!(s, OP_FMUL, ty_float, r_sun_lit, r_wrap_sq, r_sun_str);
     emit!(s, OP_FADD, ty_float, r_int_raw, r_sun_lit, r_ambient);
-    emit!(s, OP_EXT_INST, ty_float, r_intensity, glsl, 43, r_int_raw, c_01f, c_13f); // FClamp
+    emit!(
+        s,
+        OP_EXT_INST,
+        ty_float,
+        r_intensity,
+        glsl,
+        43,
+        r_int_raw,
+        c_01f,
+        c_13f
+    ); // FClamp
 
     // === Fog ===
     // Smoothstep fog: gentle fade-in near camera, smooth fade-out at boundary.
@@ -282,8 +336,18 @@ pub fn build_vertex_shader() -> Vec<u32> {
     emit!(s, OP_FSUB, ty_vec3, r_to_eye, r_eye_xyz, r_pos);
     emit!(s, OP_DOT, ty_float, r_dist_sq, r_to_eye, r_to_eye);
     emit!(s, OP_FMUL, ty_float, r_fog_raw, r_dist_sq, r_fog_inv);
-    emit!(s, OP_EXT_INST, ty_float, r_fog_t, glsl, 31, r_fog_raw);            // Sqrt
-    emit!(s, OP_EXT_INST, ty_float, r_fog_sq, glsl, 49, c_0f, c_1f, r_fog_t); // SmoothStep
+    emit!(s, OP_EXT_INST, ty_float, r_fog_t, glsl, 31, r_fog_raw); // Sqrt
+    emit!(
+        s,
+        OP_EXT_INST,
+        ty_float,
+        r_fog_sq,
+        glsl,
+        49,
+        c_0f,
+        c_1f,
+        r_fog_t
+    ); // SmoothStep
 
     // === Emissive system (branchless) ===
     // alpha = color.w (1.0 = normal, 0.0 = emissive)
@@ -295,7 +359,17 @@ pub fn build_vertex_shader() -> Vec<u32> {
     // Night (sun=0): boost=2.0, Day (sun=0.65): boost=0.7→clamped to 1.0
     emit!(s, OP_FMUL, ty_float, r_sun_x2, r_sun_str, c_20f);
     emit!(s, OP_FSUB, ty_float, r_boost_raw, c_20f, r_sun_x2);
-    emit!(s, OP_EXT_INST, ty_float, r_boost, glsl, 43, r_boost_raw, c_1f, c_25f); // FClamp
+    emit!(
+        s,
+        OP_EXT_INST,
+        ty_float,
+        r_boost,
+        glsl,
+        43,
+        r_boost_raw,
+        c_1f,
+        c_25f
+    ); // FClamp
 
     // Blend intensity: intensity*alpha + boost*emissive_f
     // Normal verts (alpha=1): intensity*1 + boost*0 = intensity
@@ -313,13 +387,51 @@ pub fn build_vertex_shader() -> Vec<u32> {
     emit!(s, OP_FMUL, ty_float, r_eff_fog, r_fog_sq, r_fog_reduce);
 
     // === Final color: mix(color.rgb * mixed_intensity, fog_color, eff_fog) ===
-    emit!(s, OP_VECTOR_SHUFFLE, ty_vec3, r_color_rgb, r_color, r_color, 0, 1, 2);
-    emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_lit_rgb, r_color_rgb, r_mixed_int);
+    emit!(
+        s,
+        OP_VECTOR_SHUFFLE,
+        ty_vec3,
+        r_color_rgb,
+        r_color,
+        r_color,
+        0,
+        1,
+        2
+    );
+    emit!(
+        s,
+        OP_VEC_TIMES_SCALAR,
+        ty_vec3,
+        r_lit_rgb,
+        r_color_rgb,
+        r_mixed_int
+    );
     emit!(s, OP_FSUB, ty_float, r_inv_fog, c_1f, r_eff_fog);
-    emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_lit_scaled, r_lit_rgb, r_inv_fog);
-    emit!(s, OP_VEC_TIMES_SCALAR, ty_vec3, r_fog_scaled, r_fog_rgb, r_eff_fog);
+    emit!(
+        s,
+        OP_VEC_TIMES_SCALAR,
+        ty_vec3,
+        r_lit_scaled,
+        r_lit_rgb,
+        r_inv_fog
+    );
+    emit!(
+        s,
+        OP_VEC_TIMES_SCALAR,
+        ty_vec3,
+        r_fog_scaled,
+        r_fog_rgb,
+        r_eff_fog
+    );
     emit!(s, OP_FADD, ty_vec3, r_final_rgb, r_lit_scaled, r_fog_scaled);
-    emit!(s, OP_COMPOSITE_CONSTRUCT, ty_vec4, r_final, r_final_rgb, c_1f);
+    emit!(
+        s,
+        OP_COMPOSITE_CONSTRUCT,
+        ty_vec4,
+        r_final,
+        r_final_rgb,
+        c_1f
+    );
 
     emit!(s, OP_STORE, out_frag_color, r_final);
 

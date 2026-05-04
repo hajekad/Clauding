@@ -1,20 +1,30 @@
-// OBB collision system: 2D oriented bounding boxes in XZ plane, SAT intersection
-// Handles vehicle-NPC, vehicle-vehicle, vehicle-player, NPC-NPC, player-NPC collisions
-// Uses spatial grid broad phase to avoid O(N²) pair checks.
+//! OBB collision system: 2D oriented bounding boxes in XZ plane, SAT intersection.
+//! Handles vehicle-NPC, vehicle-vehicle, vehicle-player, NPC-NPC, player-NPC collisions.
+//! Uses spatial grid broad phase to avoid O(N²) pair checks.
 
-use crate::state::*;
 use crate::physics::EntityKind;
+use crate::state::*;
 
 pub struct Obb2d {
-    pub cx: f32, pub cz: f32,         // center
-    pub half_w: f32, pub half_d: f32,  // half-extents (local X, local Z)
-    pub sin_r: f32, pub cos_r: f32,    // precomputed rotation
+    pub cx: f32,
+    pub cz: f32, // center
+    pub half_w: f32,
+    pub half_d: f32, // half-extents (local X, local Z)
+    pub sin_r: f32,
+    pub cos_r: f32, // precomputed rotation
 }
 
 impl Obb2d {
     pub fn new(cx: f32, cz: f32, w: f32, d: f32, rot: f32) -> Self {
         let (sin_r, cos_r) = rot.sin_cos();
-        Obb2d { cx, cz, half_w: w * 0.5, half_d: d * 0.5, sin_r, cos_r }
+        Obb2d {
+            cx,
+            cz,
+            half_w: w * 0.5,
+            half_d: d * 0.5,
+            sin_r,
+            cos_r,
+        }
     }
 
     pub fn from_vehicle(v: &Vehicle) -> Self {
@@ -93,8 +103,12 @@ fn project_corners(corners: &[[f32; 2]; 4], axis: &[f32; 2]) -> (f32, f32) {
     let mut max = f32::MIN;
     for c in corners {
         let proj = c[0] * axis[0] + c[1] * axis[1];
-        if proj < min { min = proj; }
-        if proj > max { max = proj; }
+        if proj < min {
+            min = proj;
+        }
+        if proj > max {
+            max = proj;
+        }
     }
     (min, max)
 }
@@ -117,7 +131,15 @@ pub fn init_ragdoll(npc: &mut Npc, impulse_x: f32, impulse_y: f32, impulse_z: f3
     npc.ragdoll_timer = RAGDOLL_DURATION;
 }
 
-fn push_apart_npcs_safe(world: &mut WorldData, i: usize, j: usize, d: f32, dx: f32, dz: f32, min_dist: f32) {
+fn push_apart_npcs_safe(
+    world: &mut WorldData,
+    i: usize,
+    j: usize,
+    d: f32,
+    dx: f32,
+    dz: f32,
+    min_dist: f32,
+) {
     let overlap = min_dist - d;
     let nx = dx / d;
     let nz = dz / d;
@@ -131,8 +153,12 @@ fn push_apart_npcs_safe(world: &mut WorldData, i: usize, j: usize, d: f32, dx: f
 
     // Impulse for separation
     let sep_impulse = overlap * 50.0; // gentle push force
-    world.npcs[i].body.apply_impulse([-nx * sep_impulse, 0.0, -nz * sep_impulse]);
-    world.npcs[j].body.apply_impulse([nx * sep_impulse, 0.0, nz * sep_impulse]);
+    world.npcs[i]
+        .body
+        .apply_impulse([-nx * sep_impulse, 0.0, -nz * sep_impulse]);
+    world.npcs[j]
+        .body
+        .apply_impulse([nx * sep_impulse, 0.0, nz * sep_impulse]);
 
     // Positional correction
     let new_ix = world.npcs[i].body.pos[0] - nx * push_i;
@@ -165,8 +191,11 @@ fn decay_violation_timers(world: &mut WorldData, dt: f32) {
 /// Vehicles, NPCs, and player receive impulses proportional to distance.
 /// NPCs above the force threshold are ragdolled.
 pub fn apply_world_explosion(
-    world: &mut WorldData, player: Option<&mut Player>,
-    origin: crate::math::Vec3, radius: f32, force: f32,
+    world: &mut WorldData,
+    player: Option<&mut Player>,
+    origin: crate::math::Vec3,
+    radius: f32,
+    force: f32,
 ) {
     // Vehicles
     for v in &mut world.vehicles {
@@ -180,11 +209,15 @@ pub fn apply_world_explosion(
 
     // NPCs
     for ni in 0..world.npcs.len() {
-        if world.npcs[ni].ragdoll_active { continue; }
+        if world.npcs[ni].ragdoll_active {
+            continue;
+        }
         let npc_pos = [world.npcs[ni].x, world.npcs[ni].y + 0.9, world.npcs[ni].z];
         let d = crate::math::v3_sub(npc_pos, origin);
         let dist = crate::math::v3_len(d);
-        if dist >= radius || dist < 0.01 { continue; }
+        if dist >= radius || dist < 0.01 {
+            continue;
+        }
 
         let falloff = 1.0 - dist / radius;
         let impulse_mag = force * falloff;
@@ -223,9 +256,17 @@ pub fn apply_world_explosion(
                 if speed_change > 5.0 && !player.skeleton.ragdoll_active {
                     let d = crate::math::v3_sub(player_pos, origin);
                     let dist = crate::math::v3_len(d);
-                    let dir = if dist > 0.01 { crate::math::v3_scale(d, 1.0 / dist) } else { [0.0, 1.0, 0.0] };
+                    let dir = if dist > 0.01 {
+                        crate::math::v3_scale(d, 1.0 / dist)
+                    } else {
+                        [0.0, 1.0, 0.0]
+                    };
                     let impulse = [dir[0] * mag, (dir[1] + 0.3) * mag, dir[2] * mag];
-                    player.skeleton.activate_ragdoll([player.x, player.y, player.z], player.rot_y, impulse);
+                    player.skeleton.activate_ragdoll(
+                        [player.x, player.y, player.z],
+                        player.rot_y,
+                        impulse,
+                    );
                     player.skeleton.ragdoll_timer = RAGDOLL_DURATION;
                 }
             }
@@ -244,11 +285,19 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
     // ── Build spatial grid ──────────────────────────────────────────────
     world.collision_grid.clear();
     for vi in 0..nv {
-        world.collision_grid.insert(world.vehicles[vi].x, world.vehicles[vi].z, EntityKind::Vehicle(vi));
+        world.collision_grid.insert(
+            world.vehicles[vi].x,
+            world.vehicles[vi].z,
+            EntityKind::Vehicle(vi),
+        );
     }
     for ni in 0..nn {
-        if world.npcs[ni].state == NpcState::Sleeping { continue; }
-        world.collision_grid.insert(world.npcs[ni].x, world.npcs[ni].z, EntityKind::Npc(ni));
+        if world.npcs[ni].state == NpcState::Sleeping {
+            continue;
+        }
+        world
+            .collision_grid
+            .insert(world.npcs[ni].x, world.npcs[ni].z, EntityKind::Npc(ni));
     }
     if let Some(ref p) = player {
         world.collision_grid.insert(p.x, p.z, EntityKind::Player);
@@ -261,7 +310,9 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
     // NPCs flinch/brace before impact (Euphoria feature 5)
     for vi in 0..nv {
         let vspeed = world.vehicles[vi].speed.abs();
-        if vspeed < 5.0 { continue; } // only react to fast vehicles
+        if vspeed < 5.0 {
+            continue;
+        } // only react to fast vehicles
         let vrot = world.vehicles[vi].rot_y;
         let vfwd = [-vrot.sin(), 0.0, -vrot.cos()];
         let vx = world.vehicles[vi].x;
@@ -273,22 +324,32 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                 EntityKind::Npc(ni) => ni,
                 _ => continue,
             };
-            if world.npcs[ni].in_vehicle || world.npcs[ni].ragdoll_active { continue; }
-            if world.npcs[ni].skeleton.anticipation_timer > 0.0 { continue; }
+            if world.npcs[ni].in_vehicle || world.npcs[ni].ragdoll_active {
+                continue;
+            }
+            if world.npcs[ni].skeleton.anticipation_timer > 0.0 {
+                continue;
+            }
 
             let dx = world.npcs[ni].x - vx;
             let dz = world.npcs[ni].z - vz;
             let dist = (dx * dx + dz * dz).sqrt();
-            if dist > 15.0 || dist < 1.0 { continue; }
+            if dist > 15.0 || dist < 1.0 {
+                continue;
+            }
 
             let dir_to_npc = [dx / dist, 0.0, dz / dist];
             let heading_dot = vfwd[0] * dir_to_npc[0] + vfwd[2] * dir_to_npc[2];
-            if heading_dot < 0.7 { continue; }
+            if heading_dot < 0.7 {
+                continue;
+            }
 
             let time_to_impact = dist / vspeed;
             if time_to_impact < 1.0 {
                 let threat_dir = [-dir_to_npc[0], 0.0, -dir_to_npc[2]];
-                world.npcs[ni].skeleton.start_anticipation(threat_dir, time_to_impact);
+                world.npcs[ni]
+                    .skeleton
+                    .start_anticipation(threat_dir, time_to_impact);
             }
         }
     }
@@ -296,7 +357,9 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
     // --- Vehicle → NPC collisions ---
     for vi in 0..nv {
         let vspeed = world.vehicles[vi].speed.abs();
-        if vspeed < 0.5 { continue; }
+        if vspeed < 0.5 {
+            continue;
+        }
 
         let vobb = Obb2d::from_vehicle(&world.vehicles[vi]);
         let vx = world.vehicles[vi].x;
@@ -308,12 +371,18 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                 EntityKind::Npc(ni) => ni,
                 _ => continue,
             };
-            if world.npcs[ni].in_vehicle { continue; }
-            if world.npcs[ni].state == NpcState::Sleeping { continue; }
+            if world.npcs[ni].in_vehicle {
+                continue;
+            }
+            if world.npcs[ni].state == NpcState::Sleeping {
+                continue;
+            }
 
             let dx = world.npcs[ni].x - vx;
             let dz = world.npcs[ni].z - vz;
-            if dx.abs() > 10.0 || dz.abs() > 10.0 { continue; }
+            if dx.abs() > 10.0 || dz.abs() > 10.0 {
+                continue;
+            }
 
             // Ragdolled NPCs: per-bone continuous contact (Euphoria feature 3)
             if world.npcs[ni].ragdoll_active {
@@ -323,9 +392,17 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                 let veh_hd = 4.6 * world.vehicles[vi].scale * 0.5;
                 let veh_height = 1.2 * world.vehicles[vi].scale;
 
-                if let Some((bone_id, normal, _pen)) = world.npcs[ni].skeleton.collide_bones_vs_vehicle(
-                    veh_pos, world.vehicles[vi].rot_y, veh_hw, veh_hd, veh_height, veh_vel, 0.1,
-                ) {
+                if let Some((bone_id, normal, _pen)) =
+                    world.npcs[ni].skeleton.collide_bones_vs_vehicle(
+                        veh_pos,
+                        world.vehicles[vi].rot_y,
+                        veh_hw,
+                        veh_hd,
+                        veh_height,
+                        veh_vel,
+                        0.1,
+                    )
+                {
                     if let Some(ref mut vc) = world.npcs[ni].skeleton.vehicle_contact {
                         vc.vehicle_idx = vi;
                         vc.surface_normal = normal;
@@ -354,10 +431,18 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                 let npc_pos = [world.npcs[ni].x, world.npcs[ni].y, world.npcs[ni].z];
                 let npc_rot_y = world.npcs[ni].rot_y;
                 let root_rot = crate::math::quat_from_rot_y(npc_rot_y);
-                world.npcs[ni].skeleton.compute_world_transforms(npc_pos, root_rot);
+                world.npcs[ni]
+                    .skeleton
+                    .compute_world_transforms(npc_pos, root_rot);
 
                 let hit_bone = world.npcs[ni].skeleton.collide_bones_vs_vehicle(
-                    veh_pos, world.vehicles[vi].rot_y, veh_hw, veh_hd, veh_height, veh_vel, 0.15,
+                    veh_pos,
+                    world.vehicles[vi].rot_y,
+                    veh_hw,
+                    veh_hd,
+                    veh_height,
+                    veh_vel,
+                    0.15,
                 );
 
                 let v_mass = world.vehicles[vi].body.mass;
@@ -372,34 +457,57 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                 let launch_x = fwd_x * j_mag / n_mass + nx * 3.0;
                 let launch_z = fwd_z * j_mag / n_mass + nz * 3.0;
 
-                world.npcs[ni].body.apply_impulse([launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z]);
+                world.npcs[ni]
+                    .body
+                    .apply_impulse([launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z]);
 
                 let speed_change = j_mag / n_mass;
                 if speed_change > 3.0 {
                     if let Some((bone_id, _normal, _pen)) = hit_bone {
                         use crate::skeleton::BoneId;
-                        if speed_change < 8.0 && matches!(bone_id,
-                            BoneId::LeftUpperLeg | BoneId::LeftLowerLeg | BoneId::LeftFoot |
-                            BoneId::RightUpperLeg | BoneId::RightLowerLeg | BoneId::RightFoot
-                        ) {
+                        if speed_change < 8.0
+                            && matches!(
+                                bone_id,
+                                BoneId::LeftUpperLeg
+                                    | BoneId::LeftLowerLeg
+                                    | BoneId::LeftFoot
+                                    | BoneId::RightUpperLeg
+                                    | BoneId::RightLowerLeg
+                                    | BoneId::RightFoot
+                            )
+                        {
                             world.npcs[ni].skeleton.activate_partial_ragdoll(
-                                npc_pos, npc_rot_y,
+                                npc_pos,
+                                npc_rot_y,
                                 [launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z],
                                 bone_id,
                             );
-                            world.npcs[ni].ragdoll_points = world.npcs[ni].skeleton.to_ragdoll_points();
+                            world.npcs[ni].ragdoll_points =
+                                world.npcs[ni].skeleton.to_ragdoll_points();
                             world.npcs[ni].ragdoll_active = true;
                             world.npcs[ni].ragdoll_timer = RAGDOLL_DURATION;
                             world.npcs[ni].skeleton.ragdoll_timer = RAGDOLL_DURATION;
                         } else {
-                            init_ragdoll(&mut world.npcs[ni], launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z);
+                            init_ragdoll(
+                                &mut world.npcs[ni],
+                                launch_x,
+                                VEHICLE_HIT_LAUNCH_UP,
+                                launch_z,
+                            );
                         }
                     } else {
-                        init_ragdoll(&mut world.npcs[ni], launch_x, VEHICLE_HIT_LAUNCH_UP, launch_z);
+                        init_ragdoll(
+                            &mut world.npcs[ni],
+                            launch_x,
+                            VEHICLE_HIT_LAUNCH_UP,
+                            launch_z,
+                        );
                     }
                 }
 
-                world.vehicles[vi].body.apply_impulse([-fwd_x * j_mag, 0.0, -fwd_z * j_mag]);
+                world.vehicles[vi]
+                    .body
+                    .apply_impulse([-fwd_x * j_mag, 0.0, -fwd_z * j_mag]);
                 let fwd_v = crate::math::quat_forward(world.vehicles[vi].body.quat);
                 world.vehicles[vi].speed = crate::math::v3_dot(world.vehicles[vi].body.vel, fwd_v);
 
@@ -436,12 +544,18 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                     _ => continue,
                 };
                 let vspeed = world.vehicles[vi].speed.abs();
-                if vspeed < 0.5 { continue; }
-                if world.vehicles[vi].occupied { continue; }
+                if vspeed < 0.5 {
+                    continue;
+                }
+                if world.vehicles[vi].occupied {
+                    continue;
+                }
 
                 let dx = px - world.vehicles[vi].x;
                 let dz = pz - world.vehicles[vi].z;
-                if dx.abs() > 10.0 || dz.abs() > 10.0 { continue; }
+                if dx.abs() > 10.0 || dz.abs() > 10.0 {
+                    continue;
+                }
 
                 let vobb = Obb2d::from_vehicle(&world.vehicles[vi]);
                 if let Some((nx, nz, depth)) = obb_intersect(&vobb, &pobb) {
@@ -465,14 +579,19 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                     let speed_change = j_mag / p_mass;
                     if speed_change > 3.0 && !player.skeleton.ragdoll_active {
                         player.skeleton.activate_ragdoll(
-                            [player.x, player.y, player.z], player.rot_y, launch,
+                            [player.x, player.y, player.z],
+                            player.rot_y,
+                            launch,
                         );
                         player.skeleton.ragdoll_timer = RAGDOLL_DURATION;
                     }
 
-                    world.vehicles[vi].body.apply_impulse([-nx * j_mag, 0.0, -nz * j_mag]);
+                    world.vehicles[vi]
+                        .body
+                        .apply_impulse([-nx * j_mag, 0.0, -nz * j_mag]);
                     let fwd_v = crate::math::quat_forward(world.vehicles[vi].body.quat);
-                    world.vehicles[vi].speed = crate::math::v3_dot(world.vehicles[vi].body.vel, fwd_v);
+                    world.vehicles[vi].speed =
+                        crate::math::v3_dot(world.vehicles[vi].body.vel, fwd_v);
 
                     if let Some(owner) = world.vehicles[vi].owner_npc {
                         if owner < nn {
@@ -487,12 +606,16 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
 
     // --- Vehicle → Wall collision ---
     for vi in 0..nv {
-        if world.vehicles[vi].speed.abs() < 0.1 { continue; }
+        if world.vehicles[vi].speed.abs() < 0.1 {
+            continue;
+        }
         let vobb = Obb2d::from_vehicle(&world.vehicles[vi]);
         for w in &world.walls {
             let dx = world.vehicles[vi].x - w.x;
             let dz = world.vehicles[vi].z - w.z;
-            if dx.abs() > w.hw + 3.0 || dz.abs() > w.hd + 3.0 { continue; }
+            if dx.abs() > w.hw + 3.0 || dz.abs() > w.hd + 3.0 {
+                continue;
+            }
             let overlap_x = (w.hw + vobb.half_w) - dx.abs();
             let overlap_z = (w.hd + vobb.half_d) - dz.abs();
             if overlap_x > 0.0 && overlap_z > 0.0 {
@@ -528,7 +651,8 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                 let norm_z = dz / d;
                 world.vehicles[vi].body.pos[0] += norm_x * push;
                 world.vehicles[vi].body.pos[2] += norm_z * push;
-                let vn = world.vehicles[vi].body.vel[0] * norm_x + world.vehicles[vi].body.vel[2] * norm_z;
+                let vn = world.vehicles[vi].body.vel[0] * norm_x
+                    + world.vehicles[vi].body.vel[2] * norm_z;
                 if vn < 0.0 {
                     world.vehicles[vi].body.vel[0] -= norm_x * vn * 1.3;
                     world.vehicles[vi].body.vel[2] -= norm_z * vn * 1.3;
@@ -544,7 +668,9 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
     // --- Vehicle → Vehicle collision (3D contact solver) ---
     world.contact_buffer.clear();
     for i in 0..nv {
-        if world.vehicles[i].speed.abs() < 0.1 { continue; }
+        if world.vehicles[i].speed.abs() < 0.1 {
+            continue;
+        }
         let vx = world.vehicles[i].x;
         let vz = world.vehicles[i].z;
 
@@ -557,7 +683,9 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
 
             let dx = world.vehicles[j].x - vx;
             let dz = world.vehicles[j].z - vz;
-            if dx.abs() > 10.0 || dz.abs() > 10.0 { continue; }
+            if dx.abs() > 10.0 || dz.abs() > 10.0 {
+                continue;
+            }
 
             let obb_a = Obb2d::from_vehicle(&world.vehicles[i]);
             let obb_b = Obb2d::from_vehicle(&world.vehicles[j]);
@@ -577,12 +705,24 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                 world.vehicles[j].body.pos[2] += nz * push * wj;
 
                 // 3D narrow phase: generate contact for the solver
-                let half_i = [0.93 * world.vehicles[i].scale, 0.7 * world.vehicles[i].scale, 2.3 * world.vehicles[i].scale];
-                let half_j = [0.93 * world.vehicles[j].scale, 0.7 * world.vehicles[j].scale, 2.3 * world.vehicles[j].scale];
+                let half_i = [
+                    0.93 * world.vehicles[i].scale,
+                    0.7 * world.vehicles[i].scale,
+                    2.3 * world.vehicles[i].scale,
+                ];
+                let half_j = [
+                    0.93 * world.vehicles[j].scale,
+                    0.7 * world.vehicles[j].scale,
+                    2.3 * world.vehicles[j].scale,
+                ];
                 let mat = crate::material::MAT_METAL;
                 if let Some(contact) = crate::physics::box_vs_box(
-                    i, &world.vehicles[i].body, half_i,
-                    j, &world.vehicles[j].body, half_j,
+                    i,
+                    &world.vehicles[i].body,
+                    half_i,
+                    j,
+                    &world.vehicles[j].body,
+                    half_j,
                     mat,
                 ) {
                     world.contact_buffer.push(contact);
@@ -610,23 +750,48 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
 
                 // Panel deformation from crash energy
                 if relative_speed > 2.0 {
-                    let energy = 0.5 * (mass_i * mass_j / (mass_i + mass_j)) * relative_speed * relative_speed;
+                    let energy = 0.5
+                        * (mass_i * mass_j / (mass_i + mass_j))
+                        * relative_speed
+                        * relative_speed;
                     let impact_i = [nx * obb_a.half_d, 0.0, nz * obb_a.half_d];
                     let impact_j = [-nx * obb_b.half_d, 0.0, -nz * obb_b.half_d];
-                    world.vehicles[i].deformation.apply_impact(impact_i, energy, obb_a.half_w, obb_a.half_d);
-                    world.vehicles[j].deformation.apply_impact(impact_j, energy, obb_b.half_w, obb_b.half_d);
+                    world.vehicles[i].deformation.apply_impact(
+                        impact_i,
+                        energy,
+                        obb_a.half_w,
+                        obb_a.half_d,
+                    );
+                    world.vehicles[j].deformation.apply_impact(
+                        impact_j,
+                        energy,
+                        obb_b.half_w,
+                        obb_b.half_d,
+                    );
 
                     // Explosion cascade when a vehicle becomes totaled
                     // Blasts all nearby entities (vehicles, NPCs, player on foot)
                     if world.vehicles[i].deformation.is_totaled() {
                         let origin = world.vehicles[i].body.pos;
                         let blast_force = energy.sqrt().min(500.0);
-                        apply_world_explosion(world, player.as_deref_mut(), origin, 10.0, blast_force);
+                        apply_world_explosion(
+                            world,
+                            player.as_deref_mut(),
+                            origin,
+                            10.0,
+                            blast_force,
+                        );
                     }
                     if world.vehicles[j].deformation.is_totaled() {
                         let origin = world.vehicles[j].body.pos;
                         let blast_force = energy.sqrt().min(500.0);
-                        apply_world_explosion(world, player.as_deref_mut(), origin, 10.0, blast_force);
+                        apply_world_explosion(
+                            world,
+                            player.as_deref_mut(),
+                            origin,
+                            10.0,
+                            blast_force,
+                        );
                     }
                 }
 
@@ -679,8 +844,12 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
         // Find which vehicles are involved
         let mut involved: Vec<usize> = Vec::new();
         for c in &world.contact_buffer.contacts {
-            if !involved.contains(&c.body_a) { involved.push(c.body_a); }
-            if c.body_b != usize::MAX && !involved.contains(&c.body_b) { involved.push(c.body_b); }
+            if !involved.contains(&c.body_a) {
+                involved.push(c.body_a);
+            }
+            if c.body_b != usize::MAX && !involved.contains(&c.body_b) {
+                involved.push(c.body_b);
+            }
         }
         // Build solver body array + index mapping
         let mut solver_bodies: Vec<crate::physics::RigidBody> = Vec::with_capacity(involved.len());
@@ -708,8 +877,12 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
 
     // --- NPC → NPC soft push-apart ---
     for i in 0..nn {
-        if world.npcs[i].in_vehicle || world.npcs[i].state == NpcState::Sleeping { continue; }
-        if world.npcs[i].ragdoll_active { continue; }
+        if world.npcs[i].in_vehicle || world.npcs[i].state == NpcState::Sleeping {
+            continue;
+        }
+        if world.npcs[i].ragdoll_active {
+            continue;
+        }
 
         let nx_i = world.npcs[i].x;
         let nz_i = world.npcs[i].z;
@@ -719,8 +892,12 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                 EntityKind::Npc(j) if j > i => j,
                 _ => continue,
             };
-            if world.npcs[j].in_vehicle || world.npcs[j].state == NpcState::Sleeping { continue; }
-            if world.npcs[j].ragdoll_active { continue; }
+            if world.npcs[j].in_vehicle || world.npcs[j].state == NpcState::Sleeping {
+                continue;
+            }
+            if world.npcs[j].ragdoll_active {
+                continue;
+            }
 
             let dx = world.npcs[j].x - nx_i;
             let dz = world.npcs[j].z - nz_i;
@@ -744,8 +921,12 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                     EntityKind::Npc(ni) => ni,
                     _ => continue,
                 };
-                if world.npcs[ni].in_vehicle || world.npcs[ni].state == NpcState::Sleeping { continue; }
-                if world.npcs[ni].ragdoll_active { continue; }
+                if world.npcs[ni].in_vehicle || world.npcs[ni].state == NpcState::Sleeping {
+                    continue;
+                }
+                if world.npcs[ni].ragdoll_active {
+                    continue;
+                }
 
                 let dx = world.npcs[ni].x - px;
                 let dz = world.npcs[ni].z - pz;
@@ -771,12 +952,14 @@ fn sys_collisions_core(world: &mut WorldData, mut player: Option<&mut Player>, d
                     player.z = player.body.pos[2];
 
                     let rel_vn = (player.body.vel[0] - world.npcs[ni].body.vel[0]) * nx
-                               + (player.body.vel[2] - world.npcs[ni].body.vel[2]) * nz;
+                        + (player.body.vel[2] - world.npcs[ni].body.vel[2]) * nz;
                     if rel_vn > 0.1 {
                         let restitution = 0.1;
                         let j_mag = (1.0 + restitution) * rel_vn / inv_sum;
                         player.body.apply_impulse([-nx * j_mag, 0.0, -nz * j_mag]);
-                        world.npcs[ni].body.apply_impulse([nx * j_mag, 0.0, nz * j_mag]);
+                        world.npcs[ni]
+                            .body
+                            .apply_impulse([nx * j_mag, 0.0, nz * j_mag]);
                     }
                 }
             }
