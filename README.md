@@ -77,6 +77,54 @@ Requirements:
 population from `neat_trained.bin` on startup if present; otherwise it starts
 from a fresh population.
 
+## Assets — not included
+
+The repo contains code only. The 3D asset library the author used is **not
+shipped** with the source: it is roughly 3 GB and a mix of Mixamo, Sketchfab,
+and other third-party content whose licenses do not permit redistribution. You
+must supply your own.
+
+The game scans `models/v1/` at startup and loads whatever it finds. The
+expected layout is:
+
+```
+models/v1/
+├── architecture/<name>/scene.gltf      # buildings (any number)
+├── nature/<name>/scene.gltf            # trees, rocks
+├── characters/<name>/scene.gltf        # NPC + player meshes
+│   └── <name>.obj                      # optional, used for skinning fallback
+├── cars/<name>/scene.gltf              # vehicles
+├── animations/walking.fbx              # Mixamo clip (required for NPC anim)
+├── animations/run_forward.fbx
+├── animations/picking_up.fbx
+├── animations/sitting_pose.fbx
+├── animations/elbow_punch.fbx
+├── animations/hook_punch.fbx
+├── animations/drop_kick.fbx
+└── animations/roundhouse_kick.fbx
+```
+
+Each `<name>/` directory needs `scene.gltf` plus its `.bin` and any textures
+it references. Naming is otherwise arbitrary — the loader walks the trees and
+filters by triangle count and bounding-box proportions, so you can drop any
+sensibly-scaled model in.
+
+Suggested sources:
+
+- **Animations:** [Mixamo](https://www.mixamo.com/) — the eight clip names
+  above are exact filenames the FBX loader looks for. Download as **FBX
+  Binary**, no skin.
+- **Buildings, props, vehicles:** [Sketchfab](https://sketchfab.com/) (filter
+  by GLTF + downloadable + permissive license), [Poly Haven](https://polyhaven.com/),
+  [Quaternius](https://quaternius.com/).
+- **Trees / rocks:** Quaternius nature packs work well at the scales the
+  loader expects.
+
+The game runs without `models/v1/` present — terrain, roads, and procedural
+geometry all generate fine — but NPCs and buildings will be invisible until
+you supply at least a few GLTFs.
+
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE). Applies to source code only. Any 3D assets you
+add to `models/v1/` carry whatever license the original author attached.
